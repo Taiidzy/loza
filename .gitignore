@@ -1,0 +1,23 @@
+# Игнорирует локальные артефакты разработки Loza.
+# Нужен, чтобы в git не попадали зависимости, build output, env-файлы, storage и временные файлы.
+# Использует стандартные шаблоны Git ignore для Node, Rust, Tauri и Docker окружения.
+
+.DS_Store
+*.log
+*.local
+.env
+.env.*
+!.env.example
+
+app/node_modules/
+app/dist/
+app/dist-ssr/
+
+app/src-tauri/target/
+app/src-tauri/gen/schemas/
+
+backend/target/
+backend/.env
+backend/storage/
+
+loza-data/
