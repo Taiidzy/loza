@@ -1,18 +1,20 @@
-import { useState, useEffect, StrictMode } from "react";
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
+import { useState, useEffect } from "react";
+import { BrowserRouter, Routes, Route } from "react-router-dom";
 import ProtectedRoute from "./components/ProtectedRoute";
 import AuthPage from "./pages/AuthPage";
+import MainPage from "./pages/MainPage";
 
 import "./App.css";
 
-// Detect platform via Tauri globals
-const isMobile = typeof window !== "undefined" &&
-  ((window as any).__TAURI_INTERNALS__?.metadata?.currentWindow?.label === undefined
-    ? false
-    : false) ||
+// ─── Platform detection ───────────────────────────────────────────────────────
+
+const isMobile =
   /iPhone|iPad|Android/.test(navigator.userAgent);
 
-const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI_INTERNALS__;
+const isTauri =
+  typeof window !== "undefined" && !!(window as any).__TAURI_INTERNALS__;
+
+// ─── App ──────────────────────────────────────────────────────────────────────
 
 export default function App() {
   const [platform, setPlatform] = useState("desktop");
@@ -39,57 +41,41 @@ export default function App() {
   };
 
   const handleMaximize = async () => {
-  if (isTauri) {
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    await getCurrentWindow().toggleMaximize();
-  }
-};
+    if (isTauri) {
+      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+      await getCurrentWindow().toggleMaximize();
+    }
+  };
 
   return (
     <div className={`app-shell ${platform}`}>
-      {/* Titlebar — only on desktop without decorations */}
+      {/* Titlebar — desktop only */}
       {platform !== "mobile" && (
         <div className="titlebar">
           <div className="titlebar-controls">
-            <button
-              className="ctrl-btn close"
-              onClick={handleClose}
-              title="Закрыть"
-            />
-            <button
-              className="ctrl-btn minimize"
-              onClick={handleMinimize}
-              title="Свернуть"
-            />
-            <button
-              className="ctrl-btn maximize"
-              onClick={handleMaximize}
-              title="Развернуть"
-            />
+            <button className="ctrl-btn close" onClick={handleClose} title="Закрыть" />
+            <button className="ctrl-btn minimize" onClick={handleMinimize} title="Свернуть" />
+            <button className="ctrl-btn maximize" onClick={handleMaximize} title="Развернуть" />
           </div>
-
           <div className="titlebar-drag" data-tauri-drag-region>
             <span className="titlebar-title">Loza</span>
           </div>
         </div>
       )}
-      <StrictMode>
-        <BrowserRouter>
-          <Routes>
-            <Route path="/auth" element={<AuthPage />} />
 
-            <Route
-              path="/"
-              element={
-                <ProtectedRoute>
-                  {/* <MainScreen /> */}
-                  <div>Main</div>
-                </ProtectedRoute>
-              }
-            />
-          </Routes>
-        </BrowserRouter>
-      </StrictMode>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/auth" element={<AuthPage />} />
+          <Route
+            path="/"
+            element={
+              <ProtectedRoute>
+                <MainPage />
+              </ProtectedRoute>
+            }
+          />
+        </Routes>
+      </BrowserRouter>
     </div>
   );
 }

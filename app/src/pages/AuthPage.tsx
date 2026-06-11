@@ -1,16 +1,16 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
+import { useNavigate } from "react-router-dom";
+import { authLogin, saveSession } from "../api/auth";
 
-interface Field {
-  id: string;
-  label: string;
-  placeholder: string;
-  type: string;
-  eye?: boolean;
-}
+// ─── Icons ────────────────────────────────────────────────────────────────────
 
 const EyeIcon = ({ open }: { open: boolean }) => (
-  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+  <svg
+    width="14" height="14" viewBox="0 0 24 24"
+    fill="none" stroke="currentColor" strokeWidth="1.7"
+    strokeLinecap="round" strokeLinejoin="round"
+  >
     {open ? (
       <>
         <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
@@ -26,321 +26,413 @@ const EyeIcon = ({ open }: { open: boolean }) => (
   </svg>
 );
 
-const inputVariants = {
-  hidden: { opacity: 0, x: -12 },
-  visible: (i: number) => ({
-    opacity: 1,
-    x: 0,
-    transition: { delay: i * 0.06, duration: 0.32, ease: [0.25, 0.46, 0.45, 0.94] as number[] },
-  }),
-};
+// ─── Particle canvas ──────────────────────────────────────────────────────────
 
-export default function AuthPage() {
-  const [mode, setMode] = useState<"login" | "signup">("login");
-  const [fields, setFields] = useState({ email: "", username: "", password: "", confirm: "" });
-  const [showPass, setShowPass] = useState(false);
-  const [focused, setFocused] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+function Particles() {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  const loginFields: Field[] = [
-    { id: "email",    label: "メールアドレス", placeholder: "email address", type: "email" },
-    { id: "password", label: "パスワード",      placeholder: "password",      type: showPass ? "text" : "password", eye: true },
-  ];
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
 
-  const signupFields: Field[] = [
-    { id: "email",    label: "メールアドレス", placeholder: "email address",    type: "email" },
-    { id: "username", label: "ユーザー名",      placeholder: "username",          type: "text" },
-    { id: "password", label: "パスワード",      placeholder: "password",          type: showPass ? "text" : "password", eye: true },
-    { id: "confirm",  label: "確認",            placeholder: "confirm password",  type: "password" },
-  ];
+    const resize = () => {
+      canvas.width = canvas.offsetWidth;
+      canvas.height = canvas.offsetHeight;
+    };
+    resize();
+    window.addEventListener("resize", resize);
 
-  const currentFields = mode === "login" ? loginFields : signupFields;
+    const dots = Array.from({ length: 55 }, () => ({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height,
+      r: Math.random() * 1.6 + 0.4,
+      vx: (Math.random() - 0.5) * 0.35,
+      vy: (Math.random() - 0.5) * 0.35,
+      o: Math.random() * 0.4 + 0.1,
+    }));
 
-  const handleSubmit = () => {
-    setLoading(true);
-    setTimeout(() => setLoading(false), 1800);
-  };
+    let raf: number;
+    const tick = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      for (const d of dots) {
+        d.x += d.vx; d.y += d.vy;
+        if (d.x < 0) d.x = canvas.width;
+        if (d.x > canvas.width) d.x = 0;
+        if (d.y < 0) d.y = canvas.height;
+        if (d.y > canvas.height) d.y = 0;
+        ctx.beginPath();
+        ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255, 182, 210, ${d.o})`;
+        ctx.fill();
+      }
+      for (let i = 0; i < dots.length; i++) {
+        for (let j = i + 1; j < dots.length; j++) {
+          const dx = dots[i].x - dots[j].x;
+          const dy = dots[i].y - dots[j].y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < 90) {
+            ctx.beginPath();
+            ctx.moveTo(dots[i].x, dots[i].y);
+            ctx.lineTo(dots[j].x, dots[j].y);
+            ctx.strokeStyle = `rgba(200, 160, 255, ${0.12 * (1 - dist / 90)})`;
+            ctx.lineWidth = 0.5;
+            ctx.stroke();
+          }
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    tick();
+
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", resize);
+    };
+  }, []);
 
   return (
-    <div className="w-full h-full flex items-center justify-center p-6">
+    <canvas
+      ref={canvasRef}
+      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}
+    />
+  );
+}
+
+// ─── AuthPage ─────────────────────────────────────────────────────────────────
+
+type LoginState = "idle" | "loading" | "success" | "error";
+
+export default function AuthPage() {
+  const navigate = useNavigate();
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPass, setShowPass] = useState(false);
+  const [focused, setFocused] = useState<string | null>(null);
+  const [loginState, setLoginState] = useState<LoginState>("idle");
+  const [errorMsg, setErrorMsg] = useState("");
+
+  const accent      = "rgba(255, 182, 210, 1)";
+  const accentDim   = "rgba(255, 182, 210, 0.45)";
+  const accentBorder = "rgba(255, 182, 210, 0.5)";
+  const accentGlow  = "rgba(255, 182, 210, 0.12)";
+
+  const handleSubmit = async () => {
+    if (loginState === "loading") return;
+    if (!username.trim() || !password) {
+      setErrorMsg("Заполните все поля");
+      setLoginState("error");
+      setTimeout(() => setLoginState("idle"), 2000);
+      return;
+    }
+
+    setLoginState("loading");
+    setErrorMsg("");
+
+    try {
+      const resp = await authLogin(username.trim(), password);
+
+      saveSession({
+        token: resp.token,
+        username: resp.username,
+        display_name: resp.display_name,
+        role: resp.role,
+        expires_at: resp.expires_at,
+      });
+
+      setLoginState("success");
+      // Brief success flash, then navigate
+      setTimeout(() => navigate("/"), 800);
+    } catch (err: unknown) {
+      const msg = typeof err === "string" ? err : "Ошибка сервера";
+
+      // Parse Rust error codes for friendly messages
+      if (msg.includes("INVALID_CREDENTIALS")) {
+        setErrorMsg("Неверный логин или пароль");
+      } else if (msg.includes("SERVER_UNREACHABLE")) {
+        setErrorMsg("Сервер недоступен");
+      } else if (msg.includes("EMPTY_FIELDS")) {
+        setErrorMsg("Заполните все поля");
+      } else {
+        setErrorMsg(msg);
+      }
+
+      setLoginState("error");
+      setTimeout(() => setLoginState("idle"), 3000);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") handleSubmit();
+  };
+
+  const fields = [
+    {
+      id: "login",
+      label: "логин",
+      placeholder: "Loza",
+      type: "text",
+      value: username,
+      onChange: setUsername,
+      eye: false,
+    },
+    {
+      id: "password",
+      label: "пароль",
+      placeholder: "••••••••",
+      type: showPass ? "text" : "password",
+      value: password,
+      onChange: setPassword,
+      eye: true,
+    },
+  ];
+
+  return (
+    <div
+      style={{
+        width: "100%", height: "100%",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        position: "relative", overflow: "hidden", background: "transparent",
+      }}
+    >
+      <Particles />
+
+      {/* Decorative blobs */}
+      <div style={{
+        position: "absolute", width: 420, height: 420, borderRadius: "50%",
+        background: "radial-gradient(circle, rgba(180,100,255,0.18) 0%, transparent 70%)",
+        top: "-80px", right: "-60px", pointerEvents: "none", filter: "blur(40px)",
+      }} />
+      <div style={{
+        position: "absolute", width: 320, height: 320, borderRadius: "50%",
+        background: "radial-gradient(circle, rgba(255,120,180,0.14) 0%, transparent 70%)",
+        bottom: "-60px", left: "-40px", pointerEvents: "none", filter: "blur(40px)",
+      }} />
+
+      {/* Card */}
       <motion.div
-        initial={{ opacity: 0, y: 20, scale: 0.97 }}
+        initial={{ opacity: 0, y: 28, scale: 0.96 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-        className="w-full max-w-sm relative"
+        transition={{ duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
+        style={{ width: "100%", maxWidth: 368, padding: "0 20px", position: "relative", zIndex: 10 }}
       >
         {/* Outer glow */}
-        <div
-          className="absolute -inset-px rounded-[28px] pointer-events-none"
-          style={{
-            background: "linear-gradient(135deg, rgba(255,182,193,0.15) 0%, rgba(180,160,255,0.1) 50%, rgba(135,206,250,0.08) 100%)",
-            filter: "blur(1px)",
-          }}
-        />
+        <div style={{
+          position: "absolute", inset: -1, borderRadius: 28, pointerEvents: "none",
+          background: "linear-gradient(135deg, rgba(255,182,210,0.2) 0%, rgba(180,120,255,0.12) 50%, rgba(100,180,255,0.08) 100%)",
+          filter: "blur(1px)",
+        }} />
 
         {/* Glass card */}
-        <div
-          className="relative rounded-[26px] overflow-hidden"
-          style={{
-            background: "rgba(255, 255, 255, 0.06)",
-            backdropFilter: "blur(40px) saturate(160%)",
-            WebkitBackdropFilter: "blur(40px) saturate(160%)",
-            border: "1px solid rgba(255, 255, 255, 0.14)",
-            boxShadow: "0 8px 32px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -1px 0 rgba(255,255,255,0.04)",
-          }}
-        >
+        <div style={{
+          position: "relative", borderRadius: 26, overflow: "hidden",
+          background: "rgba(255,255,255,0.055)",
+          backdropFilter: "blur(48px) saturate(180%)",
+          WebkitBackdropFilter: "blur(48px) saturate(180%)",
+          border: "1px solid rgba(255,255,255,0.13)",
+          boxShadow: "0 12px 48px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,255,255,0.2), inset 0 -1px 0 rgba(255,255,255,0.04)",
+          padding: "32px 32px 28px",
+        }}>
           {/* Top shimmer */}
-          <div
-            className="absolute top-0 left-10 right-10 h-px pointer-events-none"
-            style={{ background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.45), transparent)" }}
-          />
-          {/* Inner tint */}
-          <div
-            className="absolute inset-0 pointer-events-none"
-            style={{ background: "linear-gradient(155deg, rgba(255,255,255,0.05) 0%, transparent 45%, rgba(180,160,255,0.03) 100%)" }}
-          />
+          <div style={{
+            position: "absolute", top: 0, left: 32, right: 32, height: 1,
+            pointerEvents: "none",
+            background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.5), transparent)",
+          }} />
 
-          <div className="relative px-8 pt-9 pb-8">
-
+          <div style={{ position: "relative" }}>
             {/* Brand */}
             <motion.div
-              className="mb-7"
-              initial={{ opacity: 0, y: -8 }}
+              initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.38, delay: 0.08 }}
+              transition={{ delay: 0.1, duration: 0.4 }}
+              style={{ marginBottom: 28 }}
             >
-              <div className="flex items-center gap-2.5 mb-1">
-                <div
-                  className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
-                  style={{
-                    background: "rgba(255,255,255,0.1)",
-                    border: "1px solid rgba(255,255,255,0.18)",
-                    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.25)",
-                  }}
-                >
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
-                    <path d="M12 3C10.5 7 7 9 3 9c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12-4 0-7.5-2-9-6z"
-                      fill="rgba(255,210,220,0.88)" />
-                  </svg>
-                </div>
-                <span className="text-[15px] font-medium tracking-[0.1em]" style={{ color: "rgba(255,255,255,0.85)", fontFamily: "Georgia, serif" }}>
-                  Loza
-                </span>
-              </div>
-
-              <AnimatePresence mode="wait">
-                <motion.div
-                  key={mode}
-                  initial={{ opacity: 0, y: 5 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -5 }}
-                  transition={{ duration: 0.2 }}
-                >
-                  <h2 className="text-[21px] font-light mt-3 leading-snug" style={{ color: "rgba(255,255,255,0.9)", letterSpacing: "-0.01em" }}>
-                    {mode === "login" ? "おかえりなさい" : "はじめまして"}
-                  </h2>
-                  <p className="text-[12px] mt-0.5" style={{ color: "rgba(255,255,255,0.35)" }}>
-                    {mode === "login" ? "Welcome back" : "Nice to meet you"}
-                  </p>
-                </motion.div>
-              </AnimatePresence>
-            </motion.div>
-
-            {/* Segment */}
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.15 }}
-              className="flex gap-1 rounded-xl p-1 mb-6"
-              style={{ background: "rgba(0,0,0,0.2)", border: "1px solid rgba(255,255,255,0.06)" }}
-            >
-              {(["login", "signup"] as const).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => setMode(m)}
-                  className="relative flex-1 py-[7px] text-[12px] font-medium rounded-[10px] transition-colors duration-150 cursor-pointer"
-                  style={{ color: mode === m ? "rgba(255,255,255,0.9)" : "rgba(255,255,255,0.28)" }}
-                >
-                  {mode === m && (
-                    <motion.div
-                      layoutId="seg"
-                      className="absolute inset-0 rounded-[10px]"
-                      style={{
-                        background: "rgba(255,255,255,0.1)",
-                        border: "1px solid rgba(255,255,255,0.14)",
-                        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.16)",
-                      }}
-                      transition={{ type: "spring", stiffness: 400, damping: 32 }}
-                    />
-                  )}
-                  <span className="relative z-10">{m === "login" ? "ログイン" : "登録"}</span>
-                </button>
-              ))}
+              <h2 style={{
+                fontSize: 22, fontWeight: 300, margin: "0",
+                color: "rgba(255,255,255,0.92)", letterSpacing: "-0.015em",
+              }}>
+                Loza
+              </h2>
+              <p style={{
+                fontSize: 12, marginTop: 3,
+                color: "rgba(255,255,255,0.32)", letterSpacing: "0.04em",
+              }}>
+                С возвращением
+              </p>
             </motion.div>
 
             {/* Fields */}
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={mode}
-                initial="hidden"
-                animate="visible"
-                exit={{ opacity: 0, transition: { duration: 0.1 } }}
-                className="space-y-2.5"
-              >
-                {currentFields.map((f, i) => (
-                  <motion.div key={f.id} custom={i} variants={inputVariants} className="relative">
-                    <div
-                      className="absolute inset-0 rounded-xl pointer-events-none"
-                      style={{
-                        background: "rgba(255,255,255,0.04)",
-                        border: focused === f.id ? "1px solid rgba(255,192,210,0.5)" : "1px solid rgba(255,255,255,0.09)",
-                        boxShadow: focused === f.id
-                          ? "0 0 0 3px rgba(255,182,193,0.08), inset 0 1px 0 rgba(255,255,255,0.1)"
-                          : "inset 0 1px 0 rgba(255,255,255,0.05)",
-                        transition: "border-color 0.2s, box-shadow 0.2s",
-                      }}
-                    />
-                    <div className="relative flex flex-col px-3.5 pt-2.5 pb-2">
-                      <label
-                        className="text-[9px] tracking-[0.14em] mb-0.5 font-mono"
-                        style={{
-                          color: focused === f.id ? "rgba(255,192,210,0.75)" : "rgba(255,255,255,0.28)",
-                          transition: "color 0.2s",
-                        }}
-                      >
-                        {f.label}
-                      </label>
-                      <input
-                        type={f.type}
-                        value={fields[f.id as keyof typeof fields]}
-                        placeholder={f.placeholder}
-                        onChange={e => setFields(p => ({ ...p, [f.id]: e.target.value }))}
-                        onFocus={() => setFocused(f.id)}
-                        onBlur={() => setFocused(null)}
-                        className="bg-transparent outline-none text-[13px] w-full placeholder:opacity-25"
-                        style={{ color: "rgba(255,255,255,0.88)", caretColor: "rgba(255,182,193,0.9)" }}
-                      />
-                    </div>
-                    {f.eye && (
-                      <button
-                        onClick={() => setShowPass(v => !v)}
-                        className="absolute right-3.5 top-1/2 -translate-y-1/2 cursor-pointer transition-colors duration-150"
-                        style={{ color: showPass ? "rgba(255,182,193,0.65)" : "rgba(255,255,255,0.22)" }}
-                      >
-                        <EyeIcon open={showPass} />
-                      </button>
-                    )}
-                  </motion.div>
-                ))}
-              </motion.div>
-            </AnimatePresence>
-
-            {/* Forgot */}
-            {mode === "login" && (
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: 0.32 }}
-                className="text-right mt-2"
-              >
-                <button
-                  className="text-[11px] transition-colors duration-150 cursor-pointer"
-                  style={{ color: "rgba(255,182,193,0.45)" }}
-                  onMouseEnter={e => (e.currentTarget.style.color = "rgba(255,182,193,0.8)")}
-                  onMouseLeave={e => (e.currentTarget.style.color = "rgba(255,182,193,0.45)")}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {fields.map((f, i) => (
+                <motion.div
+                  key={f.id}
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: 0.12 + i * 0.07, duration: 0.3, ease: [0.25, 0.46, 0.45, 0.94] }}
+                  style={{ position: "relative" }}
                 >
-                  パスワードを忘れた？
-                </button>
-              </motion.div>
-            )}
+                  {/* Field bg */}
+                  <div style={{
+                    position: "absolute", inset: 0, borderRadius: 13, pointerEvents: "none",
+                    background: "rgba(255,255,255,0.04)",
+                    border: focused === f.id
+                      ? `1px solid ${accentBorder}`
+                      : loginState === "error"
+                        ? "1px solid rgba(255, 100, 100, 0.4)"
+                        : "1px solid rgba(255,255,255,0.09)",
+                    boxShadow: focused === f.id
+                      ? `0 0 0 3px ${accentGlow}, inset 0 1px 0 rgba(255,255,255,0.1)`
+                      : "inset 0 1px 0 rgba(255,255,255,0.04)",
+                    transition: "border-color 0.2s, box-shadow 0.2s",
+                  }} />
+
+                  <div style={{
+                    position: "relative", display: "flex", flexDirection: "column",
+                    padding: "9px 14px 8px",
+                  }}>
+                    <span style={{
+                      fontSize: 9, letterSpacing: "0.1em",
+                      color: "rgba(255,255,255,0.16)",
+                      textTransform: "uppercase", marginBottom: 2,
+                    }}>
+                      {f.label}
+                    </span>
+
+                    <input
+                      type={f.type}
+                      value={f.value}
+                      placeholder={f.placeholder}
+                      autoComplete="off"
+                      onChange={(e) => f.onChange(e.target.value)}
+                      onFocus={() => setFocused(f.id)}
+                      onBlur={() => setFocused(null)}
+                      onKeyDown={handleKeyDown}
+                      style={{
+                        background: "transparent", border: "none", outline: "none",
+                        fontSize: 13, color: "rgba(255,255,255,0.88)",
+                        caretColor: accent, width: "100%",
+                        paddingRight: f.eye ? 28 : 0,
+                      }}
+                      className="placeholder:text-white/20"
+                    />
+                  </div>
+
+                  {f.eye && (
+                    <button
+                      onClick={() => setShowPass((v) => !v)}
+                      style={{
+                        position: "absolute", right: 12, top: "50%",
+                        transform: "translateY(-50%)",
+                        background: "none", border: "none", cursor: "pointer",
+                        padding: 2,
+                        color: showPass ? accentDim : "rgba(255,255,255,0.22)",
+                        transition: "color 0.18s",
+                        display: "flex", alignItems: "center",
+                      }}
+                    >
+                      <EyeIcon open={showPass} />
+                    </button>
+                  )}
+                </motion.div>
+              ))}
+            </div>
+
+            {/* Error message */}
+            <AnimatePresence>
+              {loginState === "error" && errorMsg && (
+                <motion.div
+                  initial={{ opacity: 0, y: -4, height: 0 }}
+                  animate={{ opacity: 1, y: 0, height: "auto" }}
+                  exit={{ opacity: 0, height: 0 }}
+                  transition={{ duration: 0.2 }}
+                  style={{
+                    marginTop: 10,
+                    fontSize: 11,
+                    color: "rgba(255, 120, 120, 0.85)",
+                    textAlign: "center",
+                    letterSpacing: "0.02em",
+                  }}
+                >
+                  {errorMsg}
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* Submit */}
             <motion.div
-              initial={{ opacity: 0, y: 6 }}
+              initial={{ opacity: 0, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.28, duration: 0.32 }}
-              className="mt-5"
+              transition={{ delay: 0.28, duration: 0.35 }}
+              style={{ marginTop: 16 }}
             >
               <motion.button
                 onClick={handleSubmit}
-                disabled={loading}
-                whileHover={{ scale: 1.012 }}
-                whileTap={{ scale: 0.975 }}
-                transition={{ type: "spring", stiffness: 420, damping: 22 }}
-                className="w-full py-[11px] rounded-xl text-[13px] font-medium relative overflow-hidden cursor-pointer"
+                disabled={loginState === "loading"}
+                whileHover={{ scale: loginState === "loading" ? 1 : 1.013 }}
+                whileTap={{ scale: loginState === "loading" ? 1 : 0.974 }}
+                transition={{ type: "spring", stiffness: 440, damping: 22 }}
                 style={{
-                  background: "rgba(255,255,255,0.09)",
-                  border: "1px solid rgba(255,255,255,0.18)",
-                  color: "rgba(255,255,255,0.88)",
-                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.18), 0 4px 16px rgba(0,0,0,0.18)",
-                  letterSpacing: "0.05em",
+                  width: "100%", padding: "11px 0",
+                  borderRadius: 14, fontSize: 13, fontWeight: 500,
+                  letterSpacing: "0.06em",
+                  cursor: loginState === "loading" ? "default" : "pointer",
+                  position: "relative", overflow: "hidden",
+                  background: loginState === "success"
+                    ? "rgba(62, 207, 110, 0.2)"
+                    : loginState === "error"
+                      ? "rgba(255, 80, 80, 0.12)"
+                      : "rgba(255,255,255,0.09)",
+                  border: loginState === "success"
+                    ? "1px solid rgba(62,207,110,0.4)"
+                    : loginState === "error"
+                      ? "1px solid rgba(255, 80, 80, 0.3)"
+                      : "1px solid rgba(255,255,255,0.18)",
+                  color: loginState === "success"
+                    ? "rgba(62,207,110,0.9)"
+                    : loginState === "error"
+                      ? "rgba(255,120,120,0.85)"
+                      : "rgba(255,255,255,0.88)",
+                  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.18), 0 4px 20px rgba(0,0,0,0.2)",
+                  transition: "background 0.3s, border-color 0.3s, color 0.3s",
                 }}
               >
-                <div
-                  className="absolute inset-0 pointer-events-none"
-                  style={{ background: "linear-gradient(180deg, rgba(255,255,255,0.05) 0%, transparent 100%)" }}
-                />
-                <span className="relative z-10 flex items-center justify-center gap-2">
-                  {loading ? (
+                <div style={{
+                  position: "absolute", inset: 0, pointerEvents: "none",
+                  background: "linear-gradient(180deg, rgba(255,255,255,0.06) 0%, transparent 100%)",
+                }} />
+                <span style={{
+                  position: "relative", zIndex: 1,
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                }}>
+                  {loginState === "success" ? (
+                    <>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                      Добро пожаловать
+                    </>
+                  ) : loginState === "loading" ? (
                     <>
                       <motion.div
                         animate={{ rotate: 360 }}
-                        transition={{ repeat: Infinity, duration: 0.85, ease: "linear" }}
-                        className="w-[14px] h-[14px] rounded-full"
-                        style={{ border: "1.5px solid rgba(255,255,255,0.18)", borderTopColor: "rgba(255,255,255,0.75)" }}
+                        transition={{ repeat: Infinity, duration: 0.8, ease: "linear" }}
+                        style={{
+                          width: 13, height: 13, borderRadius: "50%",
+                          border: "1.5px solid rgba(255,255,255,0.18)",
+                          borderTopColor: "rgba(255,255,255,0.78)",
+                        }}
                       />
-                      <span style={{ color: "rgba(255,255,255,0.5)" }}>処理中...</span>
+                      <span style={{ color: "rgba(255,255,255,0.5)" }}>Вход</span>
                     </>
                   ) : (
-                    mode === "login" ? "ログイン" : "アカウント作成"
+                    "Войти"
                   )}
                 </span>
               </motion.button>
             </motion.div>
-
-            {/* Divider */}
-            <div className="flex items-center gap-3 my-5">
-              <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.07)" }} />
-              <span className="text-[10px] tracking-[0.12em]" style={{ color: "rgba(255,255,255,0.18)" }}>OR</span>
-              <div className="flex-1 h-px" style={{ background: "rgba(255,255,255,0.07)" }} />
-            </div>
-
-            {/* Google */}
-            <motion.button
-              whileHover={{ scale: 1.01 }}
-              whileTap={{ scale: 0.985 }}
-              className="w-full flex items-center justify-center gap-2.5 py-2.5 rounded-xl text-[12px] cursor-pointer transition-colors duration-150"
-              style={{
-                background: "rgba(255,255,255,0.04)",
-                border: "1px solid rgba(255,255,255,0.09)",
-                color: "rgba(255,255,255,0.55)",
-              }}
-              onHoverStart={e => ((e.target as HTMLElement).style.background = "rgba(255,255,255,0.07)")}
-              onHoverEnd={e => ((e.target as HTMLElement).style.background = "rgba(255,255,255,0.04)")}
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24">
-                <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
-                <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
-              </svg>
-              Google でログイン
-            </motion.button>
-
-            {/* Footer */}
-            <p className="text-center text-[11px] mt-5" style={{ color: "rgba(255,255,255,0.2)" }}>
-              {mode === "login" ? "アカウントをお持ちでない方 " : "すでにアカウントをお持ちの方 "}
-              <button
-                onClick={() => setMode(mode === "login" ? "signup" : "login")}
-                className="cursor-pointer transition-colors duration-150"
-                style={{ color: "rgba(255,182,193,0.55)" }}
-                onMouseEnter={e => (e.currentTarget.style.color = "rgba(255,182,193,0.88)")}
-                onMouseLeave={e => (e.currentTarget.style.color = "rgba(255,182,193,0.55)")}
-              >
-                {mode === "login" ? "登録する" : "ログイン"}
-              </button>
-            </p>
-
           </div>
         </div>
       </motion.div>

@@ -1,15 +1,16 @@
 import { Navigate } from "react-router-dom";
+import { loadSession } from "../api/auth";
 
 interface Props {
   children: React.ReactNode;
 }
 
 export default function ProtectedRoute({ children }: Props) {
-  const token = sessionStorage.getItem("token");
+  const session = loadSession();
 
-  if (!token) {
+  if (!session) {
     return <Navigate to="/auth" replace />;
   }
 
-  return children;
+  return <>{children}</>;
 }
