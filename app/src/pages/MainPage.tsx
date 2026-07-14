@@ -1,6 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { motion } from "motion/react";
 import { loadSession, authLogout } from "../api/auth";
+import { fetchServerStatus, type ServerStatus, type ClientInfo, type StorageInfo, type LoadInfo } from "../api/serverStatus";
+import StorageOrb from "../components/StorageOrb";
 import { useNavigate } from "react-router-dom";
 
 // ─── Icons ────────────────────────────────────────────────────────────────────
@@ -78,47 +80,161 @@ function Sparkline({ values, color }: { values: number[]; color: string }) {
   );
 }
 
-// ─── Stat card ────────────────────────────────────────────────────────────────
+// ─── Card shell ───────────────────────────────────────────────────────────────
 
-interface StatCardProps {
-  label: string;
-  value: string;
-  sub: string;
-  sparkData: number[];
-  color: string;
-  delay: number;
-}
-
-function StatCard({ label, value, sub, sparkData, color, delay }: StatCardProps) {
+function Card({
+  children, delay, flex = 1, style,
+}: { children: React.ReactNode; delay: number; flex?: number; style?: React.CSSProperties }) {
   return (
     <motion.div
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay, duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
       style={{
-        flex: 1, minWidth: 120,
+        flex, minWidth: 150,
         background: "rgba(255,255,255,0.04)",
         border: "1px solid rgba(255,255,255,0.08)",
         borderRadius: 16,
         padding: "16px 18px",
-        display: "flex", flexDirection: "column", gap: 12,
+        ...style,
       }}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+      {children}
+    </motion.div>
+  );
+}
+
+function CardLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 12 }}>
+      {children}
+    </div>
+  );
+}
+
+function CardSkeleton({ delay }: { delay: number }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay, duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+      style={{
+        flex: 1, minWidth: 150, height: 148,
+        background: "rgba(255,255,255,0.03)",
+        border: "1px solid rgba(255,255,255,0.06)",
+        borderRadius: 16,
+      }}
+    />
+  );
+}
+
+// ─── Clients card ───────────────────────────────────────────────────────────
+
+function ClientsCard({ clients, delay }: { clients: ClientInfo[]; delay: number }) {
+  const activeCount = clients.filter((c) => c.active).length;
+
+  return (
+    <Card delay={delay}>
+      <CardLabel>Клиенты</CardLabel>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 14 }}>
+        <span style={{ fontSize: 28, fontWeight: 300, color: "#fff", letterSpacing: "-0.5px", lineHeight: 1 }}>
+          {activeCount}
+        </span>
+        <span style={{ fontSize: 11, color: "rgba(255,255,255,0.3)" }}>
+          активно из {clients.length}
+        </span>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {clients.length === 0 ? (
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.25)" }}>Нет подключённых устройств</div>
+        ) : (
+          clients.map((c) => (
+            <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{
+                width: 6, height: 6, borderRadius: "50%", flexShrink: 0,
+                background: c.active ? "#3ecf6e" : "rgba(255,255,255,0.2)",
+                boxShadow: c.active ? "0 0 6px #3ecf6e88" : "none",
+              }} />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,0.7)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {c.name}
+                </div>
+                <div style={{ fontSize: 10, color: "rgba(255,255,255,0.28)" }}>
+                  {c.device}
+                </div>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </Card>
+  );
+}
+
+// ─── Storage card ───────────────────────────────────────────────────────────
+
+function StorageCard({ storage, delay }: { storage: StorageInfo; delay: number }) {
+  const pct = Math.min(100, Math.round((storage.usedBytes / storage.totalBytes) * 100));
+  const freeGB = Math.round((storage.totalBytes - storage.usedBytes) / 1024 ** 3);
+
+  return (
+    <Card delay={delay} flex={1.1} style={{ display: "flex", alignItems: "center", gap: 18 }}>
+      <StorageOrb storage={storage} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <CardLabel>Хранилище</CardLabel>
+        <div style={{ fontSize: 22, fontWeight: 300, color: "#fff", letterSpacing: "-0.5px", lineHeight: 1, marginBottom: 4 }}>
+          {pct}%
+        </div>
+        <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)" }}>
+          свободно {freeGB} ГБ
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+// ─── Load card ──────────────────────────────────────────────────────────────
+
+function LoadCard({ load, delay }: { load: LoadInfo; delay: number }) {
+  return (
+    <Card delay={delay}>
+      <CardLabel>Нагрузка</CardLabel>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
         <div>
-          <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 6 }}>
-            {label}
+          <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+            <span style={{ fontSize: 24, fontWeight: 300, color: "#fff", letterSpacing: "-0.5px", lineHeight: 1 }}>
+              {load.cpuPercent}%
+            </span>
+            <span style={{ fontSize: 10, color: "rgba(255,255,255,0.3)" }}>CPU</span>
           </div>
-          <div style={{ fontSize: 24, fontWeight: 300, color: "#fff", letterSpacing: "-0.5px", lineHeight: 1 }}>
-            {value}
-          </div>
-          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", marginTop: 4 }}>
-            {sub}
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", marginTop: 6 }}>
+            RAM {load.memPercent}%
           </div>
         </div>
-        <Sparkline values={sparkData} color={color} />
+        <Sparkline values={load.history} color="rgba(180,120,255,0.8)" />
       </div>
-    </motion.div>
+
+      {/* мини бары CPU / RAM */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {[
+          { label: "CPU", pct: load.cpuPercent, color: "rgba(180,120,255,0.75)" },
+          { label: "RAM", pct: load.memPercent, color: "rgba(255,182,210,0.75)" },
+        ].map((row) => (
+          <div key={row.label} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 9, color: "rgba(255,255,255,0.25)", width: 26 }}>{row.label}</span>
+            <div style={{ flex: 1, height: 4, borderRadius: 3, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
+              <motion.div
+                initial={{ width: 0 }}
+                animate={{ width: `${row.pct}%` }}
+                transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
+                style={{ height: "100%", background: row.color, borderRadius: 3 }}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 
@@ -148,16 +264,6 @@ function NavItem({
   );
 }
 
-// ─── Activity feed ────────────────────────────────────────────────────────────
-
-const ACTIVITY = [
-  { time: "02:14", msg: "Сессия открыта", type: "info" },
-  { time: "02:12", msg: "Конфигурация загружена", type: "info" },
-  { time: "01:58", msg: "Синхронизация завершена", type: "ok" },
-  { time: "01:30", msg: "Подключение установлено", type: "ok" },
-  { time: "00:45", msg: "Инициализация модулей", type: "info" },
-];
-
 // ─── MainPage ─────────────────────────────────────────────────────────────────
 
 export default function MainPage() {
@@ -166,10 +272,32 @@ export default function MainPage() {
   const [activeNav, setActiveNav] = useState("dashboard");
   const [time, setTime] = useState(new Date());
 
+  const [status, setStatus] = useState<ServerStatus | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [statusLoading, setStatusLoading] = useState(true);
+
   useEffect(() => {
     const id = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(id);
   }, []);
+
+  const loadStatus = useCallback(async () => {
+    try {
+      const data = await fetchServerStatus();
+      setStatus(data);
+      setStatusError(null);
+    } catch (err) {
+      setStatusError(err instanceof Error ? err.message : "Не удалось получить статус сервера");
+    } finally {
+      setStatusLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadStatus();
+    const id = setInterval(loadStatus, 2000); // обновляем каждые 15 сек
+    return () => clearInterval(id);
+  }, [loadStatus]);
 
   const handleLogout = async () => {
     if (session?.token) {
@@ -269,7 +397,7 @@ export default function MainPage() {
           transition={{ delay: 0.15, duration: 0.35 }}
           style={{
             display: "flex", alignItems: "center", justifyContent: "space-between",
-            padding: "14px 24px",
+            padding: "16px 24px",
             borderBottom: "1px solid rgba(255,255,255,0.05)",
           }}
         >
@@ -294,29 +422,48 @@ export default function MainPage() {
         {/* Scrollable body */}
         <div style={{ flex: 1, overflowY: "auto", padding: "20px 24px", display: "flex", flexDirection: "column", gap: 18 }}>
 
+          {/* Ошибка получения статуса */}
+          {statusError && (
+            <motion.div
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "space-between",
+                background: "rgba(255,100,100,0.08)",
+                border: "1px solid rgba(255,100,100,0.2)",
+                borderRadius: 12, padding: "10px 16px",
+                fontSize: 12, color: "rgba(255,140,140,0.9)",
+              }}
+            >
+              <span>Не удалось обновить состояние сервера: {statusError}</span>
+              <button
+                onClick={loadStatus}
+                style={{
+                  background: "transparent", border: "1px solid rgba(255,140,140,0.3)",
+                  borderRadius: 8, padding: "4px 10px", fontSize: 11,
+                  color: "rgba(255,140,140,0.9)", cursor: "pointer",
+                }}
+              >
+                Повторить
+              </button>
+            </motion.div>
+          )}
+
           {/* Stats row */}
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-            <StatCard
-              label="Сессии" value="1"
-              sub="активно сейчас"
-              sparkData={[1, 2, 1, 3, 2, 1, 2, 1]}
-              color="rgba(255,182,210,0.8)"
-              delay={0.18}
-            />
-            <StatCard
-              label="Аптайм" value="99.9%"
-              sub="за последние 7 дней"
-              sparkData={[98, 99, 100, 99, 100, 99, 100, 99.9]}
-              color="rgba(62,207,110,0.8)"
-              delay={0.22}
-            />
-            <StatCard
-              label="Запросы" value="42"
-              sub="с момента запуска"
-              sparkData={[3, 7, 5, 10, 8, 4, 5, 7]}
-              color="rgba(180,120,255,0.8)"
-              delay={0.26}
-            />
+            {statusLoading && !status ? (
+              <>
+                <CardSkeleton delay={0.18} />
+                <CardSkeleton delay={0.22} />
+                <CardSkeleton delay={0.26} />
+              </>
+            ) : status ? (
+              <>
+                <ClientsCard clients={status.clients} delay={0.18} />
+                <StorageCard storage={status.storage} delay={0.22} />
+                <LoadCard load={status.load} delay={0.26} />
+              </>
+            ) : null}
           </div>
 
           {/* Status + Activity row */}
@@ -338,31 +485,33 @@ export default function MainPage() {
                 Состояние
               </div>
 
-              {[
-                { label: "Loza Server", ok: true },
-                { label: "Tauri Backend", ok: true },
-                { label: "Session Store", ok: true },
-              ].map((item) => (
-                <div key={item.label} style={{
-                  display: "flex", alignItems: "center", justifyContent: "space-between",
-                  padding: "8px 0",
-                  borderBottom: "1px solid rgba(255,255,255,0.04)",
-                }}>
-                  <span style={{ fontSize: 12, color: "rgba(255,255,255,0.55)" }}>{item.label}</span>
-                  <span style={{
-                    display: "flex", alignItems: "center", gap: 5,
-                    fontSize: 10, color: item.ok ? "rgba(62,207,110,0.8)" : "rgba(255,100,100,0.8)",
-                  }}>
-                    <span style={{
-                      width: 5, height: 5, borderRadius: "50%",
-                      background: item.ok ? "#3ecf6e" : "#ff6464",
-                      boxShadow: item.ok ? "0 0 6px #3ecf6e88" : "none",
-                      display: "inline-block",
-                    }} />
-                    {item.ok ? "Online" : "Offline"}
-                  </span>
+              {statusLoading && !status ? (
+                <div style={{ fontSize: 11, color: "rgba(255,255,255,0.25)", padding: "8px 0" }}>
+                  Загрузка…
                 </div>
-              ))}
+              ) : (
+                (status?.services ?? []).map((item) => (
+                  <div key={item.id} style={{
+                    display: "flex", alignItems: "center", justifyContent: "space-between",
+                    padding: "8px 0",
+                    borderBottom: "1px solid rgba(255,255,255,0.04)",
+                  }}>
+                    <span style={{ fontSize: 12, color: "rgba(255,255,255,0.55)" }}>{item.label}</span>
+                    <span style={{
+                      display: "flex", alignItems: "center", gap: 5,
+                      fontSize: 10, color: item.ok ? "rgba(62,207,110,0.8)" : "rgba(255,100,100,0.8)",
+                    }}>
+                      <span style={{
+                        width: 5, height: 5, borderRadius: "50%",
+                        background: item.ok ? "#3ecf6e" : "#ff6464",
+                        boxShadow: item.ok ? "0 0 6px #3ecf6e88" : "none",
+                        display: "inline-block",
+                      }} />
+                      {item.ok ? "Online" : "Offline"}
+                    </span>
+                  </div>
+                ))
+              )}
             </motion.div>
 
             {/* Activity feed */}
@@ -381,23 +530,33 @@ export default function MainPage() {
                 Последние события
               </div>
 
-              {ACTIVITY.map((a, i) => (
-                <div key={i} style={{
-                  display: "flex", alignItems: "center", gap: 10,
-                  padding: "7px 0",
-                  borderBottom: i < ACTIVITY.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none",
-                }}>
-                  <span style={{
-                    width: 5, height: 5, borderRadius: "50%", flexShrink: 0,
-                    background: a.type === "ok" ? "#3ecf6e" : "rgba(255,182,210,0.6)",
-                    boxShadow: a.type === "ok" ? "0 0 5px #3ecf6e66" : "none",
-                  }} />
-                  <span style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", flex: 1 }}>{a.msg}</span>
-                  <span style={{ fontSize: 10, color: "rgba(255,255,255,0.18)", fontVariantNumeric: "tabular-nums" }}>
-                    {a.time}
-                  </span>
+              {statusLoading && !status ? (
+                <div style={{ fontSize: 11, color: "rgba(255,255,255,0.25)", padding: "8px 0" }}>
+                  Загрузка…
                 </div>
-              ))}
+              ) : (status?.activity ?? []).length === 0 ? (
+                <div style={{ fontSize: 11, color: "rgba(255,255,255,0.25)", padding: "8px 0" }}>
+                  Пока нет событий
+                </div>
+              ) : (
+                (status?.activity ?? []).map((a, i, arr) => (
+                  <div key={i} style={{
+                    display: "flex", alignItems: "center", gap: 10,
+                    padding: "7px 0",
+                    borderBottom: i < arr.length - 1 ? "1px solid rgba(255,255,255,0.04)" : "none",
+                  }}>
+                    <span style={{
+                      width: 5, height: 5, borderRadius: "50%", flexShrink: 0,
+                      background: a.type === "ok" ? "#3ecf6e" : a.type === "error" ? "#ff6464" : a.type === "warn" ? "#ffbd2e" : "rgba(255,182,210,0.6)",
+                      boxShadow: a.type === "ok" ? "0 0 5px #3ecf6e66" : "none",
+                    }} />
+                    <span style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", flex: 1 }}>{a.msg}</span>
+                    <span style={{ fontSize: 10, color: "rgba(255,255,255,0.18)", fontVariantNumeric: "tabular-nums" }}>
+                      {a.time}
+                    </span>
+                  </div>
+                ))
+              )}
             </motion.div>
           </div>
 
@@ -426,7 +585,11 @@ export default function MainPage() {
                 Привет, {session?.display_name || session?.username} 👋
               </div>
               <div style={{ fontSize: 11, color: "rgba(255,255,255,0.28)", marginTop: 3 }}>
-                Добро пожаловать в Loza. Всё работает штатно.
+                {statusError
+                  ? "Добро пожаловать в Loza. Не удалось связаться с сервером."
+                  : status && status.services.every((s) => s.ok)
+                  ? "Добро пожаловать в Loza. Всё работает штатно."
+                  : "Добро пожаловать в Loza. Проверьте состояние сервисов ниже."}
               </div>
             </div>
           </motion.div>
