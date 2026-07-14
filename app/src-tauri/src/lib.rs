@@ -156,7 +156,12 @@ pub fn run() {
             client: reqwest::Client::new(),
         })
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![login, get_me, logout, health_check])
+        .invoke_handler(tauri::generate_handler![
+            login,
+            get_me,
+            logout,
+            health_check
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
