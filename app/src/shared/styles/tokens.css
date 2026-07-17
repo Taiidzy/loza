@@ -1,0 +1,45 @@
+/**
+ * Дизайн-токены приложения.
+ *
+ * Раньше цвета и радиусы были продублированы десятки раз прямо в inline-стилях
+ * компонентов (например, "rgba(255, 182, 210, 1)" встречался в 15+ местах).
+ * Теперь это CSS-переменные — единая точка изменения темы.
+ *
+ * Подключается один раз в src/index.css.
+ */
+:root {
+  /* ── Акцентные цвета (розово-фиолетовый градиент бренда) ── */
+  --color-accent: rgba(255, 182, 210, 1);
+  --color-accent-dim: rgba(255, 182, 210, 0.45);
+  --color-accent-border: rgba(255, 182, 210, 0.5);
+  --color-accent-glow: rgba(255, 182, 210, 0.12);
+  --color-accent-soft: rgba(255, 182, 210, 0.12);
+  --color-violet: rgba(180, 120, 255, 0.8);
+
+  /* ── Статусы ── */
+  --color-success: #3ecf6e;
+  --color-success-glow: rgba(62, 207, 110, 0.4);
+  --color-error: #ff6464;
+  --color-error-soft: rgba(255, 100, 100, 0.4);
+  --color-warning: #ffbd2e;
+
+  /* ── Текст на тёмном фоне (используем как rgba(255,255,255,alpha)) ── */
+  --color-text-primary: rgba(255, 255, 255, 0.9);
+  --color-text-secondary: rgba(255, 255, 255, 0.55);
+  --color-text-muted: rgba(255, 255, 255, 0.3);
+  --color-text-faint: rgba(255, 255, 255, 0.18);
+
+  /* ── Поверхности ── */
+  --color-surface: rgba(255, 255, 255, 0.04);
+  --color-surface-border: rgba(255, 255, 255, 0.08);
+  --color-surface-hover: rgba(255, 255, 255, 0.06);
+
+  /* ── Радиусы ── */
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 16px;
+  --radius-xl: 26px;
+
+  /* ── Тайминги анимаций (используются в TSX через motion, здесь для справки) ── */
+  --ease-standard: cubic-bezier(0.22, 1, 0.36, 1);
+}

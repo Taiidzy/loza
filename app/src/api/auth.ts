@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
+/** Ответ Rust-команды `login`. */
 export interface LoginResponse {
   token: string;
   username: string;
@@ -10,6 +11,7 @@ export interface LoginResponse {
   expires_at: number;
 }
 
+/** Ответ Rust-команды `get_me` — данные о текущем пользователе по токену. */
 export interface UserInfo {
   username: string;
   display_name: string;
@@ -17,6 +19,12 @@ export interface UserInfo {
   session_created_at: number;
 }
 
+/**
+ * Состояние сессии, которое хранится в sessionStorage.
+ * Поля совпадают с LoginResponse, т.к. сохраняем то, что вернул логин;
+ * тип выделен отдельно, чтобы явно отражать роль данных как "хранимая сессия",
+ * а не "сырой ответ сервера".
+ */
 export interface AuthState {
   token: string;
   username: string;
