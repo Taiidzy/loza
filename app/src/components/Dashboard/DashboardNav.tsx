@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import styles from "./DashboardPage.module.css";
+import styles from "../../pages/dashboard/DashboardPage.module.css";
 
 /** Разделы дашборда, доступные через сайдбар/таббар. */
 export type DashboardSection = "dashboard" | "activity" | "loza" | "settings";

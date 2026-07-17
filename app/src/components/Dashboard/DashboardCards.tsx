@@ -1,9 +1,9 @@
 import type { ReactNode } from "react";
 import { motion } from "motion/react";
 import type { ClientInfo, LoadInfo, ServerStatus, StorageInfo } from "../../api/serverStatus";
-import StorageOrb from "../../components/StorageOrb/StorageOrb";
+import StorageOrb from "../StorageOrb/StorageOrb";
 import Sparkline from "../../shared/ui/Sparkline";
-import styles from "./DashboardPage.module.css";
+import styles from "../../pages/dashboard/DashboardPage.module.css";
 
 // ─── Базовая карточка ───────────────────────────────────────────────────────
 

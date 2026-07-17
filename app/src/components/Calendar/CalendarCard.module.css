@@ -1,0 +1,76 @@
+/* CalendarCard.module.css */
+
+.eventLayer {
+  position: absolute;
+  top: 24px; /* Отступ от номера дня */
+  bottom: 4px;
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+  z-index: 5;
+}
+
+/* Линии многодневных событий */
+.eventLineWrapper {
+  position: absolute;
+  height: 4px;
+  width: 100%;
+  display: flex;
+  align-items: center;
+}
+
+.eventLine {
+  height: 4px;
+  opacity: 0.8;
+  transition: opacity 0.2s;
+}
+
+/* Смещения для перекрытия gap (gap-1.5 = 6px) */
+.lineStart {
+  margin-left: 50%;
+  width: calc(50% + 6px);
+  border-top-left-radius: 4px;
+  border-bottom-left-radius: 4px;
+}
+
+.lineEnd {
+  margin-right: 50%;
+  width: calc(50% + 6px);
+  transform: translateX(-6px);
+  border-top-right-radius: 4px;
+  border-bottom-right-radius: 4px;
+}
+
+.lineMiddle {
+  width: calc(100% + 12px);
+  transform: translateX(-6px);
+}
+
+.lineFull {
+  /* Если событие началось и закончилось в один день, но помечено как "Весь день" */
+  margin: 0 auto;
+  width: calc(100% - 8px);
+  border-radius: 4px;
+}
+
+/* Точки однодневных/часовых событий */
+.dotsContainer {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 0 4px;
+}
+
+.eventDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  opacity: 0.9;
+}

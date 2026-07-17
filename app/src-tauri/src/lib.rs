@@ -3,7 +3,7 @@ use tauri::Manager;
 use window_vibrancy::{apply_mica, apply_vibrancy, NSVisualEffectMaterial};
 
 // ─── Server base URL ──────────────────────────────────────────────────────────
-const SERVER_URL: &str = "http://192.168.50.12:4242";
+const SERVER_URL: &str = "http://localhost:4242";
 
 // ─── Shared HTTP client state ─────────────────────────────────────────────────
 
