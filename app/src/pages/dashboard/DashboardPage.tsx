@@ -5,7 +5,7 @@ import { authLogout, loadSession } from "../../api/auth";
 import { fetchServerStatus, type ServerStatus } from "../../api/serverStatus";
 import { useIsMobile } from "../../shared/hooks/useIsMobile";
 import { ActivityIcon, GridIcon, LeafIcon, LogoutIcon, SettingsIcon } from "../../shared/icons/Icons";
-import { CardSkeleton, ClientsCard, LoadCard, StorageCard } from "./DashboardCards";
+import { CardSkeleton, ClientsCard, LoadCard, StorageCard, StatusService } from "./DashboardCards";
 import { NavItem, TabItem, type DashboardSection } from "./DashboardNav";
 import styles from "./DashboardPage.module.css";
 
@@ -218,34 +218,13 @@ function DashboardOverview({
             <ClientsCard clients={status.clients} delay={0.18} />
             <StorageCard storage={status.storage} delay={0.22} />
             <LoadCard load={status.load} delay={0.26} />
+            <StatusService isFirstLoad={isFirstLoad} status={status} />
           </>
         ) : null}
       </div>
 
       {/* Статус сервисов + лента активности */}
       <div className={`${styles.panelsRow} ${isMobile ? styles.mobile : ""}`}>
-        <motion.div
-          className={`${styles.panel} ${styles.statusPanel} ${isMobile ? styles.mobile : ""}`}
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3, duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
-        >
-          <div className={styles.panelTitle}>Состояние</div>
-
-          {isFirstLoad ? (
-            <div className={styles.panelLoading}>Загрузка…</div>
-          ) : (
-            (status?.services ?? []).map((service) => (
-              <div key={service.id} className={styles.serviceRow}>
-                <span className={styles.serviceLabel}>{service.label}</span>
-                <span className={`${styles.serviceStatus} ${service.ok ? styles.online : styles.offline}`}>
-                  <span className={`${styles.serviceStatusDot} ${service.ok ? styles.online : styles.offline}`} />
-                  {service.ok ? "Online" : "Offline"}
-                </span>
-              </div>
-            ))
-          )}
-        </motion.div>
 
         <motion.div
           className={`${styles.panel} ${styles.activityPanel} ${isMobile ? styles.mobile : ""}`}

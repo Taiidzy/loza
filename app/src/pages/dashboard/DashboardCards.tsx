@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { motion } from "motion/react";
-import type { ClientInfo, LoadInfo, StorageInfo } from "../../api/serverStatus";
+import type { ClientInfo, LoadInfo, ServerStatus, StorageInfo } from "../../api/serverStatus";
 import StorageOrb from "../../components/StorageOrb/StorageOrb";
 import Sparkline from "../../shared/ui/Sparkline";
 import styles from "./DashboardPage.module.css";
@@ -134,5 +134,32 @@ export function LoadCard({ load, delay }: { load: LoadInfo; delay: number }) {
         ))}
       </div>
     </Card>
+  );
+}
+
+export function StatusService({ isFirstLoad, status }: { isFirstLoad: boolean, status: ServerStatus }) {
+  return(
+    <motion.div
+      className={`${styles.panel} ${styles.statusPanel}`}
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.3, duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+    >
+      <div className={styles.panelTitle}>Состояние</div>
+
+      {isFirstLoad ? (
+        <div className={styles.panelLoading}>Загрузка…</div>
+      ) : (
+        (status?.services ?? []).map((service) => (
+          <div key={service.id} className={styles.serviceRow}>
+            <span className={styles.serviceLabel}>{service.label}</span>
+            <span className={`${styles.serviceStatus} ${service.ok ? styles.online : styles.offline}`}>
+              <span className={`${styles.serviceStatusDot} ${service.ok ? styles.online : styles.offline}`} />
+              {service.ok ? "Online" : "Offline"}
+            </span>
+          </div>
+        ))
+      )}
+    </motion.div>
   );
 }
