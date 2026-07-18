@@ -1,5 +1,12 @@
 /* CalendarCard.module.css */
 
+/* Дополнительный слой стекла + мягкая тень поверх .card из DashboardPage,
+   чтобы карточка календаря ощущалась немного "приподнятой" среди остальных,
+   как в модалках/AuthPage. Не переопределяет .card, только дополняет. */
+.calendarRoot {
+  box-shadow: 0 20px 50px -20px rgba(0, 0, 0, 0.5);
+}
+
 .eventLayer {
   position: absolute;
   top: 24px; /* Отступ от номера дня */
@@ -12,46 +19,50 @@
   z-index: 5;
 }
 
-/* Линии многодневных событий */
+/* Линии многодневных событий.
+   Ячейки дня — grid-элементы с gap: 6px (gap-1.5) между ними; box-sizing: border-box
+   глобальный, поэтому border кнопки не добавляет доп. пространства сверх gap.
+   Используем left/right вместо width+transform: сумма двух calc() на противоположных
+   сторонах позиционируется браузером точнее (без накопления субпиксельной ошибки
+   round(width) + round(translateX), из-за которой между ячейками был виден зазор).
+   Скругляются только настоящие внешние края (начало/конец события). */
 .eventLineWrapper {
   position: absolute;
   height: 4px;
   width: 100%;
-  display: flex;
-  align-items: center;
 }
 
 .eventLine {
+  position: absolute;
   height: 4px;
-  opacity: 0.8;
+  opacity: 0.85;
   transition: opacity 0.2s;
+  border-radius: 0;
 }
 
-/* Смещения для перекрытия gap (gap-1.5 = 6px) */
 .lineStart {
-  margin-left: 50%;
-  width: calc(50% + 6px);
+  left: 50%;
+  right: -6px;
   border-top-left-radius: 4px;
   border-bottom-left-radius: 4px;
 }
 
 .lineEnd {
-  margin-right: 50%;
-  width: calc(50% + 6px);
-  transform: translateX(-6px);
+  left: -6px;
+  right: 50%;
   border-top-right-radius: 4px;
   border-bottom-right-radius: 4px;
 }
 
 .lineMiddle {
-  width: calc(100% + 12px);
-  transform: translateX(-6px);
+  left: -6px;
+  right: -6px;
 }
 
 .lineFull {
   /* Если событие началось и закончилось в один день, но помечено как "Весь день" */
-  margin: 0 auto;
-  width: calc(100% - 8px);
+  left: 4px;
+  right: 4px;
   border-radius: 4px;
 }
 
@@ -73,4 +84,235 @@
   height: 5px;
   border-radius: 50%;
   opacity: 0.9;
+}
+
+/* Подсказка с названием события при наведении */
+.tooltip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20, 20, 28, 0.95);
+  border: 1px solid var(--color-surface-border);
+  color: var(--color-text-primary);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  pointer-events: none;
+  z-index: 20;
+  box-shadow: 0 8px 20px -6px rgba(0, 0, 0, 0.5);
+}
+
+.loadingOverlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(12, 12, 18, 0.35);
+  backdrop-filter: blur(2px);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  z-index: 30;
+  pointer-events: none;
+}
+
+/* Поверхность модалки CRUD — чуть больше "стекла", в тон AuthPage/DashboardPage */
+.modalSurface {
+  background: rgba(28, 28, 38, 0.95);
+  border: 1px solid var(--color-surface-border);
+  box-shadow: 0 24px 60px -16px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.02) inset;
+}
+
+/* ── Agenda-панель ("Ближайшие события") ── */
+
+.agendaList {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agendaEmpty {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  padding: 8px 2px;
+}
+
+.agendaItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 6px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.15s ease;
+}
+
+.agendaItem:hover {
+  background: var(--color-surface-hover);
+}
+
+.agendaDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.agendaText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agendaTitle {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agendaDate {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+/* ── Панель "События дня" (замена карточки "Статистика / Информация") ── */
+
+.dayPanelEmpty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  text-align: center;
+  padding: 0 12px;
+}
+
+.dayPanelCenter {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.createBigButton {
+  padding: 10px 18px;
+  border-radius: var(--radius-md);
+  background: var(--color-accent-soft);
+  border: 1px solid var(--color-accent-border);
+  color: var(--color-accent);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.15s ease;
+}
+
+.createBigButton:hover {
+  background: var(--color-accent);
+  color: #000;
+  transform: translateY(-1px);
+}
+
+.dayPanelScroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dayEventRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 8px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.dayEventRow:hover {
+  background: var(--color-surface-hover);
+}
+
+.dayEventRowSelected {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent-border);
+}
+
+.dayPanelActions {
+  display: flex;
+  gap: 6px;
+  padding-top: 10px;
+  margin-top: 6px;
+  border-top: 1px solid var(--color-surface-border);
+  flex-shrink: 0;
+}
+
+.dayActionButton {
+  flex: 1;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  border: 1px solid var(--color-surface-border);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.dayActionButton:hover:not(:disabled) {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.dayActionButton:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.dayActionButtonDanger {
+  flex: 1;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 100, 100, 0.08);
+  border: 1px solid rgba(255, 100, 100, 0.2);
+  color: var(--color-error);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.dayActionButtonDanger:hover:not(:disabled) {
+  background: rgba(255, 100, 100, 0.18);
+}
+
+.dayActionButtonDanger:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.formWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 2px;
 }
