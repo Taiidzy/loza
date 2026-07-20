@@ -2,13 +2,14 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { motion } from "motion/react";
 import { useNavigate } from "react-router-dom";
 import { authLogout, getCurrentUser, type UserInfo } from "../../api/auth";
-import { fetchServerStatus, subscribeServerStatus, type ServerStatus } from "../../api/serverStatus";
+import { fetchServerStatus, subscribeServerStatus } from "../../api/serverStatus";
 import { useIsMobile } from "../../shared/hooks/useIsMobile";
 import { ActivityIcon, GridIcon, LeafIcon, LogoutIcon, SettingsIcon } from "../../shared/icons/Icons";
 import { NavItem, TabItem, type DashboardSection } from "../../components/Dashboard/DashboardNav";
 import DashboardOverview from "./tabs/DashboardTab";
 import styles from "./DashboardPage.module.css";
 import Activity from "./tabs/ActivityTab";
+import { ServerStatus } from "../../types/serverStatus";
 
 /** Подписи и иконки для каждого раздела — общий источник для сайдбара и таббара. */
 const NAV_SECTIONS: { id: DashboardSection; label: string; icon: ReactNode }[] = [
