@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import dayjs, { type Dayjs } from 'dayjs';
-import * as calendarService from './calendarService';
-import type { CalendarEvent, CalendarEventDraft, ExpandedCalendarEvent } from './types';
+import * as calendarService from '../../api/calendarService';
+import { eventEnd, eventStart } from '../utils/calendarDateUtils';
+import type { CalendarEvent, CalendarEventDraft, ExpandedCalendarEvent } from '../../types/calendar';
 
 /**
  * Хук данных календаря: обёртка над calendarService (аналогично тому, как
@@ -66,25 +67,27 @@ export function useCalendarEvents(visibleRangeStart: Dayjs, visibleRangeEnd: Day
         return;
       }
 
-      let currStart = dayjs(evt.startDate);
-      let currEnd = dayjs(evt.endDate);
-      const duration = currEnd.diff(currStart, 'millisecond');
+      // Сдвигаем именно даты (не время) — время начала/конца остаётся тем же
+      // на каждом повторении, меняется только календарный день.
+      let currStart = dayjs(evt.startDate, 'YYYY-MM-DD');
+      const dayOffset = dayjs(evt.endDate, 'YYYY-MM-DD').diff(currStart, 'day');
 
       while (currStart.isBefore(windowEnd)) {
         if (currStart.isAfter(windowStart)) {
+          const occurrenceStartDate = currStart.format('YYYY-MM-DD');
+          const occurrenceEndDate = currStart.add(dayOffset, 'day').format('YYYY-MM-DD');
           expanded.push({
             ...evt,
             id: `${evt.id}-${currStart.valueOf()}`,
             sourceId: evt.id,
-            startDate: currStart.toISOString(),
-            endDate: currEnd.toISOString(),
+            startDate: occurrenceStartDate,
+            endDate: occurrenceEndDate,
           });
         }
         if (evt.recurrence === 'daily') currStart = currStart.add(1, 'day');
         else if (evt.recurrence === 'weekly') currStart = currStart.add(1, 'week');
         else if (evt.recurrence === 'monthly') currStart = currStart.add(1, 'month');
         else currStart = currStart.add(1, 'year');
-        currEnd = currStart.add(duration, 'millisecond');
       }
     });
 
@@ -97,13 +100,13 @@ export function useCalendarEvents(visibleRangeStart: Dayjs, visibleRangeEnd: Day
 
     const multiDay = expandedEvents
       .filter((e) => e.isMultiDay)
-      .sort((a, b) => dayjs(a.startDate).valueOf() - dayjs(b.startDate).valueOf());
+      .sort((a, b) => eventStart(a).valueOf() - eventStart(b).valueOf());
 
     const slots: Record<string, number> = {};
     const assignedRanges: { start: number; end: number; slot: number }[] = [];
     multiDay.forEach((evt) => {
-      const s = dayjs(evt.startDate).startOf('day').valueOf();
-      const e = dayjs(evt.endDate).endOf('day').valueOf();
+      const s = eventStart(evt).startOf('day').valueOf();
+      const e = eventEnd(evt).endOf('day').valueOf();
       let slot = 0;
       while (assignedRanges.some((r) => r.slot === slot && Math.max(s, r.start) <= Math.min(e, r.end))) {
         slot++;
@@ -113,8 +116,8 @@ export function useCalendarEvents(visibleRangeStart: Dayjs, visibleRangeEnd: Day
     });
 
     expandedEvents.forEach((evt) => {
-      const s = dayjs(evt.startDate).startOf('day');
-      const e = dayjs(evt.endDate).endOf('day');
+      const s = eventStart(evt).startOf('day');
+      const e = eventEnd(evt).endOf('day');
       let cursor = s;
       while (cursor.isBefore(e) || cursor.isSame(e, 'day')) {
         const key = cursor.format('YYYY-MM-DD');
@@ -138,8 +141,8 @@ export function useCalendarEvents(visibleRangeStart: Dayjs, visibleRangeEnd: Day
   const upcoming = useMemo(() => {
     const now = dayjs();
     return expandedEvents
-      .filter((e) => dayjs(e.endDate).isAfter(now))
-      .sort((a, b) => dayjs(a.startDate).valueOf() - dayjs(b.startDate).valueOf());
+      .filter((e) => eventEnd(e).isAfter(now))
+      .sort((a, b) => eventStart(a).valueOf() - eventStart(b).valueOf());
   }, [expandedEvents]);
 
   return {

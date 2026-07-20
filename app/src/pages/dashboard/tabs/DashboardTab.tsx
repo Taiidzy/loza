@@ -1,6 +1,6 @@
 import { motion } from "motion/react";
-import { type ServerStatus } from "../../../api/serverStatus";
-import { CardSkeleton, ClientsCard, LoadCard, StorageCard, StatusService } from "../../../components/Dashboard/DashboardCards";
+import { type ServerStatus } from "../../../types/serverStatus";
+import { CardSkeleton, ClientsCard, LoadCard, StorageCard } from "../../../components/Dashboard/DashboardCards";
 import styles from "../DashboardPage.module.css";
 
 // ─── Содержимое вкладки "Обзор" ─────────────────────────────────────────────
@@ -55,7 +55,6 @@ export default function DashboardOverview({
             <ClientsCard clients={status.clients} delay={0.18} />
             <StorageCard storage={status.storage} delay={0.22} />
             <LoadCard load={status.load} delay={0.26} />
-            <StatusService isFirstLoad={isFirstLoad} status={status} />
           </>
         ) : null}
       </div>

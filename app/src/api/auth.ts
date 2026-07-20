@@ -2,99 +2,48 @@ import { invoke } from "@tauri-apps/api/core";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-/** Ответ Rust-команды `login`. */
-export interface LoginResponse {
-  token: string;
-  username: string;
-  display_name: string;
-  role: string;
-  expires_at: number;
-}
-
-/** Ответ Rust-команды `get_me` — данные о текущем пользователе по токену. */
+/**
+ * Данные о текущем пользователе. Намеренно не содержит токен — токен живёт
+ * только в Tauri (Rust), React его никогда не видит и не хранит.
+ */
 export interface UserInfo {
   username: string;
   display_name: string;
   role: string;
-  session_created_at: number;
-}
-
-/**
- * Состояние сессии, которое хранится в sessionStorage.
- * Поля совпадают с LoginResponse, т.к. сохраняем то, что вернул логин;
- * тип выделен отдельно, чтобы явно отражать роль данных как "хранимая сессия",
- * а не "сырой ответ сервера".
- */
-export interface AuthState {
-  token: string;
-  username: string;
-  display_name: string;
-  role: string;
-  expires_at: number;
-}
-
-// ─── Session storage keys ─────────────────────────────────────────────────────
-
-const SESSION_KEY = "loza_session";
-
-// ─── Persistence helpers ──────────────────────────────────────────────────────
-
-export function saveSession(data: AuthState): void {
-  sessionStorage.setItem(SESSION_KEY, JSON.stringify(data));
-}
-
-export function loadSession(): AuthState | null {
-  try {
-    const raw = sessionStorage.getItem(SESSION_KEY);
-    if (!raw) return null;
-    const s: AuthState = JSON.parse(raw);
-    // Check expiry
-    if (Date.now() / 1000 > s.expires_at) {
-      clearSession();
-      return null;
-    }
-    return s;
-  } catch {
-    return null;
-  }
-}
-
-export function clearSession(): void {
-  sessionStorage.removeItem(SESSION_KEY);
 }
 
 // ─── Tauri command wrappers ───────────────────────────────────────────────────
+//
+// React ничего не знает о сервере, токенах или транспорте — вся эта логика
+// (HTTP-запросы к backend'у, хранение и продление JWT) реализована в Rust
+// (app/src-tauri/src/auth.rs, session_store.rs).
 
 /**
- * React -> Tauri Backend -> Rust Server -> response
- * Authenticates with the standalone Loza server via the Tauri proxy.
+ * Логинится через Tauri. При успехе сессия (включая токен) сохраняется
+ * в Rust-хранилище; сюда возвращается только безопасный UserInfo.
  */
-export async function authLogin(
-  username: string,
-  password: string
-): Promise<LoginResponse> {
-  // invoke() throws a string on error (from Rust's Err(String))
-  const result = await invoke<LoginResponse>("login", { username, password });
-  return result;
+export async function authLogin(username: string, password: string): Promise<UserInfo> {
+  return await invoke<UserInfo>("login", { username, password });
 }
 
 /**
- * Validate current session token against the server.
+ * Возвращает текущего залогиненного пользователя (если сессия есть и валидна)
+ * или null. Используется при старте приложения (ProtectedRoute) — не требует
+ * токена, Rust сам знает, что и как проверять.
  */
-export async function authGetMe(token: string): Promise<UserInfo> {
-  return await invoke<UserInfo>("get_me", { token });
+export async function getCurrentUser(): Promise<UserInfo | null> {
+  return await invoke<UserInfo | null>("get_current_user");
 }
 
 /**
- * Invalidate the session on the server and clear local storage.
+ * Отзывает сессию на сервере и очищает локальное (Rust) хранилище.
  */
-export async function authLogout(token: string): Promise<void> {
-  await invoke<void>("logout", { token });
-  clearSession();
+export async function authLogout(): Promise<void> {
+  await invoke<void>("logout");
 }
 
 /**
- * Check if the Loza server is reachable.
+ * Проверяет доступность Loza-сервера.
  */
 export async function checkServerHealth(): Promise<boolean> {
   try {

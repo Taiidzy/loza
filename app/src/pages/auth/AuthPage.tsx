@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useNavigate } from "react-router-dom";
-import { authLogin, saveSession } from "../../api/auth";
+import { authLogin } from "../../api/auth";
 import { useIsMobile } from "../../shared/hooks/useIsMobile";
 import { CheckIcon, EyeIcon } from "../../shared/icons/Icons";
 import ParticlesBackground from "./ParticlesBackground";
@@ -49,15 +49,9 @@ export default function AuthPage() {
     setErrorMsg("");
 
     try {
-      const resp = await authLogin(username.trim(), password);
-
-      saveSession({
-        token: resp.token,
-        username: resp.username,
-        display_name: resp.display_name,
-        role: resp.role,
-        expires_at: resp.expires_at,
-      });
+      // authLogin сохраняет сессию (включая токен) в Rust-хранилище сам;
+      // сюда возвращается только безопасный UserInfo, который здесь не нужен.
+      await authLogin(username.trim(), password);
 
       setLoginState("success");
       // Короткая вспышка "успеха" перед переходом на главный экран

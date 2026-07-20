@@ -1,9 +1,11 @@
 import dayjs from 'dayjs';
-import type { ExpandedCalendarEvent } from './types';
+import { eventTimeLabel } from '../../shared/utils/calendarDateUtils';
+import type { ExpandedCalendarEvent } from '../../types/calendar';
 import styles from './CalendarCard.module.css';
 
 interface AgendaPanelProps {
   events: ExpandedCalendarEvent[];
+  /** Клик по событию — открывает модалку с подробностями (см. ActivityTab). */
   onSelect?: (event: ExpandedCalendarEvent) => void;
   isLoading?: boolean;
   /** Максимум пунктов списка (по умолчанию 6, чтобы не переполнять узкую колонку). */
@@ -20,8 +22,9 @@ function formatDayLabel(date: dayjs.Dayjs): string {
 
 /**
  * Список ближайших событий. Используется в правой колонке экрана календаря
- * (ActivityTab), чтобы не дублировать разметку и логику форматирования дат
- * в самой странице.
+ * (ActivityTab). Клик по событию открывает модальное окно с подробностями
+ * (владелец состояния модалки — ActivityTab, этот компонент только сообщает
+ * о клике через onSelect).
  */
 export default function AgendaPanel({ events, onSelect, isLoading, limit = 6 }: AgendaPanelProps) {
   const items = events.slice(0, limit);
@@ -47,8 +50,9 @@ export default function AgendaPanel({ events, onSelect, isLoading, limit = 6 }: 
           <span className={styles.agendaText}>
             <span className={styles.agendaTitle}>{evt.title}</span>
             <span className={styles.agendaDate}>
-              {formatDayLabel(dayjs(evt.startDate))}
-              {evt.isMultiDay ? ` – ${formatDayLabel(dayjs(evt.endDate))}` : ''}
+              {formatDayLabel(dayjs(evt.startDate, 'YYYY-MM-DD'))}
+              {evt.isMultiDay ? ` – ${formatDayLabel(dayjs(evt.endDate, 'YYYY-MM-DD'))}` : ''}
+              {' · '}{eventTimeLabel(evt)}
             </span>
           </span>
         </button>

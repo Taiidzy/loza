@@ -4,11 +4,12 @@ import { motion, AnimatePresence } from 'motion/react';
 import 'dayjs/locale/ru';
 import styles from './CalendarCard.module.css';
 import dashboardStyles from '../../pages/dashboard/DashboardPage.module.css';
-import type { ExpandedCalendarEvent } from './types';
+import MonthYearPicker from './MonthYearPicker';
+import type { ExpandedCalendarEvent } from '../../types/calendar';
 
 dayjs.locale('ru');
 
-export type { CalendarEvent, Recurrence } from './types';
+export type { CalendarEvent, Recurrence } from '../../types/calendar';
 
 const calendarVariants = {
   initial: (direction: number) => ({ x: direction * 40, opacity: 0, filter: 'blur(4px)' }),
@@ -32,8 +33,14 @@ export interface CustomCalendarProps {
  * состояния CRUD/выбранной даты. Выбор дня, диапазон видимых дат и данные
  * событий приходят через пропсы от родителя (ActivityTab), который владеет
  * useCalendarEvents. ЛКМ по дню — выбор (сообщается наверх через onSelectDate),
- * управление событиями теперь происходит в соседней панели "События дня",
- * а не в модалке поверх календаря.
+ * управление событиями теперь происходит в соседней панели "События дня"
+ * через модальные окна (EventFormModal/EventDetailsModal), а не инлайн и не
+ * в модалке поверх самого календаря.
+ *
+ * Навигация: стрелки prev/next листают соседние месяцы (кнопки увеличены
+ * для удобства попадания), а клик по заголовку месяца/года открывает
+ * MonthYearPicker — сетку из 12 месяцев с переключением года, чтобы не
+ * приходилось пролистывать много месяцев подряд стрелками.
  */
 export const CustomCalendar = ({
   currentDate,
@@ -47,6 +54,7 @@ export const CustomCalendar = ({
 }: CustomCalendarProps) => {
   const [direction, setDirection] = useState(0);
   const [hoveredEvent, setHoveredEvent] = useState<ExpandedCalendarEvent | null>(null);
+  const [isPickerOpen, setIsPickerOpen] = useState(false);
 
   const startOfMonth = currentDate.startOf('month');
   const endOfMonth = currentDate.endOf('month');
@@ -62,19 +70,53 @@ export const CustomCalendar = ({
 
   const nextMonth = () => { setDirection(1); onMonthChange(currentDate.add(1, 'month')); };
   const prevMonth = () => { setDirection(-1); onMonthChange(currentDate.subtract(1, 'month')); };
+
+  const jumpTo = (date: Dayjs) => {
+    setDirection(date.isBefore(currentDate, 'month') ? -1 : 1);
+    onMonthChange(date);
+  };
+
   const weekDays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
   return (
     <div className={`${dashboardStyles.card} h-full w-full flex flex-col relative overflow-hidden backdrop-blur-xl ${styles.calendarRoot}`}>
       <div className="flex justify-between items-center mb-5 shrink-0">
-        <button onClick={prevMonth} className="p-1.5 rounded-[var(--radius-sm)] hover:bg-[var(--color-surface-hover)] text-[var(--color-text-secondary)] transition-colors cursor-pointer">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6"/></svg>
+        <button
+          onClick={prevMonth}
+          className={styles.navButton}
+          aria-label="Предыдущий месяц"
+        >
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6"/></svg>
         </button>
-        <h2 className="text-[var(--color-text-primary)] text-[15px] font-medium capitalize tracking-wide">
-          {currentDate.format('MMMM YYYY')}
-        </h2>
-        <button onClick={nextMonth} className="p-1.5 rounded-[var(--radius-sm)] hover:bg-[var(--color-surface-hover)] text-[var(--color-text-secondary)] transition-colors cursor-pointer">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6"/></svg>
+
+        <div className={styles.pickerAnchor}>
+          <button
+            type="button"
+            onClick={() => setIsPickerOpen((v) => !v)}
+            className={styles.monthTitleButton}
+          >
+            <h2 className="text-[var(--color-text-primary)] text-[15px] font-medium capitalize tracking-wide">
+              {currentDate.format('MMMM YYYY')}
+            </h2>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={styles.monthTitleChevron}>
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+
+          <MonthYearPicker
+            isOpen={isPickerOpen}
+            currentDate={currentDate}
+            onSelect={jumpTo}
+            onClose={() => setIsPickerOpen(false)}
+          />
+        </div>
+
+        <button
+          onClick={nextMonth}
+          className={styles.navButton}
+          aria-label="Следующий месяц"
+        >
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6"/></svg>
         </button>
       </div>
 
@@ -124,8 +166,9 @@ export const CustomCalendar = ({
                     {/* Линии многодневных событий */}
                     {multiDay.map(evt => {
                       const slot = eventSlots[evt.id] || 0;
-                      const isStart = dayjs(evt.startDate).isSame(dayItem, 'day');
-                      const isEnd = dayjs(evt.endDate).isSame(dayItem, 'day');
+                      // startDate/endDate — "YYYY-MM-DD" без времени, формат передаём явно.
+                      const isStart = dayjs(evt.startDate, 'YYYY-MM-DD').isSame(dayItem, 'day');
+                      const isEnd = dayjs(evt.endDate, 'YYYY-MM-DD').isSame(dayItem, 'day');
 
                       let lineClass = styles.lineMiddle;
                       if (isStart && isEnd) lineClass = styles.lineFull;

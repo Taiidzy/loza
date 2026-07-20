@@ -1,17 +1,14 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { motion } from "motion/react";
 import { useNavigate } from "react-router-dom";
-import { authLogout, loadSession } from "../../api/auth";
-import { fetchServerStatus, type ServerStatus } from "../../api/serverStatus";
+import { authLogout, getCurrentUser, type UserInfo } from "../../api/auth";
+import { fetchServerStatus, subscribeServerStatus, type ServerStatus } from "../../api/serverStatus";
 import { useIsMobile } from "../../shared/hooks/useIsMobile";
 import { ActivityIcon, GridIcon, LeafIcon, LogoutIcon, SettingsIcon } from "../../shared/icons/Icons";
 import { NavItem, TabItem, type DashboardSection } from "../../components/Dashboard/DashboardNav";
 import DashboardOverview from "./tabs/DashboardTab";
 import styles from "./DashboardPage.module.css";
 import Activity from "./tabs/ActivityTab";
-
-/** Как часто опрашивать сервер за свежим статусом. */
-const STATUS_POLL_INTERVAL_MS = 2000;
 
 /** Подписи и иконки для каждого раздела — общий источник для сайдбара и таббара. */
 const NAV_SECTIONS: { id: DashboardSection; label: string; icon: ReactNode }[] = [
@@ -23,8 +20,12 @@ const NAV_SECTIONS: { id: DashboardSection; label: string; icon: ReactNode }[] =
 
 export default function DashboardPage() {
   const navigate = useNavigate();
-  const session = loadSession();
   const isMobile = useIsMobile();
+
+  // ProtectedRoute уже гарантирует, что сессия есть на момент рендера этой
+  // страницы — здесь просто подтягиваем данные пользователя для шапки/сайдбара.
+  // Токен React не видит и не запрашивает — это забота Rust-слоя (см. api/auth.ts).
+  const [user, setUser] = useState<UserInfo | null>(null);
 
   const [activeSection, setActiveSection] = useState<DashboardSection>("dashboard");
   const [time, setTime] = useState(new Date());
@@ -39,6 +40,11 @@ export default function DashboardPage() {
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    getCurrentUser().then(setUser).catch(() => setUser(null));
+  }, []);
+
+  // Разовый снимок для первого рендера — до того как придёт первое событие подписки.
   const loadStatus = useCallback(async () => {
     try {
       const data = await fetchServerStatus();
@@ -51,24 +57,38 @@ export default function DashboardPage() {
     }
   }, []);
 
-  // Первичная загрузка статуса + периодический опрос сервера
+  // Первичный снимок + подписка на поток обновлений (Tauri-событие поверх
+  // WebSocket-соединения с сервером — React не опрашивает сервер сам).
   useEffect(() => {
     loadStatus();
-    const id = setInterval(loadStatus, STATUS_POLL_INTERVAL_MS);
-    return () => clearInterval(id);
+
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+
+    subscribeServerStatus((data) => {
+      setStatus(data);
+      setStatusError(null);
+      setStatusLoading(false);
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, [loadStatus]);
 
   const handleLogout = async () => {
-    if (session?.token) {
-      await authLogout(session.token);
-    }
+    await authLogout();
     navigate("/auth");
   };
 
   const timeStr = time.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   const dateStr = time.toLocaleDateString("ru-RU", { weekday: "long", day: "numeric", month: "long" });
 
-  const userDisplayName = session?.display_name || session?.username;
+  const userDisplayName = user?.display_name || user?.username;
 
   return (
     <div className={`${styles.page} ${isMobile ? styles.mobile : ""}`}>
@@ -84,7 +104,7 @@ export default function DashboardPage() {
             <div className={styles.userAvatar}>{(userDisplayName || "U")[0].toUpperCase()}</div>
             <div style={{ minWidth: 0 }}>
               <div className={styles.userName}>{userDisplayName}</div>
-              <div className={styles.userRole}>{session?.role}</div>
+              <div className={styles.userRole}>{user?.role}</div>
             </div>
           </div>
 
