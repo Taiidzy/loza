@@ -111,7 +111,10 @@ pub async fn login(
 ) -> Result<Json<LoginResponse>, (StatusCode, Json<ErrorResponse>)> {
     let username = req.username.trim().to_lowercase();
 
+    tracing::info!(username = %username, device = %req.device, "попытка входа");
+
     if username.is_empty() || req.password.is_empty() {
+        tracing::warn!("login отклонён: пустой логин или пароль");
         return Err(error("EMPTY_FIELDS", "Username and password are required"));
     }
 
@@ -124,10 +127,14 @@ pub async fn login(
 
     let user = match user {
         Some(u) => u,
-        None => return Err(error("INVALID_CREDENTIALS", "Invalid username or password")),
+        None => {
+            tracing::warn!(username = %username, "login отклонён: пользователь не найден");
+            return Err(error("INVALID_CREDENTIALS", "Invalid username or password"));
+        }
     };
 
     if user.password_hash != password_hash {
+        tracing::warn!(username = %username, "login отклонён: неверный пароль");
         return Err(error("INVALID_CREDENTIALS", "Invalid username or password"));
     }
 
@@ -145,6 +152,8 @@ pub async fn login(
     };
 
     state.sessions.write().unwrap().insert(token.clone(), session);
+
+    tracing::info!(username = %username, role = %user.role, "login успешен");
 
     Ok(Json(LoginResponse {
         token,
@@ -165,16 +174,22 @@ pub async fn me(
         .unwrap_or("");
 
     if token.is_empty() {
+        tracing::warn!("/auth/me: запрос без токена");
         return Err(error("NO_TOKEN", "Missing session token"));
     }
 
     let (_, session) = match touch_session(&state, token) {
         Some(s) => s,
-        None => return Err(error("INVALID_TOKEN", "Invalid or expired session")),
+        None => {
+            tracing::warn!("/auth/me: токен невалиден или истёк");
+            return Err(error("INVALID_TOKEN", "Invalid or expired session"));
+        }
     };
 
     let users = state.users.read().unwrap();
     let user = users.get(&session.username).cloned().unwrap();
+
+    tracing::debug!(username = %user.username, "/auth/me: ok");
 
     Ok(Json(UserInfo {
         username: user.username,
@@ -186,7 +201,8 @@ pub async fn me(
 
 pub async fn logout(State(state): State<AppState>, headers: axum::http::HeaderMap) -> StatusCode {
     if let Some(token) = headers.get("x-session-token").and_then(|v| v.to_str().ok()) {
-        state.sessions.write().unwrap().remove(token);
+        let removed = state.sessions.write().unwrap().remove(token).is_some();
+        tracing::info!(removed, "logout");
     }
     StatusCode::NO_CONTENT
 }

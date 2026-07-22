@@ -1,8 +1,15 @@
 use tauri::Manager;
-use window_vibrancy::{apply_mica, apply_vibrancy, NSVisualEffectMaterial};
+use window_vibrancy::NSVisualEffectMaterial;
+
+#[cfg(target_os = "macos")]
+use window_vibrancy::apply_vibrancy;
+
+#[cfg(target_os = "windows")]
+use window_vibrancy::apply_mica;
 
 mod auth;
 mod calendar;
+mod server_config;
 mod session_store;
 mod status;
 
@@ -57,6 +64,9 @@ pub fn run() {
             auth::get_current_user,
             auth::logout,
             auth::health_check,
+            server_config::get_server_url,
+            server_config::set_server_url,
+            server_config::clear_server_url,
             status::get_server_status,
             calendar::get_calendar_events,
             calendar::create_calendar_event,

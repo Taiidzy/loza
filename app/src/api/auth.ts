@@ -23,7 +23,17 @@ export interface UserInfo {
  * в Rust-хранилище; сюда возвращается только безопасный UserInfo.
  */
 export async function authLogin(username: string, password: string): Promise<UserInfo> {
-  return await invoke<UserInfo>("login", { username, password });
+  console.log("[auth] invoke(login) →", { username, password: "•".repeat(password.length) });
+  try {
+    const result = await invoke<UserInfo>("login", { username, password });
+    console.log("[auth] invoke(login) ← успех:", result);
+    return result;
+  } catch (err) {
+    // Rust-команды при ошибке возвращают строку (см. describe_error в auth.rs) —
+    // именно её и увидим здесь целиком, до любой локализации в AuthPage.
+    console.error("[auth] invoke(login) ← ошибка:", err);
+    throw err;
+  }
 }
 
 /**
@@ -43,12 +53,50 @@ export async function authLogout(): Promise<void> {
 }
 
 /**
- * Проверяет доступность Loza-сервера.
+ * Проверяет доступность Loza-сервера по конкретному адресу — используется
+ * на экране ввода адреса сервера, до того как адрес сохранён.
  */
-export async function checkServerHealth(): Promise<boolean> {
+export async function checkServerHealth(url: string): Promise<boolean> {
+  console.log("[auth] invoke(health_check) →", url);
   try {
-    return await invoke<boolean>("health_check");
-  } catch {
+    const ok = await invoke<boolean>("health_check", { url });
+    console.log("[auth] invoke(health_check) ← ", ok);
+    return ok;
+  } catch (err) {
+    console.error("[auth] invoke(health_check) ← ошибка:", err);
     return false;
   }
+}
+
+// ─── Адрес сервера ───────────────────────────────────────────────────────────
+//
+// Раньше адрес сервера был вкопан в Rust-константу (SERVER_URL = "http://localhost:4242").
+// Теперь он вводится один раз на первом экране (см. pages/server-setup/ServerSetupPage)
+// и хранится в Rust (тем же tauri-plugin-store, что и сессия) — React его не хранит
+// сам, только читает/пишет через invoke, как и с токеном.
+
+/**
+ * Текущий сохранённый адрес сервера, или null, если он ещё не настроен
+ * (первый запуск приложения).
+ */
+export async function getServerUrl(): Promise<string | null> {
+  return await invoke<string | null>("get_server_url");
+}
+
+/**
+ * Нормализует и сохраняет адрес сервера. Возвращает нормализованную форму
+ * (со схемой, без конечного слэша), чтобы отобразить её как есть.
+ */
+export async function setServerUrl(url: string): Promise<string> {
+  console.log("[auth] invoke(set_server_url) →", url);
+  const normalized = await invoke<string>("set_server_url", { url });
+  console.log("[auth] invoke(set_server_url) ← сохранено как:", normalized);
+  return normalized;
+}
+
+/**
+ * Сбрасывает сохранённый адрес — используется в "Сменить сервер" в настройках.
+ */
+export async function clearServerUrl(): Promise<void> {
+  await invoke<void>("clear_server_url");
 }

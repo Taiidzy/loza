@@ -2,11 +2,23 @@
 //  DashboardView.swift
 //  Loza
 //
-//  The scrollable dashboard body from MainPage.tsx (mobile layout):
-//  status error banner, stat cards row, status/activity row, and the
-//  greeting banner. Navigation chrome (header + tab bar) now lives in
-//  RootView / MainTabView using native Liquid Glass instead of the
-//  hand-built header + bottom nav — this view only owns the content.
+//  Port of DashboardTab.tsx (mobile layout): status error banner, stat
+//  cards row, activity panel, and the greeting banner. Navigation chrome
+//  (header + tab bar) lives in RootView / MainTabView using native Liquid
+//  Glass instead of the hand-built header + bottom nav — this view only
+//  owns the content.
+//
+//  Note: there is no "service status" card here, matching the real
+//  backend (backend/src/models/status.rs) — ServerStatus only carries
+//  clients/storage/load/activity, there's no separate services list.
+//  An earlier mocked version of this screen had invented one; dropped
+//  when wiring up real networking to stay faithful to the server.
+//
+//  Live updates now come from StatusSocket (WS /ws/status), same source
+//  and cadence as the desktop app's status::spawn_status_listener — one
+//  GET /status for the first paint (matches Tauri's get_server_status
+//  command, used before the WS stream has connected), then the socket
+//  takes over.
 //
 
 import SwiftUI
@@ -14,14 +26,19 @@ import Combine
 
 struct DashboardView: View {
     @EnvironmentObject private var session: SessionStore
+    @StateObject private var socket = StatusSocket()
 
-    @State private var status: ServerStatus?
-    @State private var statusError: String?
+    @State private var initialStatus: ServerStatus?
     @State private var statusLoading = true
     @State private var now = Date()
 
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-    private let pollTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
+
+    /// Prefers the live WS status once connected; falls back to the
+    /// one-shot GET /status snapshot until the socket delivers its first
+    /// tick (mirrors Tauri's get_server_status-then-WS handoff).
+    private var status: ServerStatus? { socket.status ?? initialStatus }
+    private var statusError: String? { socket.status == nil ? socket.connectionError : nil }
 
     var body: some View {
         NavigationStack {
@@ -33,10 +50,7 @@ struct DashboardView: View {
 
                     statsRow
 
-                    HStack(alignment: .top, spacing: 12) {
-                        serviceStatusCard
-                        activityCard
-                    }
+                    activityCard
 
                     greetingBanner
                 }
@@ -66,9 +80,12 @@ struct DashboardView: View {
                 }
             }
         }
-        .task { await loadStatus() }
+        .task {
+            await loadInitialStatus()
+            socket.start()
+        }
+        .onDisappear { socket.stop() }
         .onReceive(timer) { now = $0 }
-        .onReceive(pollTimer) { _ in Task { await loadStatus() } }
     }
 
     // ─── Pieces ─────────────────────────────────────────────────────────────
@@ -79,7 +96,7 @@ struct DashboardView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(Color(hex: 0xFF8C8C, alpha: 0.9))
             Spacer()
-            Button("Повторить") { Task { await loadStatus() } }
+            Button("Повторить") { retry() }
                 .font(.system(size: 11))
                 .foregroundStyle(Color(hex: 0xFF8C8C, alpha: 0.9))
                 .padding(.horizontal, 10)
@@ -112,45 +129,6 @@ struct DashboardView: View {
                 LoadCard(load: status.load, delay: 0.26)
             }
         }
-    }
-
-    private var serviceStatusCard: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            CardLabel(text: "Состояние")
-                .padding(.bottom, 14)
-
-            if statusLoading && status == nil {
-                Text("Загрузка…")
-                    .font(.system(size: 11))
-                    .foregroundStyle(LozaColor.textFaint)
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(status?.services ?? []) { item in
-                        HStack {
-                            Text(item.label)
-                                .font(.system(size: 12))
-                                .foregroundStyle(.white.opacity(0.55))
-                            Spacer()
-                            HStack(spacing: 5) {
-                                Circle()
-                                    .fill(item.ok ? LozaColor.accentGreen : LozaColor.accentRed)
-                                    .frame(width: 5, height: 5)
-                                Text(item.ok ? "Online" : "Offline")
-                                    .font(.system(size: 10))
-                            }
-                            .foregroundStyle(item.ok ? LozaColor.accentGreen.opacity(0.8) : LozaColor.accentRed.opacity(0.8))
-                        }
-                        .padding(.vertical, 8)
-                        .overlay(alignment: .bottom) {
-                            Rectangle().fill(Color.white.opacity(0.04)).frame(height: 1)
-                        }
-                    }
-                }
-            }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .lozaCard()
     }
 
     private var activityCard: some View {
@@ -229,22 +207,27 @@ struct DashboardView: View {
         if statusError != nil {
             return "Добро пожаловать в Loza. Не удалось связаться с сервером."
         }
-        if let status, status.services.allSatisfy(\.ok) {
-            return "Добро пожаловать в Loza. Всё работает штатно."
-        }
-        return "Добро пожаловать в Loza. Проверьте состояние сервисов ниже."
+        return "Добро пожаловать в Loza. Всё работает штатно."
     }
 
     // ─── Data ───────────────────────────────────────────────────────────────
 
-    private func loadStatus() async {
+    private func loadInitialStatus() async {
         do {
-            status = try await ServerStatusService.fetch()
-            statusError = nil
+            initialStatus = try await ServerStatusService.fetch()
         } catch {
-            statusError = error.localizedDescription
+            // Swallow — the WS connection (started right after this) will
+            // surface its own connectionError if the server is truly
+            // unreachable; no need to show two competing error banners
+            // for what's ultimately the same failure.
         }
         statusLoading = false
+    }
+
+    private func retry() {
+        Task { await loadInitialStatus() }
+        socket.stop()
+        socket.start()
     }
 
     private var timeStr: String {

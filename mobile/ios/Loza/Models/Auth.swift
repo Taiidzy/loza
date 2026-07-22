@@ -2,12 +2,11 @@
 //  Auth.swift
 //  Loza
 //
-//  Mirrors api/auth.ts + the Rust Tauri commands (login/get_me/logout).
-//  Session persistence uses Keychain-backed storage as the native
-//  equivalent of sessionStorage. AuthService.login() is currently mocked;
-//  swap its body for a real URLSession call to the same Loza server
-//  (http://192.168.50.12:4242) when networking comes online — the
-//  shapes below already match LoginResponse / UserInfo from lib.rs.
+//  Mirrors api/auth.ts + the Rust Tauri commands (login/get_me/logout),
+//  now backed by real networking through LozaAPIClient instead of a mock.
+//  Session (JWT + user info) persists in the Keychain via KeychainStore —
+//  the mobile equivalent of session_store.rs's tauri-plugin-store file,
+//  since there's no separate native process here to hide the token behind.
 //
 
 import Foundation
@@ -21,23 +20,11 @@ struct AuthState: Codable, Equatable {
     let expiresAt: TimeInterval
 }
 
-struct LoginResponse: Codable {
-    let token: String
-    let username: String
-    let displayName: String
-    let role: String
-    let expiresAt: TimeInterval
-}
-
-struct AuthErrorResponse: Codable {
-    let error: String
-    let code: String
-}
-
 enum AuthError: LocalizedError {
     case invalidCredentials
     case serverUnreachable
     case emptyFields
+    case noServerConfigured
     case other(String)
 
     var errorDescription: String? {
@@ -45,8 +32,31 @@ enum AuthError: LocalizedError {
         case .invalidCredentials: return "Неверный логин или пароль"
         case .serverUnreachable:  return "Сервер недоступен"
         case .emptyFields:        return "Заполните все поля"
+        case .noServerConfigured: return "Сначала укажите адрес сервера"
         case .other(let msg):     return msg
         }
+    }
+
+    /// Maps an APIError from the network layer to the equivalent local
+    /// case, keeping call sites (AuthView) simple.
+    static func from(_ error: Error) -> AuthError {
+        if let api = error as? APIError {
+            switch api {
+            case .noServerConfigured:
+                return .noServerConfigured
+            case .transport:
+                return .serverUnreachable
+            case .server(let code, _):
+                switch code {
+                case "INVALID_CREDENTIALS": return .invalidCredentials
+                case "EMPTY_FIELDS": return .emptyFields
+                default: return .other(api.errorDescription ?? "Ошибка сервера")
+                }
+            default:
+                return .other(api.errorDescription ?? "Ошибка сервера")
+            }
+        }
+        return .other(error.localizedDescription)
     }
 }
 
@@ -61,18 +71,16 @@ final class SessionStore: ObservableObject {
     private let key = "loza_session"
 
     private init() {
-        session = Self.load(key: key)
+        session = KeychainStore.getCodable(AuthState.self, for: key)
     }
 
     func save(_ state: AuthState) {
-        if let data = try? JSONEncoder().encode(state) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
+        KeychainStore.setCodable(state, for: key)
         session = state
     }
 
     func clear() {
-        UserDefaults.standard.removeObject(forKey: key)
+        KeychainStore.delete(key)
         session = nil
     }
 
@@ -83,50 +91,75 @@ final class SessionStore: ObservableObject {
             clear()
         }
     }
-
-    private static func load(key: String) -> AuthState? {
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let decoded = try? JSONDecoder().decode(AuthState.self, from: data)
-        else { return nil }
-        if Date().timeIntervalSince1970 > decoded.expiresAt {
-            UserDefaults.standard.removeObject(forKey: key)
-            return nil
-        }
-        return decoded
-    }
 }
 
 // ─── Auth service ────────────────────────────────────────────────────────────
 
 enum AuthService {
-    /// TODO(network): replace with a real POST to
-    /// "http://192.168.50.12:4242/auth/login" (same server the Tauri
-    /// backend proxies to), decoding LoginResponse and mapping server
-    /// error codes the same way lib.rs / AuthPage.tsx do.
-    static func login(username: String, password: String) async throws -> LoginResponse {
-        guard !username.trimmingCharacters(in: .whitespaces).isEmpty, !password.isEmpty else {
+    /// POST /auth/login against the configured server, mirrors auth.rs::login.
+    static func login(username: String, password: String) async throws -> ServerLoginResponse {
+        let trimmedUser = username.trimmingCharacters(in: .whitespaces)
+        guard !trimmedUser.isEmpty, !password.isEmpty else {
             throw AuthError.emptyFields
         }
+        guard let baseURL = await ServerConfig.shared.baseURL else {
+            throw AuthError.noServerConfigured
+        }
 
-        try await Task.sleep(nanoseconds: 600_000_000) // simulate round-trip
-
-        // Mock: accept anything non-trivial, matching current "no real backend" state.
-        return LoginResponse(
-            token: UUID().uuidString,
-            username: username,
-            displayName: username.prefix(1).uppercased() + username.dropFirst(),
-            role: "admin",
-            expiresAt: Date().addingTimeInterval(60 * 60 * 8).timeIntervalSince1970
-        )
+        do {
+            return try await LozaAPIClient.shared.login(baseURL: baseURL, username: trimmedUser, password: password)
+        } catch {
+            throw AuthError.from(error)
+        }
     }
 
     static func logout(token: String) async {
-        // TODO(network): POST to /auth/logout with x-session-token header.
-        try? await Task.sleep(nanoseconds: 150_000_000)
+        guard let baseURL = await ServerConfig.shared.baseURL else { return }
+        await LozaAPIClient.shared.logout(baseURL: baseURL, token: token)
     }
 
-    static func checkServerHealth() async -> Bool {
-        // TODO(network): GET /health
-        true
+    /// GET /auth/me — used to validate a stored session on launch, mirrors
+    /// auth.rs::get_current_user (minus the "return safe UserInfo" step,
+    /// since on mobile the session already lives in this process).
+    static func validateCurrentSession() async -> Bool {
+        guard let baseURL = await ServerConfig.shared.baseURL,
+              let token = await SessionStore.shared.session?.token else {
+            return false
+        }
+        do {
+            try await LozaAPIClient.shared.fetchMe(baseURL: baseURL, token: token)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    /// POST /auth/refresh — silently renews the token at launch, mirrors
+    /// auth.rs::refresh_session_silently.
+    static func refreshSilently() async {
+        guard let baseURL = await ServerConfig.shared.baseURL,
+              let session = await SessionStore.shared.session else {
+            return
+        }
+        do {
+            let resp = try await LozaAPIClient.shared.refresh(baseURL: baseURL, token: session.token)
+            await SessionStore.shared.save(AuthState(
+                token: resp.token,
+                username: resp.username,
+                displayName: resp.displayName,
+                role: resp.role,
+                expiresAt: TimeInterval(resp.expiresAt)
+            ))
+        } catch {
+            // Server unreachable or token truly invalid — leave the local
+            // session as-is on network errors (matches Rust's behavior of
+            // giving up quietly and trying again next launch); a hard
+            // rejection is surfaced the next time get_current_user-style
+            // validation runs.
+        }
+    }
+
+    static func checkServerHealth(baseURL: URL) async -> Bool {
+        await LozaAPIClient.shared.healthCheck(baseURL: baseURL)
     }
 }

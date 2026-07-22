@@ -2,19 +2,16 @@
 //  ServerStatus.swift
 //  Loza
 //
-//  Mirrors api/serverStatus.ts. `ServerStatusService.fetch()` currently
-//  returns a mock, exactly like the TS version — swap its body for a
-//  real network/Tauri-equivalent call later; the shape shouldn't need
-//  to change.
+//  Mirrors app/src/types/serverStatus.ts + backend/src/models/status.rs.
+//  View-facing types live here (SwiftUI-friendly: Color, Date, Identifiable);
+//  StatusMapper converts the wire DTOs (Services/StatusDTO.swift) into these.
+//
+//  Note: the real backend has no "services" concept — ServerStatus is only
+//  clients/storage/load/activity/updatedAt. There is no separate service
+//  health list to show, so the dashboard doesn't render one.
 //
 
 import SwiftUI
-
-struct ServiceState: Identifiable, Equatable {
-    let id: String
-    let label: String
-    let ok: Bool
-}
 
 enum ActivityType: String {
     case info, ok, warn, error
@@ -27,6 +24,15 @@ enum ActivityType: String {
         case .info:  return LozaColor.accentPink.opacity(0.6)
         }
     }
+
+    init(rawValue: String) {
+        switch rawValue {
+        case "ok": self = .ok
+        case "error": self = .error
+        case "warn": self = .warn
+        default: self = .info
+        }
+    }
 }
 
 struct ActivityEvent: Identifiable, Equatable {
@@ -34,6 +40,10 @@ struct ActivityEvent: Identifiable, Equatable {
     let time: String
     let msg: String
     let type: ActivityType
+
+    static func == (lhs: ActivityEvent, rhs: ActivityEvent) -> Bool {
+        lhs.time == rhs.time && lhs.msg == rhs.msg && lhs.type == rhs.type
+    }
 }
 
 struct ClientInfo: Identifiable, Equatable {
@@ -76,7 +86,6 @@ struct LoadInfo: Equatable {
 }
 
 struct ServerStatus: Equatable {
-    let services: [ServiceState]
     let clients: [ClientInfo]
     let storage: StorageInfo
     let load: LoadInfo
@@ -84,54 +93,57 @@ struct ServerStatus: Equatable {
     let updatedAt: Date
 }
 
-// ─── Mock service ───────────────────────────────────────────────────────────
+// ─── DTO -> view model mapping ──────────────────────────────────────────────
 
-enum ServerStatusService {
-    private static let GB: Int64 = 1024 * 1024 * 1024
-
-    /// TODO(backend): replace body with a real fetch, e.g.
-    ///   URLSession.shared.data(from: URL(string: "\(baseURL)/api/status")...)
-    /// The `ServerStatus` shape is designed not to change when you do.
-    static func fetch() async throws -> ServerStatus {
-        try await Task.sleep(nanoseconds: 250_000_000) // simulate latency
-        let now = Date()
-
-        return ServerStatus(
-            services: [
-                ServiceState(id: "loza-server", label: "Loza Server", ok: true),
-                ServiceState(id: "tauri-backend", label: "Tauri Backend", ok: true),
-                ServiceState(id: "session-store", label: "Session Store", ok: true),
-            ],
-            clients: [
-                ClientInfo(id: "c1", name: "MacBook Pro Ани", device: "macOS · Loza Desktop", active: true, lastSeen: now),
-                ClientInfo(id: "c2", name: "iPhone 15", device: "iOS · Loza Mobile", active: false, lastSeen: now.addingTimeInterval(-3 * 3600)),
-            ],
+enum StatusMapper {
+    static func map(_ dto: ServerStatusDTO) -> ServerStatus {
+        ServerStatus(
+            clients: dto.clients.map { c in
+                ClientInfo(
+                    id: c.id,
+                    name: c.name,
+                    device: c.device,
+                    active: c.active,
+                    lastSeen: ISO8601DateFormatter().date(from: c.lastSeen) ?? Date()
+                )
+            },
             storage: StorageInfo(
-                totalBytes: 512 * GB,
-                usedBytes: 214 * GB,
-                categories: [
-                    StorageCategory(id: "photos", label: "Фото", bytes: 92 * GB, color: LozaColor.accentPink),
-                    StorageCategory(id: "video", label: "Видео", bytes: 68 * GB, color: LozaColor.accentPurple),
-                    StorageCategory(id: "docs", label: "Документы", bytes: 24 * GB, color: LozaColor.accentBlue),
-                    StorageCategory(id: "backups", label: "Бэкапы", bytes: 20 * GB, color: LozaColor.accentGreen),
-                    StorageCategory(id: "other", label: "Прочее", bytes: 10 * GB, color: LozaColor.accentYellow),
-                ],
-                history7d: [38, 39, 40, 40, 41, 41.5, 41.8]
+                totalBytes: Int64(dto.storage.totalBytes),
+                usedBytes: Int64(dto.storage.usedBytes),
+                categories: dto.storage.categories.map { cat in
+                    StorageCategory(id: cat.id, label: cat.label, bytes: Int64(cat.bytes), color: Color(hexString: cat.color))
+                },
+                history7d: dto.storage.history7d
             ),
             load: LoadInfo(
-                cpuPercent: 42,
-                memPercent: 58,
-                history: [30, 45, 38, 55, 48, 40, 42, 50, 44, 42]
+                cpuPercent: Int(dto.load.cpuPercent.rounded()),
+                memPercent: Int(dto.load.memPercent.rounded()),
+                history: dto.load.history
             ),
-            activity: [
-                ActivityEvent(time: "02:14", msg: "Сессия открыта", type: .info),
-                ActivityEvent(time: "02:12", msg: "Конфигурация загружена", type: .info),
-                ActivityEvent(time: "01:58", msg: "Синхронизация завершена", type: .ok),
-                ActivityEvent(time: "01:30", msg: "Подключение установлено", type: .ok),
-                ActivityEvent(time: "00:45", msg: "Инициализация модулей", type: .info),
-            ],
-            updatedAt: now
+            activity: dto.activity.map { a in
+                ActivityEvent(time: a.time, msg: a.msg, type: ActivityType(rawValue: a.type))
+            },
+            updatedAt: ISO8601DateFormatter().date(from: dto.updatedAt) ?? Date()
         )
+    }
+}
+
+// ─── Networked status service ───────────────────────────────────────────────
+
+enum ServerStatusService {
+    /// GET /status, mirrors app/src/api/serverStatus.ts::fetchServerStatus.
+    /// The desktop app also has a WS push stream proxied through Tauri;
+    /// on mobile we simply poll (see DashboardView's pollTimer), which is
+    /// simpler and battery-friendlier for a foregrounded screen.
+    static func fetch() async throws -> ServerStatus {
+        guard let baseURL = await ServerConfig.shared.baseURL else {
+            throw AuthError.noServerConfigured
+        }
+        guard let token = await SessionStore.shared.session?.token else {
+            throw AuthError.invalidCredentials
+        }
+        let dto = try await LozaAPIClient.shared.fetchStatus(baseURL: baseURL, token: token)
+        return StatusMapper.map(dto)
     }
 }
 

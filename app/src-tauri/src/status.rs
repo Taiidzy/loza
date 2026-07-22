@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use tokio_tungstenite::tungstenite::Message;
 
-const WS_STATUS_URL: &str = "ws://localhost:4242/ws/status";
+use crate::server_config;
 
 /// Имя Tauri-события, на которое подписывается React (`listen("server-status", ...)`).
 pub const SERVER_STATUS_EVENT: &str = "server-status";
@@ -75,11 +75,14 @@ pub struct ServerStatus {
 /// рендера, до того как откроется/переподключится WS-соединение.
 #[tauri::command]
 pub async fn get_server_status(
+    app: AppHandle,
     state: tauri::State<'_, crate::LozaState>,
 ) -> Result<ServerStatus, String> {
+    let server_url = server_config::require_server_url(&app)?;
+
     let resp = state
         .client
-        .get("http://localhost:4242/status")
+        .get(format!("{}/status", server_url))
         .send()
         .await
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
@@ -93,22 +96,39 @@ pub async fn get_server_status(
 /// переподключается с задержкой. Каждое полученное сообщение эмитится
 /// в React как событие `server-status`.
 ///
-/// Запускается один раз при старте приложения (см. lib.rs::run -> setup).
+/// Запускается один раз при старте приложения (см. lib.rs::run -> setup),
+/// то есть возможно до того, как пользователь вообще настроил адрес сервера
+/// (первый запуск). В этом случае просто тихо ждёт и пробует снова —
+/// как только ServerSetupPage сохранит адрес через `set_server_url`,
+/// следующая попытка его подхватит без перезапуска приложения. Так же
+/// подхватывается и смена адреса через "Сменить сервер" в настройках.
 pub fn spawn_status_listener(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         loop {
-            if let Err(e) = run_status_stream(&app).await {
-                eprintln!("⚠️  WS /ws/status: {} — переподключение через 3с", e);
+            match server_config::load_server_url(&app) {
+                None => {
+                    // Сервер ещё не настроен — не спамим лог, просто ждём.
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+                Some(server_url) => {
+                    if let Err(e) = run_status_stream(&app, &server_url).await {
+                        eprintln!("⚠️  WS /ws/status: {} — переподключение через 3с", e);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                }
             }
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         }
     });
 }
 
-async fn run_status_stream(app: &AppHandle) -> Result<(), String> {
-    let (ws_stream, _) = tokio_tungstenite::connect_async(WS_STATUS_URL)
+async fn run_status_stream(app: &AppHandle, server_url: &str) -> Result<(), String> {
+    let ws_url = server_config::require_ws_url_from(server_url, "/ws/status")?;
+    let ws_url_for_error = ws_url.clone();
+
+    let (ws_stream, _) = tokio_tungstenite::connect_async(ws_url)
         .await
-        .map_err(|e| format!("CONNECT_FAILED: {}", e))?;
+        .map_err(|e| format!("CONNECT_FAILED: {}, url -- {}", e, ws_url_for_error))?;
 
     let (_write, mut read) = ws_stream.split();
 

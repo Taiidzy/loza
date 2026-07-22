@@ -9,6 +9,7 @@ import { NavItem, TabItem, type DashboardSection } from "../../components/Dashbo
 import DashboardOverview from "./tabs/DashboardTab";
 import styles from "./DashboardPage.module.css";
 import Activity from "./tabs/ActivityTab";
+import SettingsPanel from "./tabs/SettingsPanel";
 import { ServerStatus } from "../../types/serverStatus";
 
 /** Подписи и иконки для каждого раздела — общий источник для сайдбара и таббара. */
@@ -168,9 +169,7 @@ export default function DashboardPage() {
             <DashboardPlaceholder section={activeSection} />
           )}
 
-          {activeSection === "settings" && (
-            <DashboardPlaceholder section={activeSection} />
-          )}
+          {activeSection === "settings" && <SettingsPanel user={user} />}
         </div>
 
         {/* ── Таббар (мобильный) ── */}
@@ -200,10 +199,9 @@ export default function DashboardPage() {
 
 // ─── Заглушка для разделов без контента ─────────────────────────────────────
 
-const PLACEHOLDER_LABELS: Record<Exclude<DashboardSection, "dashboard">, string> = {
+const PLACEHOLDER_LABELS: Record<Exclude<DashboardSection, "dashboard" | "settings">, string> = {
   activity: "Раздел «Активность» в разработке",
   loza: "Раздел «Loza» в разработке",
-  settings: "Раздел «Настройки» в разработке",
 };
 
 /**
@@ -212,8 +210,6 @@ const PLACEHOLDER_LABELS: Record<Exclude<DashboardSection, "dashboard">, string>
  * но экран не менялся вообще — выглядело как баг. Явная заглушка честно
  * показывает пользователю, что раздел ещё не готов.
  */
-function DashboardPlaceholder({ section }: { section: DashboardSection }) {
-  if (section === "dashboard") return null;
-
+function DashboardPlaceholder({ section }: { section: Exclude<DashboardSection, "dashboard" | "settings"> }) {
   return <div className={styles.placeholderPanel}>{PLACEHOLDER_LABELS[section]}</div>;
 }

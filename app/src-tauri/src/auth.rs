@@ -8,10 +8,9 @@
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
+use crate::server_config;
 use crate::session_store::{self, StoredSession};
 use crate::LozaState;
-
-const SERVER_URL: &str = "http://localhost:4242";
 
 // ─── Типы ответа для React — без токена ────────────────────────────────────
 
@@ -76,7 +75,15 @@ pub async fn login(
     username: String,
     password: String,
 ) -> Result<UserInfo, String> {
+    let server_url = server_config::require_server_url(&app).map_err(|e| {
+        eprintln!("🔴 [login] адрес сервера не настроен: {}", e);
+        e
+    })?;
     let device = device_label();
+    let login_url = format!("{}/auth/login", server_url);
+
+    eprintln!("🔵 [login] POST {} (username={}, device={})", login_url, username, device);
+
     let body = serde_json::json!({
         "username": username,
         "password": password,
@@ -85,22 +92,46 @@ pub async fn login(
 
     let resp = state
         .client
-        .post(format!("{}/auth/login", SERVER_URL))
+        .post(&login_url)
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
+        .map_err(|e| {
+            eprintln!("🔴 [login] запрос не дошёл до сервера: {}", e);
+            format!("SERVER_UNREACHABLE: {}", e)
+        })?;
 
-    let ok = resp.status().is_success();
+    let status = resp.status();
+    eprintln!("🔵 [login] ответ сервера: HTTP {}", status);
+
+    let ok = status.is_success();
     if !ok {
-        let err = resp.json::<ServerErrorResponse>().await.ok();
-        return Err(describe_error(err, "UNKNOWN: Login failed"));
+        // Читаем тело как текст сначала, чтобы залогировать его целиком
+        // независимо от того, распарсится оно как ServerErrorResponse или нет —
+        // именно это тело раньше терялось за generic "Login failed".
+        let raw_body = resp.text().await.unwrap_or_default();
+        eprintln!("🔴 [login] тело ошибки от сервера: {}", raw_body);
+
+        let err = serde_json::from_str::<ServerErrorResponse>(&raw_body).ok();
+        if err.is_none() {
+            eprintln!(
+                "🔴 [login] тело ошибки не распарсилось как {{error, code}} — проверьте, что \
+                 /auth/login на сервере точно отвечает на этот URL (не 404 от неверного пути, \
+                 не HTML от прокси, не другой сервис на этом порту)"
+            );
+        }
+        return Err(describe_error(err, &format!("UNKNOWN: Login failed (HTTP {})", status)));
     }
 
-    let login_resp = resp
-        .json::<ServerLoginResponse>()
-        .await
-        .map_err(|e| format!("PARSE_ERROR: {}", e))?;
+    let raw_body = resp.text().await.map_err(|e| {
+        eprintln!("🔴 [login] не удалось прочитать тело успешного ответа: {}", e);
+        format!("PARSE_ERROR: {}", e)
+    })?;
+
+    let login_resp = serde_json::from_str::<ServerLoginResponse>(&raw_body).map_err(|e| {
+        eprintln!("🔴 [login] тело успешного ответа не распарсилось как LoginResponse: {} | тело: {}", e, raw_body);
+        format!("PARSE_ERROR: {}", e)
+    })?;
 
     let session = StoredSession {
         token: login_resp.token,
@@ -112,6 +143,8 @@ pub async fn login(
     };
 
     session_store::save_session(&app, &session)?;
+
+    eprintln!("🟢 [login] успех: username={}, role={}", session.username, session.role);
 
     Ok(UserInfo::from(&session))
 }
@@ -130,10 +163,13 @@ pub async fn get_current_user(
     let Some(session) = session_store::load_session(&app) else {
         return Ok(None);
     };
+    let Some(server_url) = server_config::load_server_url(&app) else {
+        return Ok(None);
+    };
 
     let resp = state
         .client
-        .get(format!("{}/auth/me", SERVER_URL))
+        .get(format!("{}/auth/me", server_url))
         .header("x-session-token", &session.token)
         .send()
         .await;
@@ -152,10 +188,12 @@ pub async fn get_current_user(
 /// Отзывает сессию на сервере и удаляет её из локального хранилища.
 #[tauri::command]
 pub async fn logout(app: AppHandle, state: tauri::State<'_, LozaState>) -> Result<(), String> {
-    if let Some(session) = session_store::load_session(&app) {
+    if let (Some(session), Some(server_url)) =
+        (session_store::load_session(&app), server_config::load_server_url(&app))
+    {
         let _ = state
             .client
-            .post(format!("{}/auth/logout", SERVER_URL))
+            .post(format!("{}/auth/logout", server_url))
             .header("x-session-token", &session.token)
             .send()
             .await;
@@ -164,9 +202,20 @@ pub async fn logout(app: AppHandle, state: tauri::State<'_, LozaState>) -> Resul
 }
 
 /// Health check — used on startup to verify the server is running.
+/// Принимает URL явно (не читает из стора сам), так как вызывается и до
+/// того, как адрес сохранён — на экране ввода адреса сервера, чтобы
+/// проверить его перед сохранением.
 #[tauri::command]
-pub async fn health_check(state: tauri::State<'_, LozaState>) -> Result<bool, String> {
-    let resp = state.client.get(format!("{}/health", SERVER_URL)).send().await;
+pub async fn health_check(state: tauri::State<'_, LozaState>, url: String) -> Result<bool, String> {
+    let health_url = format!("{}/health", url);
+    eprintln!("🔵 [health_check] GET {}", health_url);
+
+    let resp = state.client.get(&health_url).send().await;
+    match &resp {
+        Ok(r) => eprintln!("🔵 [health_check] ответ: HTTP {}", r.status()),
+        Err(e) => eprintln!("🔴 [health_check] запрос не дошёл: {}", e),
+    }
+
     Ok(resp.map(|r| r.status().is_success()).unwrap_or(false))
 }
 
@@ -178,9 +227,12 @@ pub async fn refresh_session_silently(app: &AppHandle, client: &reqwest::Client)
     let Some(session) = session_store::load_session(app) else {
         return;
     };
+    let Some(server_url) = server_config::load_server_url(app) else {
+        return;
+    };
 
     let resp = client
-        .post(format!("{}/auth/refresh", SERVER_URL))
+        .post(format!("{}/auth/refresh", server_url))
         .header("x-session-token", &session.token)
         .send()
         .await;

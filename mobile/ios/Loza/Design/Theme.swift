@@ -51,6 +51,19 @@ extension Color {
         let b = Double(hex & 0xFF) / 255.0
         self.init(.sRGB, red: r, green: g, blue: b, opacity: alpha)
     }
+
+    /// Parses a "#rrggbb" string as sent by the backend (StorageCategory.color,
+    /// CalendarEvent.color). Falls back to a neutral gray on malformed input
+    /// rather than crashing — server data shouldn't be able to take the UI down.
+    init(hexString: String) {
+        var s = hexString
+        if s.hasPrefix("#") { s.removeFirst() }
+        guard s.count == 6, let value = UInt32(s, radix: 16) else {
+            self = Color.gray
+            return
+        }
+        self.init(hex: value)
+    }
 }
 
 // Small helper so cards look identical to the web "Card" component:

@@ -44,11 +44,23 @@ fn collect_clients(state: &AppState) -> Vec<ClientInfo> {
 /// плюс разбивка по категориям через сканирование storage/<category>.
 fn collect_storage(state: &AppState) -> StorageInfo {
     let disks = Disks::new_with_refreshed_list();
-    let (total_bytes, used_bytes) = disks
-        .list()
-        .iter()
-        .map(|d| (d.total_space(), d.total_space() - d.available_space()))
-        .fold((0u64, 0u64), |acc, x| (acc.0 + x.0, acc.1 + x.1));
+
+    // 1. Читаем путь из окружения (.env), если его нет — берём дефолтный "./storage"
+    let root_dir = std::env::var("STORAGE_ROOT").unwrap_or_else(|_| "./storage".to_string());
+    
+    // 2. Преобразуем в абсолютный путь
+    let storage_path = std::fs::canonicalize(&root_dir)
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(&root_dir));
+
+    // 3. Ищем нужный диск по префиксу
+    let target_disk = disks.list().iter()
+        .filter(|d| storage_path.starts_with(d.mount_point()))
+        .max_by_key(|d| d.mount_point().as_os_str().len());
+
+    let (total_bytes, used_bytes) = match target_disk {
+        Some(disk) => (disk.total_space(), disk.total_space() - disk.available_space()),
+        None => (0, 0),
+    };
 
     let categories = storage_fs::scan_categories();
 
@@ -57,13 +69,12 @@ fn collect_storage(state: &AppState) -> StorageInfo {
     } else {
         0.0
     };
+    
     state.maybe_push_storage_sample(used_percent, now_secs());
 
     let history7d = {
         let hist = state.storage_history.read().unwrap();
         let mut v = hist.clone();
-        // Пока не накопилось 7 замеров (сервер только что запущен), дополняем
-        // текущим значением слева — чтобы sparkline на фронте не ловил пустой массив.
         while v.len() < STORAGE_HISTORY_DAYS {
             v.insert(0, used_percent);
         }

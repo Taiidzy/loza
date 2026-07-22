@@ -6,7 +6,9 @@
 //  on Tauri). The glass login card now uses the real Liquid Glass
 //  material via .glassEffect instead of a hand-rolled blur, but the
 //  copy, field layout, states (idle/loading/success/error) and error
-//  message mapping are all preserved 1:1.
+//  message mapping are all preserved 1:1. Second step of the mobile
+//  auth flow (after ServerSetupView) — POSTs to /auth/login on the
+//  server configured there via AuthService/LozaAPIClient.
 //
 
 import SwiftUI
@@ -17,6 +19,7 @@ enum LoginState {
 
 struct AuthView: View {
     @EnvironmentObject private var session: SessionStore
+    @EnvironmentObject private var serverConfig: ServerConfig
     var onSuccess: () -> Void
 
     @State private var username = ""
@@ -50,9 +53,25 @@ struct AuthView: View {
                 .offset(x: -120, y: 300)
                 .allowsHitTesting(false)
 
-            loginCard
-                .padding(.horizontal, 20)
-                .frame(maxWidth: 368)
+            VStack(spacing: 14) {
+                loginCard
+
+                if let host = serverConfig.baseURL?.host {
+                    Button {
+                        serverConfig.clear()
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "server.rack")
+                                .font(.system(size: 10))
+                            Text(host)
+                                .font(.system(size: 11))
+                        }
+                        .foregroundStyle(.white.opacity(0.28))
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+            .frame(maxWidth: 368)
         }
         .preferredColorScheme(.dark)
     }
@@ -233,7 +252,7 @@ struct AuthView: View {
                     username: resp.username,
                     displayName: resp.displayName,
                     role: resp.role,
-                    expiresAt: resp.expiresAt
+                    expiresAt: TimeInterval(resp.expiresAt)
                 ))
                 withAnimation { loginState = .success }
                 try? await Task.sleep(nanoseconds: 800_000_000)
@@ -241,7 +260,7 @@ struct AuthView: View {
             } catch let err as AuthError {
                 showError(err.errorDescription ?? "Ошибка сервера", duration: 3)
             } catch {
-                showError("Ошибка сервера", duration: 3)
+                showError(AuthError.from(error).errorDescription ?? "Ошибка сервера", duration: 3)
             }
         }
     }
@@ -259,4 +278,5 @@ struct AuthView: View {
 #Preview {
     AuthView(onSuccess: {})
         .environmentObject(SessionStore.shared)
+        .environmentObject(ServerConfig.shared)
 }

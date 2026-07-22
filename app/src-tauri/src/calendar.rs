@@ -8,10 +8,9 @@
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
+use crate::server_config;
 use crate::session_store;
 use crate::LozaState;
-
-const SERVER_URL: &str = "http://localhost:4242";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "lowercase")]
@@ -78,13 +77,15 @@ fn describe_error(body: Option<ServerErrorResponse>, fallback: &str) -> String {
     }
 }
 
-/// Токен текущей сессии — общий helper для всех calendar-команд.
-/// Если сессии нет, значит React обратился к календарю в обход
-/// ProtectedRoute — считаем это ошибкой авторизации.
-fn require_token(app: &AppHandle) -> Result<String, String> {
-    session_store::load_session(app)
+/// Токен текущей сессии + адрес сервера — общий helper для всех calendar-команд.
+/// Если сессии или адреса нет, значит React обратился к календарю в обход
+/// ProtectedRoute/ServerSetupPage — считаем это ошибкой авторизации/конфигурации.
+fn require_session(app: &AppHandle) -> Result<(String, String), String> {
+    let token = session_store::load_session(app)
         .map(|s| s.token)
-        .ok_or_else(|| "NO_SESSION: Not logged in".to_string())
+        .ok_or_else(|| "NO_SESSION: Not logged in".to_string())?;
+    let server_url = server_config::require_server_url(app)?;
+    Ok((token, server_url))
 }
 
 /// `invoke("get_calendar_events")`
@@ -94,11 +95,11 @@ pub async fn get_calendar_events(
     app: AppHandle,
     state: tauri::State<'_, LozaState>,
 ) -> Result<Vec<CalendarEvent>, String> {
-    let token = require_token(&app)?;
+    let (token, server_url) = require_session(&app)?;
 
     let resp = state
         .client
-        .get(format!("{}/calendar/events", SERVER_URL))
+        .get(format!("{}/calendar/events", server_url))
         .header("x-session-token", &token)
         .send()
         .await
@@ -122,11 +123,11 @@ pub async fn create_calendar_event(
     state: tauri::State<'_, LozaState>,
     draft: CalendarEventDraft,
 ) -> Result<CalendarEvent, String> {
-    let token = require_token(&app)?;
+    let (token, server_url) = require_session(&app)?;
 
     let resp = state
         .client
-        .post(format!("{}/calendar/events", SERVER_URL))
+        .post(format!("{}/calendar/events", server_url))
         .header("x-session-token", &token)
         .json(&draft)
         .send()
@@ -152,11 +153,11 @@ pub async fn update_calendar_event(
     state: tauri::State<'_, LozaState>,
     event: CalendarEvent,
 ) -> Result<CalendarEvent, String> {
-    let token = require_token(&app)?;
+    let (token, server_url) = require_session(&app)?;
 
     let resp = state
         .client
-        .put(format!("{}/calendar/events/{}", SERVER_URL, event.id))
+        .put(format!("{}/calendar/events/{}", server_url, event.id))
         .header("x-session-token", &token)
         .json(&event)
         .send()
@@ -181,11 +182,11 @@ pub async fn delete_calendar_event(
     state: tauri::State<'_, LozaState>,
     id: String,
 ) -> Result<(), String> {
-    let token = require_token(&app)?;
+    let (token, server_url) = require_session(&app)?;
 
     let resp = state
         .client
-        .delete(format!("{}/calendar/events/{}", SERVER_URL, id))
+        .delete(format!("{}/calendar/events/{}", server_url, id))
         .header("x-session-token", &token)
         .send()
         .await

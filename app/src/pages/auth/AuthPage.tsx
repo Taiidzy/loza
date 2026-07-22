@@ -14,11 +14,22 @@ const ERROR_MESSAGES: Record<string, string> = {
   INVALID_CREDENTIALS: "Неверный логин или пароль",
   SERVER_UNREACHABLE: "Сервер недоступен",
   EMPTY_FIELDS: "Заполните все поля",
+  NO_SERVER_URL: "Сначала укажите адрес сервера",
+  PARSE_ERROR: "Сервер прислал неожиданный ответ",
 };
 
-/** Превращает ошибку invoke() (строка от Rust, либо произвольное значение) в понятный пользователю текст. */
+/**
+ * Превращает ошибку invoke() (строка от Rust, либо произвольное значение) в
+ * понятный пользователю текст. Для неизвестных кодов (в т.ч. "UNKNOWN: ...")
+ * показываем raw-текст как есть, а не что-то generic — он теперь содержит
+ * HTTP-статус и код ошибки от сервера (см. auth.rs::login), так что сам по
+ * себе уже подсказывает, что не так, вместо бесполезного "Login failed".
+ * Полную трассировку смотреть в devtools console (api/auth.ts логирует
+ * каждый invoke) и в терминале, где запущено приложение (Rust eprintln!).
+ */
 function resolveErrorMessage(err: unknown): string {
-  const raw = typeof err === "string" ? err : "Ошибка сервера";
+  const raw = typeof err === "string" ? err : JSON.stringify(err);
+  console.error("[AuthPage] login error (полный):", err);
   const knownCode = Object.keys(ERROR_MESSAGES).find((code) => raw.includes(code));
   return knownCode ? ERROR_MESSAGES[knownCode] : raw;
 }

@@ -6,12 +6,22 @@ use axum::{
     routing::{get, post, put},
     Router,
 };
+use tower_http::trace::TraceLayer;
+use tracing_subscriber::EnvFilter;
 
 use db::AppState;
 
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
+
+    // RUST_LOG=loza_server=debug,tower_http=debug для более подробного вывода
+    // (по умолчанию — info, этого достаточно чтобы видеть каждый запрос/ответ).
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,tower_http=info")),
+        )
+        .init();
 
     let port = std::env::var("PORT").unwrap_or_else(|_| "4242".to_string());
     let addr = format!("0.0.0.0:{}", port);
@@ -38,9 +48,12 @@ async fn main() {
             "/calendar/events/:id",
             put(handlers::calendar::update_event).delete(handlers::calendar::delete_event),
         )
+        .layer(TraceLayer::new_for_http())
         .with_state(state);
 
+    tracing::info!("🌿 Loza server listening on http://{}", addr);
     println!("🌿 Loza server listening on http://{}", addr);
+    println!("   Тестовые учётки: admin/loza2024 (admin), loza/loza (user)");
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
