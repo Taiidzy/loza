@@ -1,4 +1,5 @@
 use axum::{extract::Path, extract::State, http::StatusCode, response::Json};
+use chrono::{NaiveDate, NaiveTime};
 use uuid::Uuid;
 
 use crate::db::{AppState, repository};
@@ -28,15 +29,83 @@ fn not_found(id: &str) -> ApiError {
     )
 }
 
-fn require_username(state: &AppState, headers: &axum::http::HeaderMap) -> Result<String, ApiError> {
-    require_session(state, headers).map(|(claims, _)| claims.sub)
+async fn require_username(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+) -> Result<String, ApiError> {
+    require_session(state, headers)
+        .await
+        .map(|(claims, _)| claims.sub)
+}
+
+fn invalid_event(message: &str) -> ApiError {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse {
+            error: message.to_string(),
+            code: "INVALID_CALENDAR_EVENT".to_string(),
+        }),
+    )
+}
+
+fn validate_event(
+    title: &str,
+    start_date: &str,
+    end_date: &str,
+    start_time: Option<&str>,
+    end_time: Option<&str>,
+    color: &str,
+    is_multi_day: bool,
+    is_all_day: bool,
+) -> Result<(), ApiError> {
+    if title.trim().is_empty() || title.chars().count() > 200 {
+        return Err(invalid_event("Title must contain 1-200 characters"));
+    }
+    let start = NaiveDate::parse_from_str(start_date, "%Y-%m-%d")
+        .map_err(|_| invalid_event("startDate must use YYYY-MM-DD format"))?;
+    let end = NaiveDate::parse_from_str(end_date, "%Y-%m-%d")
+        .map_err(|_| invalid_event("endDate must use YYYY-MM-DD format"))?;
+    if end < start {
+        return Err(invalid_event("endDate cannot be before startDate"));
+    }
+    if !is_multi_day && start != end {
+        return Err(invalid_event(
+            "Single-day events must use the same startDate and endDate",
+        ));
+    }
+    if !is_valid_color(color) {
+        return Err(invalid_event("color must be a #RRGGBB value"));
+    }
+
+    if is_all_day {
+        if start_time.is_some() || end_time.is_some() {
+            return Err(invalid_event(
+                "All-day events cannot include startTime or endTime",
+            ));
+        }
+    } else {
+        let (Some(start_time), Some(end_time)) = (start_time, end_time) else {
+            return Err(invalid_event("Timed events require startTime and endTime"));
+        };
+        NaiveTime::parse_from_str(start_time, "%H:%M")
+            .map_err(|_| invalid_event("startTime must use HH:MM format"))?;
+        NaiveTime::parse_from_str(end_time, "%H:%M")
+            .map_err(|_| invalid_event("endTime must use HH:MM format"))?;
+    }
+    Ok(())
+}
+
+fn is_valid_color(color: &str) -> bool {
+    color.len() == 7
+        && color.starts_with('#')
+        && color.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
 }
 
 pub async fn get_events(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Vec<CalendarEvent>>, ApiError> {
-    let username = require_username(&state, &headers)?;
+    let username = require_username(&state, &headers).await?;
     repository::list_events(&state.pool, &username)
         .await
         .map(Json)
@@ -48,7 +117,17 @@ pub async fn create_event(
     headers: axum::http::HeaderMap,
     Json(draft): Json<CalendarEventDraft>,
 ) -> Result<Json<CalendarEvent>, ApiError> {
-    let username = require_username(&state, &headers)?;
+    let username = require_username(&state, &headers).await?;
+    validate_event(
+        &draft.title,
+        &draft.start_date,
+        &draft.end_date,
+        draft.start_time.as_deref(),
+        draft.end_time.as_deref(),
+        &draft.color,
+        draft.is_multi_day,
+        draft.is_all_day,
+    )?;
     let event = CalendarEvent {
         id: format!("evt-{}", Uuid::new_v4()),
         title: draft.title,
@@ -73,7 +152,7 @@ pub async fn update_event(
     Path(id): Path<String>,
     Json(updated): Json<CalendarEvent>,
 ) -> Result<Json<CalendarEvent>, ApiError> {
-    let username = require_username(&state, &headers)?;
+    let username = require_username(&state, &headers).await?;
     if updated.id != id {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -83,6 +162,16 @@ pub async fn update_event(
             }),
         ));
     }
+    validate_event(
+        &updated.title,
+        &updated.start_date,
+        &updated.end_date,
+        updated.start_time.as_deref(),
+        updated.end_time.as_deref(),
+        &updated.color,
+        updated.is_multi_day,
+        updated.is_all_day,
+    )?;
     if !repository::update_event(&state.pool, &username, &id, &updated)
         .await
         .map_err(database_error)?
@@ -92,12 +181,64 @@ pub async fn update_event(
     Ok(Json(updated))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::validate_event;
+
+    #[test]
+    fn rejects_invalid_calendar_payloads() {
+        assert!(
+            validate_event(
+                "Meeting",
+                "2026-07-23",
+                "2026-07-22",
+                Some("09:00"),
+                Some("10:00"),
+                "#ff9fd0",
+                true,
+                false,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_event(
+                "Meeting",
+                "2026-07-23",
+                "2026-07-23",
+                None,
+                None,
+                "blue",
+                false,
+                true,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn accepts_a_valid_calendar_payload() {
+        assert!(
+            validate_event(
+                "Meeting",
+                "2026-07-23",
+                "2026-07-23",
+                Some("09:00"),
+                Some("10:00"),
+                "#ff9fd0",
+                false,
+                false,
+            )
+            .is_ok()
+        );
+    }
+}
+
 pub async fn delete_event(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let username = require_username(&state, &headers)?;
+    let username = require_username(&state, &headers).await?;
     if !repository::delete_event(&state.pool, &username, &id)
         .await
         .map_err(database_error)?

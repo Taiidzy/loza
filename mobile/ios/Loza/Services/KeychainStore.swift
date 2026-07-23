@@ -27,7 +27,9 @@ enum KeychainStore {
 
         var attributes = query
         attributes[kSecValueData as String] = value
-        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        // Bearer-токен доступен только пока устройство разблокировано и не
+        // переносится в резервную копию на другое устройство.
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
 
         let status = SecItemAdd(attributes as CFDictionary, nil)
         return status == errSecSuccess

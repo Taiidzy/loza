@@ -5,8 +5,8 @@
 //  Mirrors api/auth.ts + the Rust Tauri commands (login/get_me/logout),
 //  now backed by real networking through LozaAPIClient instead of a mock.
 //  Session (JWT + user info) persists in the Keychain via KeychainStore —
-//  the mobile equivalent of session_store.rs's tauri-plugin-store file,
-//  since there's no separate native process here to hide the token behind.
+//  the mobile equivalent of desktop's system credential storage. There is no
+//  separate native process here to hide the token behind.
 //
 
 import Foundation

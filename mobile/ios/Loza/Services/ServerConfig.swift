@@ -25,16 +25,15 @@ final class ServerConfig: ObservableObject {
     private let key = "loza_server_url"
 
     private init() {
-        if let stored = KeychainStore.getString(key), let url = URL(string: stored) {
+        if let stored = KeychainStore.getString(key), let url = Self.normalize(stored) {
             baseURL = url
         }
     }
 
     /// Normalizes user input into a valid base URL:
     ///  - trims whitespace
-    ///  - defaults to "http://" if no scheme was given (LAN servers are
-    ///    typically plain HTTP, matching the desktop default of
-    ///    http://localhost:4242)
+    ///  - defaults to "http://" if no scheme was given; this is accepted only
+    ///    for loopback/LAN hosts. Public servers must explicitly use HTTPS.
     ///  - strips any trailing slash so `"\(baseURL)/auth/login"` composes cleanly
     static func normalize(_ input: String) -> URL? {
         var trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -47,8 +46,37 @@ final class ServerConfig: ObservableObject {
             trimmed.removeLast()
         }
 
-        guard let url = URL(string: trimmed), url.host != nil else { return nil }
+        guard let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              let host = url.host,
+              url.user == nil,
+              url.password == nil,
+              url.query == nil,
+              url.fragment == nil,
+              url.path.isEmpty || url.path == "/"
+        else { return nil }
+        guard scheme == "https" || isLocalNetworkHost(host) else { return nil }
         return url
+    }
+
+    private static func isLocalNetworkHost(_ host: String) -> Bool {
+        let normalized = host.lowercased()
+        if normalized == "localhost" || normalized.hasSuffix(".local") {
+            return true
+        }
+        if normalized == "::1" || normalized.hasPrefix("fe80:")
+            || normalized.hasPrefix("fc") || normalized.hasPrefix("fd") {
+            return true
+        }
+
+        let octets = normalized.split(separator: ".").compactMap { UInt8($0) }
+        guard octets.count == 4 else { return false }
+        return octets[0] == 10
+            || (octets[0] == 172 && (16...31).contains(octets[1]))
+            || (octets[0] == 192 && octets[1] == 168)
+            || (octets[0] == 169 && octets[1] == 254)
+            || octets[0] == 127
     }
 
     /// Derives the WebSocket URL for a given HTTP(S) endpoint path, mapping

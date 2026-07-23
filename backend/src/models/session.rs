@@ -6,6 +6,10 @@
 /// handlers::auth::me) и определяет, считается ли клиент "активным".
 #[derive(Clone, Debug)]
 pub struct Session {
+    /// Непрозрачный идентификатор для отображения в статусе. Никогда не
+    /// используем bearer-токен как публичный идентификатор: иначе любой
+    /// читатель /status сможет выдать себя за владельца сессии.
+    pub public_id: String,
     pub token: String,
     pub username: String,
     pub device: String,

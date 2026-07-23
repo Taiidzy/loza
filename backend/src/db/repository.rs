@@ -1,6 +1,6 @@
 use sqlx::{PgPool, Row};
 
-use crate::models::{CalendarEvent, PublicUser, Recurrence, User};
+use crate::models::{CalendarEvent, PublicUser, Recurrence, Session, User};
 
 pub async fn connect_and_migrate(database_url: &str) -> Result<PgPool, sqlx::Error> {
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -107,6 +107,81 @@ pub async fn delete_user(pool: &PgPool, username: &str) -> Result<bool, sqlx::Er
         .execute(pool)
         .await
         .map(|result| result.rows_affected() == 1)
+}
+
+fn session_from_row(row: sqlx::postgres::PgRow) -> Session {
+    Session {
+        public_id: row.get("public_id"),
+        // Токен намеренно не хранится в БД. Вызывающий код уже владеет им.
+        token: String::new(),
+        username: row.get("username"),
+        device: row.get("device"),
+        created_at: row.get::<i64, _>("created_at") as u64,
+        last_seen: row.get::<i64, _>("last_seen_at") as u64,
+        expires_at: row.get::<i64, _>("expires_at") as u64,
+    }
+}
+
+pub async fn create_session(
+    pool: &PgPool,
+    token_hash: &str,
+    session: &Session,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("INSERT INTO sessions (token_hash, public_id, username, device, created_at, last_seen_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7)")
+        .bind(token_hash)
+        .bind(&session.public_id)
+        .bind(&session.username)
+        .bind(&session.device)
+        .bind(session.created_at as i64)
+        .bind(session.last_seen as i64)
+        .bind(session.expires_at as i64)
+        .execute(pool)
+        .await
+        .map(|_| ())
+}
+
+pub async fn touch_session(
+    pool: &PgPool,
+    token_hash: &str,
+    now: u64,
+) -> Result<Option<Session>, sqlx::Error> {
+    sqlx::query("UPDATE sessions SET last_seen_at = $1 WHERE token_hash = $2 AND expires_at > $1 RETURNING public_id, username, device, created_at, last_seen_at, expires_at")
+        .bind(now as i64)
+        .bind(token_hash)
+        .fetch_optional(pool)
+        .await
+        .map(|row| row.map(session_from_row))
+}
+
+pub async fn list_sessions(pool: &PgPool) -> Result<Vec<Session>, sqlx::Error> {
+    sqlx::query("SELECT public_id, username, device, created_at, last_seen_at, expires_at FROM sessions WHERE expires_at > EXTRACT(EPOCH FROM now())::BIGINT ORDER BY last_seen_at DESC")
+        .fetch_all(pool)
+        .await
+        .map(|rows| rows.into_iter().map(session_from_row).collect())
+}
+
+pub async fn delete_session(pool: &PgPool, token_hash: &str) -> Result<bool, sqlx::Error> {
+    sqlx::query("DELETE FROM sessions WHERE token_hash = $1")
+        .bind(token_hash)
+        .execute(pool)
+        .await
+        .map(|result| result.rows_affected() == 1)
+}
+
+pub async fn delete_sessions_for_user(pool: &PgPool, username: &str) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM sessions WHERE username = $1")
+        .bind(username)
+        .execute(pool)
+        .await
+        .map(|_| ())
+}
+
+pub async fn delete_expired_sessions(pool: &PgPool, now: u64) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM sessions WHERE expires_at <= $1")
+        .bind(now as i64)
+        .execute(pool)
+        .await
+        .map(|_| ())
 }
 
 fn event_from_row(row: sqlx::postgres::PgRow) -> CalendarEvent {

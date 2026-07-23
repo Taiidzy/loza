@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 077
 
 APP_DIR="${LOZA_APP_DIR:-/opt/loza}"
 REPO_URL="https://github.com/Taiidzy/loza.git"
@@ -35,8 +36,10 @@ need() {
 random_secret() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -hex 32
+  elif [[ -r /dev/urandom ]] && command -v od >/dev/null 2>&1; then
+    od -An -N32 -tx1 /dev/urandom | tr -d ' \n'
   else
-    date +%s%N | sha256sum | awk '{print $1}'
+    fail "A cryptographically secure random source (openssl or /dev/urandom with od) is required"
   fi
 }
 
@@ -129,10 +132,12 @@ main() {
   cd "$APP_DIR"
 
   if [[ ! -f .env ]]; then
-    cp .env.example .env
+    install -m 600 .env.example .env
     sed -i.bak "s/change_me_to_a_long_random_password/$(random_secret)/" .env
     sed -i.bak "s/change_me_to_a_64_char_random_secret/$(random_secret)/" .env
     rm -f .env.bak
+  else
+    chmod 600 .env
   fi
   configure_bootstrap_admin .env
 

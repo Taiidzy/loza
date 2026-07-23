@@ -21,3 +21,4 @@ backend/.env
 backend/storage/
 
 loza-data/
+mobile/ios/Loza.xcodeproj/project.xcworkspace/xcuserdata/

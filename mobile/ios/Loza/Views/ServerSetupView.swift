@@ -100,7 +100,7 @@ struct ServerSetupView: View {
             .shadow(color: focused ? LozaColor.accentPink.opacity(0.12) : .clear, radius: 6)
             .animation(.easeOut(duration: 0.2), value: focused)
 
-            Text("Например: 192.168.1.10:4242 или loza.мойдом.local")
+            Text("HTTP: 192.168.1.10:4242 или loza.мойдом.local · публичный сервер: https://cloud.example.com")
                 .font(.system(size: 10.5))
                 .foregroundStyle(.white.opacity(0.22))
                 .padding(.top, 8)

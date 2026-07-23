@@ -7,6 +7,8 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-loza}
       POSTGRES_USER: ${POSTGRES_USER:-loza}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - loza_postgres:/var/lib/postgresql/data
     healthcheck:
@@ -27,6 +29,7 @@ services:
     environment:
       PORT: ${PORT:-4242}
       RUST_LOG: ${RUST_LOG:-loza_server=info,tower_http=info}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-false}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
@@ -34,9 +37,9 @@ services:
       STORAGE_ROOT: /data/storage
       DATABASE_URL: postgres://${POSTGRES_USER:-loza}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-loza}
     ports:
-      - "${PORT:-4242}:4242"
+      - "${BACKEND_BIND_ADDRESS:-0.0.0.0}:${PORT:-4242}:4242"
     volumes:
-      - loza_storage:/data/storage
+      - ${STORAGE_ROOT:-./storage}:/data/storage
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4242/health"]
       interval: 30s

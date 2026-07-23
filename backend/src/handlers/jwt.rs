@@ -19,18 +19,14 @@ pub struct Claims {
     pub exp: u64,
 }
 
-fn secret() -> String {
-    std::env::var("JWT_SECRET")
-        .unwrap_or_else(|_| {
-            tracing::warn!(
-                "JWT_SECRET не задан; используется dev-secret. Для production задайте длинный случайный JWT_SECRET"
-            );
-            "change_this_to_a_long_random_secret_in_production".to_string()
-        })
-}
-
 /// Создаёт подписанный JWT для пользователя. Возвращает (token, expires_at).
-pub fn issue_token(username: &str, role: &str, display_name: &str, device: &str) -> (String, u64) {
+pub fn issue_token(
+    secret: &str,
+    username: &str,
+    role: &str,
+    display_name: &str,
+    device: &str,
+) -> (String, u64) {
     let now = now_secs();
     let exp = now + TOKEN_TTL_SECS;
 
@@ -46,7 +42,7 @@ pub fn issue_token(username: &str, role: &str, display_name: &str, device: &str)
     let token = encode(
         &Header::default(),
         &claims,
-        &EncodingKey::from_secret(secret().as_bytes()),
+        &EncodingKey::from_secret(secret.as_bytes()),
     )
     .expect("JWT encoding should not fail");
 
@@ -54,10 +50,10 @@ pub fn issue_token(username: &str, role: &str, display_name: &str, device: &str)
 }
 
 /// Проверяет подпись и срок действия токена, возвращает claims если валиден.
-pub fn verify_token(token: &str) -> Option<Claims> {
+pub fn verify_token(secret: &str, token: &str) -> Option<Claims> {
     let data = decode::<Claims>(
         token,
-        &DecodingKey::from_secret(secret().as_bytes()),
+        &DecodingKey::from_secret(secret.as_bytes()),
         &Validation::default(),
     )
     .ok()?;

@@ -3,9 +3,9 @@
 //! Раньше SERVER_URL был константой, вкопанной в auth.rs/status.rs/calendar.rs
 //! (`http://localhost:4242`) — предполагалось, что сервер всегда локальный.
 //! Теперь адрес вводится один раз на первом экране (см. React ServerSetupPage)
-//! и хранится здесь, персистентно на диске через tauri-plugin-store — тот же
-//! механизм и тот же файл, что и session.json у session_store.rs, только
-//! отдельный ключ. auth.rs/status.rs/calendar.rs читают его через
+//! и хранится здесь, персистентно на диске через tauri-plugin-store. Токены
+//! сессий хранятся отдельно в системном credential storage. auth.rs/status.rs/
+//! calendar.rs читают адрес через
 //! `require_server_url()` вместо константы.
 
 use serde::{Deserialize, Serialize};
@@ -20,9 +20,9 @@ struct StoredServerUrl {
     url: String,
 }
 
-/// Убирает конечный "/" и добавляет схему "http://" по умолчанию, если её
-/// не указали — большинство локальных/домашних серверов поднято по HTTP,
-/// как и десктопный дефолт (http://localhost:4242).
+/// Принимает HTTPS для любого сервера и HTTP только для loopback/LAN адресов.
+/// Это сохраняет поддержку домашней сети, но не позволяет случайно отправить
+/// пароль или bearer-токен на публичный сервер по открытому HTTP.
 pub fn normalize(input: &str) -> Option<String> {
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -35,11 +35,35 @@ pub fn normalize(input: &str) -> Option<String> {
         format!("http://{}", trimmed)
     };
 
-    let normalized = with_scheme.trim_end_matches('/').to_string();
+    let mut parsed = url::Url::parse(&with_scheme).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https")
+        || parsed.username() != ""
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+        || !matches!(parsed.path(), "" | "/")
+    {
+        return None;
+    }
+    if parsed.scheme() == "http" && !is_local_network_host(parsed.host()?) {
+        return None;
+    }
+    parsed.set_path("");
+    Some(parsed.to_string().trim_end_matches('/').to_string())
+}
 
-    // Простая валидация — должен парситься как URL с хостом.
-    url::Url::parse(&normalized).ok()?;
-    Some(normalized)
+fn is_local_network_host(host: url::Host<&str>) -> bool {
+    match host {
+        url::Host::Domain(domain) => {
+            domain.eq_ignore_ascii_case("localhost") || domain.ends_with(".local")
+        }
+        url::Host::Ipv4(address) => {
+            address.is_loopback() || address.is_private() || address.is_link_local()
+        }
+        url::Host::Ipv6(address) => {
+            address.is_loopback() || address.is_unique_local() || address.is_unicast_link_local()
+        }
+    }
 }
 
 pub fn save_server_url(app: &AppHandle, url: &str) -> Result<(), String> {
@@ -56,7 +80,7 @@ pub fn load_server_url(app: &AppHandle) -> Option<String> {
     let store = app.store(STORE_FILE).ok()?;
     let value = store.get(SERVER_URL_KEY)?;
     let stored: StoredServerUrl = serde_json::from_value(value).ok()?;
-    Some(stored.url)
+    normalize(&stored.url)
 }
 
 pub fn delete_server_url(app: &AppHandle) -> Result<(), String> {
@@ -112,4 +136,25 @@ pub fn set_server_url(app: AppHandle, url: String) -> Result<String, String> {
 #[tauri::command]
 pub fn clear_server_url(app: AppHandle) -> Result<(), String> {
     delete_server_url(&app)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize;
+
+    #[test]
+    fn allows_https_everywhere_and_http_only_in_local_networks() {
+        assert!(normalize("https://loza.example.com").is_some());
+        assert!(normalize("http://localhost:4242").is_some());
+        assert!(normalize("http://192.168.1.25:4242").is_some());
+        assert!(normalize("http://loza.local:4242").is_some());
+        assert!(normalize("http://loza.example.com").is_none());
+    }
+
+    #[test]
+    fn rejects_non_http_urls_and_embedded_credentials() {
+        assert!(normalize("ftp://192.168.1.25").is_none());
+        assert!(normalize("https://user:password@loza.example.com").is_none());
+        assert!(normalize("https://loza.example.com/api").is_none());
+    }
 }

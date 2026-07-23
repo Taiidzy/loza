@@ -1,10 +1,17 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
-use axum::{extract::Path, extract::State, http::StatusCode, response::Json};
+use axum::{
+    extract::{ConnectInfo, Path, State},
+    http::StatusCode,
+    response::Json,
+};
 use password_hash::SaltString;
 use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::net::{IpAddr, SocketAddr};
+use uuid::Uuid;
 
 use crate::db::{AppState, repository};
 use crate::handlers::jwt::{self, Claims};
@@ -184,12 +191,17 @@ async fn verify_password(password: String, hash: String) -> bool {
     .unwrap_or(false)
 }
 
-pub fn touch_session(state: &AppState, token: &str) -> Option<(Claims, Session)> {
-    let claims = jwt::verify_token(token)?;
-    let mut sessions = state.sessions.write().ok()?;
-    let session = sessions.get_mut(token)?;
-    session.last_seen = now_secs();
-    Some((claims, session.clone()))
+fn token_hash(token: &str) -> String {
+    format!("{:x}", Sha256::digest(token.as_bytes()))
+}
+
+pub async fn touch_session(state: &AppState, token: &str) -> Option<(Claims, Session)> {
+    let claims = jwt::verify_token(&state.config.jwt_secret, token)?;
+    let mut session = repository::touch_session(&state.pool, &token_hash(token), now_secs())
+        .await
+        .ok()??;
+    session.token = token.to_string();
+    Some((claims, session))
 }
 
 fn token_from_headers(headers: &axum::http::HeaderMap) -> &str {
@@ -199,7 +211,7 @@ fn token_from_headers(headers: &axum::http::HeaderMap) -> &str {
         .unwrap_or("")
 }
 
-pub fn require_session(
+pub async fn require_session(
     state: &AppState,
     headers: &axum::http::HeaderMap,
 ) -> Result<(Claims, Session), ApiError> {
@@ -208,14 +220,15 @@ pub fn require_session(
         return Err(unauthorized("NO_TOKEN", "Missing session token"));
     }
     touch_session(state, token)
+        .await
         .ok_or_else(|| unauthorized("INVALID_TOKEN", "Invalid or expired session"))
 }
 
-fn require_admin(
+async fn require_admin(
     state: &AppState,
     headers: &axum::http::HeaderMap,
 ) -> Result<(Claims, Session), ApiError> {
-    let (claims, session) = require_session(state, headers)?;
+    let (claims, session) = require_session(state, headers).await?;
     if claims.role != ROLE_ADMIN {
         return Err(error_with(
             StatusCode::FORBIDDEN,
@@ -269,6 +282,8 @@ pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
 
 pub async fn login(
     State(state): State<AppState>,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, ApiError> {
     let username = req.username.trim().to_lowercase();
@@ -278,23 +293,50 @@ pub async fn login(
             "Username and password are required",
         ));
     }
-    let user = repository::find_user(&state.pool, &username)
+    let now = now_secs();
+    let remote_ip = client_ip(&state, &headers, remote_addr);
+    if state.is_login_rate_limited(remote_ip, &username, now) {
+        tracing::warn!(%remote_ip, username = %username, "login rate limit exceeded");
+        return Err(error_with(
+            StatusCode::TOO_MANY_REQUESTS,
+            "TOO_MANY_LOGIN_ATTEMPTS",
+            "Too many failed login attempts; try again later",
+        ));
+    }
+    let user = match repository::find_user(&state.pool, &username)
         .await
         .map_err(database_error)?
-        .ok_or_else(|| unauthorized("INVALID_CREDENTIALS", "Invalid username or password"))?;
+    {
+        Some(user) => user,
+        None => {
+            state.record_login_failure(remote_ip, &username, now);
+            tracing::warn!(%remote_ip, username = %username, "login rejected: invalid credentials");
+            return Err(unauthorized(
+                "INVALID_CREDENTIALS",
+                "Invalid username or password",
+            ));
+        }
+    };
 
     if !verify_password(req.password, user.password_hash.clone()).await {
-        tracing::warn!(username = %username, "login rejected: invalid credentials");
+        state.record_login_failure(remote_ip, &username, now);
+        tracing::warn!(%remote_ip, username = %username, "login rejected: invalid credentials");
         return Err(unauthorized(
             "INVALID_CREDENTIALS",
             "Invalid username or password",
         ));
     }
+    state.clear_login_failures(remote_ip, &username);
 
-    let (token, expires_at) =
-        jwt::issue_token(&username, &user.role, &user.display_name, &req.device);
-    let now = now_secs();
+    let (token, expires_at) = jwt::issue_token(
+        &state.config.jwt_secret,
+        &username,
+        &user.role,
+        &user.display_name,
+        &req.device,
+    );
     let session = Session {
+        public_id: Uuid::new_v4().to_string(),
         token: token.clone(),
         username: username.clone(),
         device: req.device,
@@ -302,17 +344,9 @@ pub async fn login(
         last_seen: now,
         expires_at,
     };
-    state
-        .sessions
-        .write()
-        .map_err(|_| {
-            error_with(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-                "Internal server error",
-            )
-        })?
-        .insert(token.clone(), session);
+    repository::create_session(&state.pool, &token_hash(&token), &session)
+        .await
+        .map_err(database_error)?;
     tracing::info!(username = %username, role = %user.role, "login successful");
     Ok(Json(LoginResponse {
         token,
@@ -323,11 +357,25 @@ pub async fn login(
     }))
 }
 
+fn client_ip(state: &AppState, headers: &axum::http::HeaderMap, remote_addr: SocketAddr) -> IpAddr {
+    if state.config.trust_proxy_headers {
+        if let Some(ip) = headers
+            .get("x-forwarded-for")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.split(',').next())
+            .and_then(|value| value.trim().parse().ok())
+        {
+            return ip;
+        }
+    }
+    remote_addr.ip()
+}
+
 pub async fn me(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<UserInfo>, ApiError> {
-    let (_, session) = require_session(&state, &headers)?;
+    let (_, session) = require_session(&state, &headers).await?;
     let user = repository::find_user(&state.pool, &session.username)
         .await
         .map_err(database_error)?
@@ -344,7 +392,7 @@ pub async fn list_users(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Vec<PublicUser>>, ApiError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     repository::list_users(&state.pool)
         .await
         .map(Json)
@@ -356,7 +404,7 @@ pub async fn create_user(
     headers: axum::http::HeaderMap,
     Json(req): Json<CreateUserRequest>,
 ) -> Result<Json<PublicUser>, ApiError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let username = normalize_username(&req.username)?;
     validate_password(&req.password)?;
     validate_quota(req.quota_bytes)?;
@@ -391,7 +439,7 @@ pub async fn change_password(
     Path(username): Path<String>,
     Json(req): Json<ChangePasswordRequest>,
 ) -> Result<StatusCode, ApiError> {
-    let (claims, _) = require_session(&state, &headers)?;
+    let (claims, _) = require_session(&state, &headers).await?;
     let target = normalize_username(&username)?;
     let self_change = claims.sub == target;
     if !self_change && claims.role != ROLE_ADMIN {
@@ -419,17 +467,9 @@ pub async fn change_password(
     repository::update_password(&state.pool, &target, &password_hash)
         .await
         .map_err(database_error)?;
-    state
-        .sessions
-        .write()
-        .map_err(|_| {
-            error_with(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-                "Internal server error",
-            )
-        })?
-        .retain(|_, session| session.username != target);
+    repository::delete_sessions_for_user(&state.pool, &target)
+        .await
+        .map_err(database_error)?;
     tracing::info!(username = %target, "password changed and sessions revoked");
     Ok(StatusCode::NO_CONTENT)
 }
@@ -440,7 +480,7 @@ pub async fn update_user_quota(
     Path(username): Path<String>,
     Json(req): Json<UpdateQuotaRequest>,
 ) -> Result<Json<PublicUser>, ApiError> {
-    require_admin(&state, &headers)?;
+    require_admin(&state, &headers).await?;
     let target = normalize_username(&username)?;
     validate_quota(req.quota_bytes)?;
     let user = repository::update_quota(&state.pool, &target, req.quota_bytes)
@@ -456,7 +496,7 @@ pub async fn delete_user(
     headers: axum::http::HeaderMap,
     Path(username): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let (claims, _) = require_admin(&state, &headers)?;
+    let (claims, _) = require_admin(&state, &headers).await?;
     let target = normalize_username(&username)?;
     if claims.sub == target {
         return Err(error_with(
@@ -475,17 +515,6 @@ pub async fn delete_user(
             "User not found",
         ));
     }
-    state
-        .sessions
-        .write()
-        .map_err(|_| {
-            error_with(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "INTERNAL_ERROR",
-                "Internal server error",
-            )
-        })?
-        .retain(|_, session| session.username != target);
     tracing::warn!(username = %target, "user deleted and sessions revoked");
     Ok(StatusCode::NO_CONTENT)
 }
@@ -495,10 +524,10 @@ pub async fn logout(State(state): State<AppState>, headers: axum::http::HeaderMa
         .get("x-session-token")
         .and_then(|value| value.to_str().ok())
     {
-        if let Ok(mut sessions) = state.sessions.write() {
-            let removed = sessions.remove(token).is_some();
-            tracing::info!(removed, "logout");
-        }
+        let removed = repository::delete_session(&state.pool, &token_hash(token))
+            .await
+            .unwrap_or(false);
+        tracing::info!(removed, "logout");
     }
     StatusCode::NO_CONTENT
 }
@@ -512,8 +541,10 @@ pub async fn refresh(
         return Err(unauthorized("NO_TOKEN", "Missing session token"));
     }
     let (claims, old_session) = touch_session(&state, old_token)
+        .await
         .ok_or_else(|| unauthorized("INVALID_TOKEN", "Invalid or expired session"))?;
     let (new_token, expires_at) = jwt::issue_token(
+        &state.config.jwt_secret,
         &claims.sub,
         &claims.role,
         &claims.display_name,
@@ -521,6 +552,7 @@ pub async fn refresh(
     );
     let now = now_secs();
     let new_session = Session {
+        public_id: old_session.public_id,
         token: new_token.clone(),
         username: old_session.username,
         device: old_session.device,
@@ -528,15 +560,12 @@ pub async fn refresh(
         last_seen: now,
         expires_at,
     };
-    let mut sessions = state.sessions.write().map_err(|_| {
-        error_with(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "INTERNAL_ERROR",
-            "Internal server error",
-        )
-    })?;
-    sessions.remove(old_token);
-    sessions.insert(new_token.clone(), new_session);
+    repository::delete_session(&state.pool, &token_hash(old_token))
+        .await
+        .map_err(database_error)?;
+    repository::create_session(&state.pool, &token_hash(&new_token), &new_session)
+        .await
+        .map_err(database_error)?;
     Ok(Json(LoginResponse {
         token: new_token,
         username: claims.sub,

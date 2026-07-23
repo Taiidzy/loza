@@ -11,8 +11,8 @@ type SetupState = "idle" | "loading" | "success" | "error";
 /**
  * Первый экран флоу входа: ввод адреса Loza-сервера. Раньше адрес был
  * вкопан в Rust-константу (SERVER_URL = "http://localhost:4242") — теперь
- * вводится один раз здесь и хранится в Rust (server_config.rs), тем же
- * способом, что и сессия. Визуально — та же карточка/фон/анимации, что и
+ * вводится один раз здесь и хранится в Rust (server_config.rs). Токен сессии
+ * хранится отдельно в системном credential storage. Визуально — та же карточка/фон/анимации, что и
  * AuthPage, чтобы два шага читались как один непрерывный флоу, а не как
  * два разных экрана.
  *
@@ -135,7 +135,7 @@ export default function ServerSetupPage({ onConfigured }: { onConfigured: () => 
                 lineHeight: 1.4,
               }}
             >
-              Например: 192.168.1.10:4242 или loza.мойдом.local
+              HTTP: 192.168.1.10:4242 или loza.мойдом.local · публичный сервер: https://cloud.example.com
             </p>
 
             {state === "error" && errorMsg && (
