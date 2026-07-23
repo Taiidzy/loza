@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { AnimatePresence, motion, useAnimation } from "motion/react";
-import type { StorageInfo } from "../../api/serverStatus";
+import type { StorageInfo } from "../../types/serverStatus";
 import styles from "./StorageOrb.module.css";
 
 /** Форматирует байты в гигабайты: >=100 ГБ — целое число, иначе один знак после запятой. */
@@ -92,7 +92,7 @@ export default function StorageOrb({ storage }: StorageOrbProps) {
     prevUsedBytes.current = storage.usedBytes;
   }, [storage.usedBytes, impactControls]);
 
-  const usedPercent = Math.min(100, Math.round((storage.usedBytes / storage.totalBytes) * 100));
+  const usedPercent = storage.totalBytes > 0 ? Math.min(100, Math.round((storage.usedBytes / storage.totalBytes) * 100)) : 0;
   const freeBytes = storage.totalBytes - storage.usedBytes;
 
   // ── Сегменты внешнего кольца по категориям хранилища ──

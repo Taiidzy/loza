@@ -14,8 +14,8 @@ import SwiftUI
 
 struct StorageOrb: View {
     let storage: StorageInfo
+    @Binding var expanded: Bool
 
-    @State private var tapped = false
     @State private var liquidPhase: CGFloat = 0        // drives the endless wave scroll
     @State private var splashID = 0                     // bump to replay the splash
     @State private var previousUsed: Int64
@@ -24,8 +24,9 @@ struct StorageOrb: View {
     private let size: CGFloat = 96
     private let radius: CGFloat = 40
 
-    init(storage: StorageInfo) {
+    init(storage: StorageInfo, expanded: Binding<Bool>) {
         self.storage = storage
+        _expanded = expanded
         _previousUsed = State(initialValue: storage.usedBytes)
     }
 
@@ -51,15 +52,7 @@ struct StorageOrb: View {
         .contentShape(Circle())
         .onTapGesture {
             withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
-                tapped.toggle()
-            }
-        }
-        .overlay(alignment: .top) {
-            if tapped {
-                tooltip
-                    .offset(y: size + 10)
-                    .transition(.opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
-                    .zIndex(30)
+                expanded.toggle()
             }
         }
         .onAppear { startWaveLoop() }
@@ -71,7 +64,7 @@ struct StorageOrb: View {
             previousUsed = newValue
             triggerSplash()
         }
-        .animation(.spring(response: 0.35, dampingFraction: 0.75), value: tapped)
+        .animation(.spring(response: 0.35, dampingFraction: 0.75), value: expanded)
     }
 
     // ─── Orb ────────────────────────────────────────────────────────────────
@@ -91,7 +84,7 @@ struct StorageOrb: View {
                     .stroke(seg.category.color, style: StrokeStyle(lineWidth: 3, lineCap: .butt))
                     .rotationEffect(.degrees(-90))
                     .frame(width: (radius + 5) * 2, height: (radius + 5) * 2)
-                    .opacity(tapped ? 1 : 0.85)
+                    .opacity(expanded ? 1 : 0.85)
             }
 
             // Liquid fill, clipped to the circle
@@ -251,60 +244,10 @@ struct StorageOrb: View {
 
     // ─── Tooltip ────────────────────────────────────────────────────────────
 
-    private var tooltip: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("\(ByteFormat.gb(storage.usedBytes)) ГБ из \(ByteFormat.gb(storage.totalBytes)) ГБ")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.85))
-                Spacer()
-                Text("\(ByteFormat.gb(freeBytes)) ГБ свободно")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.white.opacity(0.35))
-            }
-
-            // Segmented bar
-            GeometryReader { geo in
-                HStack(spacing: 1) {
-                    ForEach(segments, id: \.category.id) { seg in
-                        RoundedRectangle(cornerRadius: 0)
-                            .fill(seg.category.color)
-                            .frame(width: geo.size.width * seg.share)
-                    }
-                }
-            }
-            .frame(height: 7)
-            .background(Color.white.opacity(0.06))
-            .clipShape(RoundedRectangle(cornerRadius: 4))
-
-            VStack(spacing: 8) {
-                ForEach(segments, id: \.category.id) { seg in
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(seg.category.color)
-                            .frame(width: 7, height: 7)
-                        Text(seg.category.label)
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(.white.opacity(0.6))
-                        Spacer()
-                        Text("\(ByteFormat.gb(seg.category.bytes)) ГБ")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.white.opacity(0.35))
-                            .monospacedDigit()
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 14)
-        .frame(width: 260)
-        .glassEffect(.regular, in: .rect(cornerRadius: 14))
-        .allowsHitTesting(false)
-    }
 }
 
 #Preview {
+    @Previewable @State var expanded = true
     ZStack {
         Color.black
         StorageOrb(storage: StorageInfo(
@@ -318,6 +261,6 @@ struct StorageOrb: View {
                 StorageCategory(id: "other", label: "Прочее", bytes: 10 * 1024 * 1024 * 1024, color: LozaColor.accentYellow),
             ],
             history7d: [38, 39, 40, 40, 41, 41.5, 41.8]
-        ))
+        ), expanded: $expanded)
     }
 }

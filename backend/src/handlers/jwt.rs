@@ -1,4 +1,4 @@
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 
 use crate::handlers::auth::now_secs;
@@ -11,7 +11,7 @@ pub const TOKEN_TTL_SECS: u64 = 86_400;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
-    pub sub: String,         // username
+    pub sub: String, // username
     pub role: String,
     pub display_name: String,
     pub device: String,
@@ -21,7 +21,12 @@ pub struct Claims {
 
 fn secret() -> String {
     std::env::var("JWT_SECRET")
-        .unwrap_or_else(|_| "change_this_to_a_long_random_secret_in_production".to_string())
+        .unwrap_or_else(|_| {
+            tracing::warn!(
+                "JWT_SECRET не задан; используется dev-secret. Для production задайте длинный случайный JWT_SECRET"
+            );
+            "change_this_to_a_long_random_secret_in_production".to_string()
+        })
 }
 
 /// Создаёт подписанный JWT для пользователя. Возвращает (token, expires_at).

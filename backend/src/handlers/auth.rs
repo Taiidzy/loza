@@ -1,19 +1,22 @@
-use axum::{extract::State, http::StatusCode, response::Json};
-use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::db::AppState;
-use crate::handlers::jwt::{self, Claims};
-use crate::models::Session;
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
+use axum::{extract::Path, extract::State, http::StatusCode, response::Json};
+use password_hash::SaltString;
+use rand_core::OsRng;
+use serde::{Deserialize, Serialize};
 
-// ─── Request / Response types ─────────────────────────────────────────────────
+use crate::db::{AppState, repository};
+use crate::handlers::jwt::{self, Claims};
+use crate::models::{
+    ChangePasswordRequest, CreateUserRequest, PublicUser, ROLE_ADMIN, ROLE_USER, Session,
+    UpdateQuotaRequest, User,
+};
 
 #[derive(Deserialize)]
 pub struct LoginRequest {
     pub username: String,
     pub password: String,
-    /// Человекочитаемое описание клиента, например "macOS · Loza Desktop".
-    /// Передаётся Tauri-слоем при логине. Используется как есть в ClientInfo.device.
     #[serde(default = "default_device")]
     pub device: String,
 }
@@ -52,109 +55,265 @@ pub struct HealthResponse {
     pub uptime_secs: u64,
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+type ApiError = (StatusCode, Json<ErrorResponse>);
 
 pub fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_secs()
 }
 
-/// Very simple hash — in production use argon2 / bcrypt
-pub fn hash_password(password: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    format!("loza_salt_{}", password).hash(&mut h);
-    format!("{:x}", h.finish())
-}
-
-fn error(code: &str, msg: &str) -> (StatusCode, Json<ErrorResponse>) {
+fn error_with(status: StatusCode, code: &str, message: &str) -> ApiError {
     (
-        StatusCode::UNAUTHORIZED,
+        status,
         Json(ErrorResponse {
-            error: msg.to_string(),
+            error: message.to_string(),
             code: code.to_string(),
         }),
     )
 }
 
-/// Проверяет JWT (подпись + срок действия), затем сверяет с локальным реестром
-/// сессий — токен может быть криптографически валиден, но уже отозван через
-/// /auth/logout. Попутно обновляет last_seen для отображения активности клиента.
-///
-/// Возвращает (claims, session) при успехе.
+fn unauthorized(code: &str, message: &str) -> ApiError {
+    error_with(StatusCode::UNAUTHORIZED, code, message)
+}
+
+fn database_error(error: sqlx::Error) -> ApiError {
+    tracing::error!(error = %error, "database operation failed");
+    error_with(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "DATABASE_UNAVAILABLE",
+        "The database is temporarily unavailable",
+    )
+}
+
+fn is_unique_violation(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .and_then(|database_error| database_error.code())
+        .is_some_and(|code| code == "23505")
+}
+
+fn normalize_username(username: &str) -> Result<String, ApiError> {
+    let username = username.trim().to_lowercase();
+    let valid = username.len() >= 3
+        && username.len() <= 32
+        && username
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-');
+    if valid {
+        Ok(username)
+    } else {
+        Err(error_with(
+            StatusCode::BAD_REQUEST,
+            "INVALID_USERNAME",
+            "Username must be 3-32 chars and contain only latin letters, digits, _ or -",
+        ))
+    }
+}
+
+fn validate_password(password: &str) -> Result<(), ApiError> {
+    if password.len() < 12 {
+        return Err(error_with(
+            StatusCode::BAD_REQUEST,
+            "WEAK_PASSWORD",
+            "Password must contain at least 12 characters",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_quota(quota_bytes: Option<u64>) -> Result<(), ApiError> {
+    if quota_bytes.is_some_and(|value| value > i64::MAX as u64) {
+        return Err(error_with(
+            StatusCode::BAD_REQUEST,
+            "INVALID_QUOTA",
+            "Quota exceeds the maximum supported value",
+        ));
+    }
+    Ok(())
+}
+
+fn normalize_role(role: Option<String>) -> Result<String, ApiError> {
+    match role.unwrap_or_else(|| ROLE_USER.to_string()).as_str() {
+        ROLE_ADMIN => Ok(ROLE_ADMIN.to_string()),
+        ROLE_USER => Ok(ROLE_USER.to_string()),
+        _ => Err(error_with(
+            StatusCode::BAD_REQUEST,
+            "INVALID_ROLE",
+            "Role must be admin or user",
+        )),
+    }
+}
+
+async fn hash_password(password: String) -> Result<String, ApiError> {
+    tokio::task::spawn_blocking(move || {
+        let salt = SaltString::generate(&mut OsRng);
+        Argon2::default()
+            .hash_password(password.as_bytes(), &salt)
+            .map(|hash| hash.to_string())
+    })
+    .await
+    .map_err(|error| {
+        tracing::error!(error = %error, "password hashing task failed");
+        error_with(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "INTERNAL_ERROR",
+            "Internal server error",
+        )
+    })?
+    .map_err(|error| {
+        tracing::error!(error = %error, "password hashing failed");
+        error_with(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "INTERNAL_ERROR",
+            "Internal server error",
+        )
+    })
+}
+
+async fn verify_password(password: String, hash: String) -> bool {
+    tokio::task::spawn_blocking(move || {
+        PasswordHash::new(&hash).ok().is_some_and(|parsed| {
+            Argon2::default()
+                .verify_password(password.as_bytes(), &parsed)
+                .is_ok()
+        })
+    })
+    .await
+    .unwrap_or(false)
+}
+
 pub fn touch_session(state: &AppState, token: &str) -> Option<(Claims, Session)> {
     let claims = jwt::verify_token(token)?;
-
-    let mut sessions = state.sessions.write().unwrap();
+    let mut sessions = state.sessions.write().ok()?;
     let session = sessions.get_mut(token)?;
     session.last_seen = now_secs();
     Some((claims, session.clone()))
 }
 
-// ─── Handlers ─────────────────────────────────────────────────────────────────
+fn token_from_headers(headers: &axum::http::HeaderMap) -> &str {
+    headers
+        .get("x-session-token")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+}
+
+pub fn require_session(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+) -> Result<(Claims, Session), ApiError> {
+    let token = token_from_headers(headers);
+    if token.is_empty() {
+        return Err(unauthorized("NO_TOKEN", "Missing session token"));
+    }
+    touch_session(state, token)
+        .ok_or_else(|| unauthorized("INVALID_TOKEN", "Invalid or expired session"))
+}
+
+fn require_admin(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+) -> Result<(Claims, Session), ApiError> {
+    let (claims, session) = require_session(state, headers)?;
+    if claims.role != ROLE_ADMIN {
+        return Err(error_with(
+            StatusCode::FORBIDDEN,
+            "FORBIDDEN",
+            "Administrator role is required",
+        ));
+    }
+    Ok((claims, session))
+}
+
+pub async fn bootstrap_admin(pool: &sqlx::PgPool) -> Result<(), String> {
+    let count = repository::count_users(pool)
+        .await
+        .map_err(|error| error.to_string())?;
+    if count > 0 {
+        return Ok(());
+    }
+
+    let username = std::env::var("BOOTSTRAP_ADMIN_USERNAME").map_err(|_| {
+        "database is empty; set BOOTSTRAP_ADMIN_USERNAME and BOOTSTRAP_ADMIN_PASSWORD".to_string()
+    })?;
+    let password = std::env::var("BOOTSTRAP_ADMIN_PASSWORD").map_err(|_| {
+        "database is empty; set BOOTSTRAP_ADMIN_USERNAME and BOOTSTRAP_ADMIN_PASSWORD".to_string()
+    })?;
+    let username = normalize_username(&username).map_err(|(_, body)| body.0.error)?;
+    validate_password(&password).map_err(|(_, body)| body.0.error)?;
+
+    let user = User {
+        username: username.clone(),
+        password_hash: hash_password(password)
+            .await
+            .map_err(|(_, body)| body.0.error)?,
+        display_name: std::env::var("BOOTSTRAP_ADMIN_DISPLAY_NAME").unwrap_or(username),
+        role: ROLE_ADMIN.to_string(),
+        quota_bytes: None,
+    };
+    repository::create_user(pool, &user)
+        .await
+        .map_err(|error| error.to_string())?;
+    tracing::info!(username = %user.username, "bootstrap administrator created");
+    Ok(())
+}
 
 pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
-    let sessions = state.sessions.read().unwrap();
     Json(HealthResponse {
         status: "ok".to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        uptime_secs: sessions.len() as u64, // placeholder, как было в исходном коде
+        uptime_secs: now_secs().saturating_sub(state.started_at),
     })
 }
 
 pub async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
-) -> Result<Json<LoginResponse>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<LoginResponse>, ApiError> {
     let username = req.username.trim().to_lowercase();
-
-    tracing::info!(username = %username, device = %req.device, "попытка входа");
-
     if username.is_empty() || req.password.is_empty() {
-        tracing::warn!("login отклонён: пустой логин или пароль");
-        return Err(error("EMPTY_FIELDS", "Username and password are required"));
+        return Err(unauthorized(
+            "EMPTY_FIELDS",
+            "Username and password are required",
+        ));
+    }
+    let user = repository::find_user(&state.pool, &username)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| unauthorized("INVALID_CREDENTIALS", "Invalid username or password"))?;
+
+    if !verify_password(req.password, user.password_hash.clone()).await {
+        tracing::warn!(username = %username, "login rejected: invalid credentials");
+        return Err(unauthorized(
+            "INVALID_CREDENTIALS",
+            "Invalid username or password",
+        ));
     }
 
-    let password_hash = hash_password(&req.password);
-
-    let user = {
-        let users = state.users.read().unwrap();
-        users.get(&username).cloned()
-    };
-
-    let user = match user {
-        Some(u) => u,
-        None => {
-            tracing::warn!(username = %username, "login отклонён: пользователь не найден");
-            return Err(error("INVALID_CREDENTIALS", "Invalid username or password"));
-        }
-    };
-
-    if user.password_hash != password_hash {
-        tracing::warn!(username = %username, "login отклонён: неверный пароль");
-        return Err(error("INVALID_CREDENTIALS", "Invalid username or password"));
-    }
-
-    // Create session — JWT with TOKEN_TTL_SECS lifetime
-    let (token, expires_at) = jwt::issue_token(&username, &user.role, &user.display_name, &req.device);
+    let (token, expires_at) =
+        jwt::issue_token(&username, &user.role, &user.display_name, &req.device);
     let now = now_secs();
-
     let session = Session {
         token: token.clone(),
         username: username.clone(),
-        device: req.device.clone(),
+        device: req.device,
         created_at: now,
         last_seen: now,
         expires_at,
     };
-
-    state.sessions.write().unwrap().insert(token.clone(), session);
-
-    tracing::info!(username = %username, role = %user.role, "login успешен");
-
+    state
+        .sessions
+        .write()
+        .map_err(|_| {
+            error_with(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                "Internal server error",
+            )
+        })?
+        .insert(token.clone(), session);
+    tracing::info!(username = %username, role = %user.role, "login successful");
     Ok(Json(LoginResponse {
         token,
         username,
@@ -167,30 +326,12 @@ pub async fn login(
 pub async fn me(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
-) -> Result<Json<UserInfo>, (StatusCode, Json<ErrorResponse>)> {
-    let token = headers
-        .get("x-session-token")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    if token.is_empty() {
-        tracing::warn!("/auth/me: запрос без токена");
-        return Err(error("NO_TOKEN", "Missing session token"));
-    }
-
-    let (_, session) = match touch_session(&state, token) {
-        Some(s) => s,
-        None => {
-            tracing::warn!("/auth/me: токен невалиден или истёк");
-            return Err(error("INVALID_TOKEN", "Invalid or expired session"));
-        }
-    };
-
-    let users = state.users.read().unwrap();
-    let user = users.get(&session.username).cloned().unwrap();
-
-    tracing::debug!(username = %user.username, "/auth/me: ok");
-
+) -> Result<Json<UserInfo>, ApiError> {
+    let (_, session) = require_session(&state, &headers)?;
+    let user = repository::find_user(&state.pool, &session.username)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| unauthorized("INVALID_TOKEN", "Invalid or expired session"))?;
     Ok(Json(UserInfo {
         username: user.username,
         display_name: user.display_name,
@@ -199,55 +340,203 @@ pub async fn me(
     }))
 }
 
+pub async fn list_users(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Vec<PublicUser>>, ApiError> {
+    require_admin(&state, &headers)?;
+    repository::list_users(&state.pool)
+        .await
+        .map(Json)
+        .map_err(database_error)
+}
+
+pub async fn create_user(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<CreateUserRequest>,
+) -> Result<Json<PublicUser>, ApiError> {
+    require_admin(&state, &headers)?;
+    let username = normalize_username(&req.username)?;
+    validate_password(&req.password)?;
+    validate_quota(req.quota_bytes)?;
+    let user = User {
+        username: username.clone(),
+        password_hash: hash_password(req.password).await?,
+        display_name: req
+            .display_name
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| username.clone()),
+        role: normalize_role(req.role)?,
+        quota_bytes: req.quota_bytes,
+    };
+    match repository::create_user(&state.pool, &user).await {
+        Ok(()) => {
+            tracing::info!(username = %user.username, role = %user.role, "user created");
+            Ok(Json(user.public()))
+        }
+        Err(error) if is_unique_violation(&error) => Err(error_with(
+            StatusCode::CONFLICT,
+            "USER_EXISTS",
+            "User already exists",
+        )),
+        Err(error) => Err(database_error(error)),
+    }
+}
+
+pub async fn change_password(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(username): Path<String>,
+    Json(req): Json<ChangePasswordRequest>,
+) -> Result<StatusCode, ApiError> {
+    let (claims, _) = require_session(&state, &headers)?;
+    let target = normalize_username(&username)?;
+    let self_change = claims.sub == target;
+    if !self_change && claims.role != ROLE_ADMIN {
+        return Err(error_with(
+            StatusCode::FORBIDDEN,
+            "FORBIDDEN",
+            "Not allowed",
+        ));
+    }
+    validate_password(&req.new_password)?;
+    let user = repository::find_user(&state.pool, &target)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| error_with(StatusCode::NOT_FOUND, "USER_NOT_FOUND", "User not found"))?;
+    if self_change
+        && !verify_password(req.current_password.unwrap_or_default(), user.password_hash).await
+    {
+        return Err(error_with(
+            StatusCode::FORBIDDEN,
+            "INVALID_CURRENT_PASSWORD",
+            "Current password is invalid",
+        ));
+    }
+    let password_hash = hash_password(req.new_password).await?;
+    repository::update_password(&state.pool, &target, &password_hash)
+        .await
+        .map_err(database_error)?;
+    state
+        .sessions
+        .write()
+        .map_err(|_| {
+            error_with(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                "Internal server error",
+            )
+        })?
+        .retain(|_, session| session.username != target);
+    tracing::info!(username = %target, "password changed and sessions revoked");
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn update_user_quota(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(username): Path<String>,
+    Json(req): Json<UpdateQuotaRequest>,
+) -> Result<Json<PublicUser>, ApiError> {
+    require_admin(&state, &headers)?;
+    let target = normalize_username(&username)?;
+    validate_quota(req.quota_bytes)?;
+    let user = repository::update_quota(&state.pool, &target, req.quota_bytes)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| error_with(StatusCode::NOT_FOUND, "USER_NOT_FOUND", "User not found"))?;
+    tracing::info!(username = %target, quota_bytes = ?user.quota_bytes, "quota updated");
+    Ok(Json(user))
+}
+
+pub async fn delete_user(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(username): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let (claims, _) = require_admin(&state, &headers)?;
+    let target = normalize_username(&username)?;
+    if claims.sub == target {
+        return Err(error_with(
+            StatusCode::BAD_REQUEST,
+            "CANNOT_DELETE_SELF",
+            "You cannot delete your own account",
+        ));
+    }
+    if !repository::delete_user(&state.pool, &target)
+        .await
+        .map_err(database_error)?
+    {
+        return Err(error_with(
+            StatusCode::NOT_FOUND,
+            "USER_NOT_FOUND",
+            "User not found",
+        ));
+    }
+    state
+        .sessions
+        .write()
+        .map_err(|_| {
+            error_with(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "INTERNAL_ERROR",
+                "Internal server error",
+            )
+        })?
+        .retain(|_, session| session.username != target);
+    tracing::warn!(username = %target, "user deleted and sessions revoked");
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn logout(State(state): State<AppState>, headers: axum::http::HeaderMap) -> StatusCode {
-    if let Some(token) = headers.get("x-session-token").and_then(|v| v.to_str().ok()) {
-        let removed = state.sessions.write().unwrap().remove(token).is_some();
-        tracing::info!(removed, "logout");
+    if let Some(token) = headers
+        .get("x-session-token")
+        .and_then(|value| value.to_str().ok())
+    {
+        if let Ok(mut sessions) = state.sessions.write() {
+            let removed = sessions.remove(token).is_some();
+            tracing::info!(removed, "logout");
+        }
     }
     StatusCode::NO_CONTENT
 }
 
-/// Тихо продлевает токен: если присланный токен валиден (даже недавно истёкший
-/// в рамках небольшого допуска — на случай, если приложение не открывалось
-/// пару секунд дольше TTL), выдаёт новый JWT с полным сроком жизни и обновляет
-/// запись в реестре сессий. Вызывается Tauri-слоем при каждом запуске приложения,
-/// пока пользователь остаётся залогинен — так TTL токена не ощущается пользователем.
 pub async fn refresh(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
-) -> Result<Json<LoginResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let old_token = headers
-        .get("x-session-token")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
+) -> Result<Json<LoginResponse>, ApiError> {
+    let old_token = token_from_headers(&headers);
     if old_token.is_empty() {
-        return Err(error("NO_TOKEN", "Missing session token"));
+        return Err(unauthorized("NO_TOKEN", "Missing session token"));
     }
-
-    let (claims, old_session) = match touch_session(&state, old_token) {
-        Some(s) => s,
-        None => return Err(error("INVALID_TOKEN", "Invalid or expired session")),
-    };
-
-    let (new_token, expires_at) =
-        jwt::issue_token(&claims.sub, &claims.role, &claims.display_name, &old_session.device);
+    let (claims, old_session) = touch_session(&state, old_token)
+        .ok_or_else(|| unauthorized("INVALID_TOKEN", "Invalid or expired session"))?;
+    let (new_token, expires_at) = jwt::issue_token(
+        &claims.sub,
+        &claims.role,
+        &claims.display_name,
+        &old_session.device,
+    );
     let now = now_secs();
-
     let new_session = Session {
         token: new_token.clone(),
-        username: old_session.username.clone(),
-        device: old_session.device.clone(),
+        username: old_session.username,
+        device: old_session.device,
         created_at: old_session.created_at,
         last_seen: now,
         expires_at,
     };
-
-    let mut sessions = state.sessions.write().unwrap();
+    let mut sessions = state.sessions.write().map_err(|_| {
+        error_with(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "INTERNAL_ERROR",
+            "Internal server error",
+        )
+    })?;
     sessions.remove(old_token);
     sessions.insert(new_token.clone(), new_session);
-    drop(sessions);
-
     Ok(Json(LoginResponse {
         token: new_token,
         username: claims.sub,
@@ -255,33 +544,4 @@ pub async fn refresh(
         role: claims.role,
         expires_at,
     }))
-}
-
-// ─── Seed data ────────────────────────────────────────────────────────────────
-
-pub fn seed_users() -> std::collections::HashMap<String, crate::models::User> {
-    use crate::models::User;
-    let mut m = std::collections::HashMap::new();
-
-    m.insert(
-        "admin".to_string(),
-        User {
-            username: "admin".to_string(),
-            password_hash: hash_password("loza2024"),
-            display_name: "Administrator".to_string(),
-            role: "admin".to_string(),
-        },
-    );
-
-    m.insert(
-        "loza".to_string(),
-        User {
-            username: "loza".to_string(),
-            password_hash: hash_password("loza"),
-            display_name: "Loza User".to_string(),
-            role: "user".to_string(),
-        },
-    );
-
-    m
 }

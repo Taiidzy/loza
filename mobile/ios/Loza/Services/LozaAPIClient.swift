@@ -16,7 +16,7 @@
 //    POST /auth/logout       (header: x-session-token)
 //    POST /auth/refresh      (header: x-session-token)
 //    GET  /health            (no auth)
-//    GET  /status            (no auth — server-wide, not per-user)
+//    GET  /status            (header: x-session-token)
 //    GET  /calendar/events               (header: x-session-token)
 //    POST /calendar/events               (header: x-session-token, body: CalendarEventDraft)
 //    PUT  /calendar/events/:id           (header: x-session-token, body: CalendarEvent)
@@ -184,6 +184,34 @@ actor LozaAPIClient {
         return decoded
     }
 
+    // ─── User management ───────────────────────────────────────────────────
+
+    func listUsers(baseURL: URL, token: String) async throws -> [ManagedUserDTO] {
+        let data = try await request(path: "/users", method: "GET", baseURL: baseURL, token: token)
+        guard let decoded = try? decoder.decode([ManagedUserDTO].self, from: data) else { throw APIError.invalidResponse }
+        return decoded
+    }
+
+    func createUser(baseURL: URL, token: String, body: CreateUserBody) async throws -> ManagedUserDTO {
+        let data = try await request(path: "/users", method: "POST", baseURL: baseURL, token: token, body: try encoder.encode(body))
+        guard let decoded = try? decoder.decode(ManagedUserDTO.self, from: data) else { throw APIError.invalidResponse }
+        return decoded
+    }
+
+    func changePassword(baseURL: URL, token: String, username: String, body: ChangePasswordBody) async throws {
+        _ = try await request(path: "/users/\(username)/password", method: "PUT", baseURL: baseURL, token: token, body: try encoder.encode(body))
+    }
+
+    func updateQuota(baseURL: URL, token: String, username: String, quotaBytes: UInt64?) async throws -> ManagedUserDTO {
+        let data = try await request(path: "/users/\(username)/quota", method: "PUT", baseURL: baseURL, token: token, body: try encoder.encode(UpdateQuotaBody(quotaBytes: quotaBytes)))
+        guard let decoded = try? decoder.decode(ManagedUserDTO.self, from: data) else { throw APIError.invalidResponse }
+        return decoded
+    }
+
+    func deleteUser(baseURL: URL, token: String, username: String) async throws {
+        _ = try await request(path: "/users/\(username)", method: "DELETE", baseURL: baseURL, token: token)
+    }
+
     // ─── Calendar ───────────────────────────────────────────────────────────
 
     func getCalendarEvents(baseURL: URL, token: String) async throws -> [CalendarEventDTO] {
@@ -242,4 +270,42 @@ struct ServerLoginResponse: Decodable {
         case displayName = "display_name"
         case expiresAt = "expires_at"
     }
+}
+
+struct ManagedUserDTO: Codable, Identifiable {
+    let username: String
+    let displayName: String
+    let role: String
+    let quotaBytes: UInt64?
+    var id: String { username }
+
+    enum CodingKeys: String, CodingKey {
+        case username, role
+        case displayName = "display_name"
+        case quotaBytes = "quota_bytes"
+    }
+}
+
+struct CreateUserBody: Encodable {
+    let username: String
+    let password: String
+    let displayName: String?
+    let role: String
+    let quotaBytes: UInt64?
+    enum CodingKeys: String, CodingKey {
+        case username, password, role
+        case displayName = "display_name"
+        case quotaBytes = "quota_bytes"
+    }
+}
+
+struct ChangePasswordBody: Encodable {
+    let currentPassword: String?
+    let newPassword: String
+    enum CodingKeys: String, CodingKey { case currentPassword = "current_password", newPassword = "new_password" }
+}
+
+struct UpdateQuotaBody: Encodable {
+    let quotaBytes: UInt64?
+    enum CodingKeys: String, CodingKey { case quotaBytes = "quota_bytes" }
 }

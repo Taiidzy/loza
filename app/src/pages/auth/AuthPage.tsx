@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { authLogin } from "../../api/auth";
 import { useIsMobile } from "../../shared/hooks/useIsMobile";
 import { CheckIcon, EyeIcon } from "../../shared/icons/Icons";
+import { logger } from "../../shared/utils/logger";
 import ParticlesBackground from "./ParticlesBackground";
 import styles from "./AuthPage.module.css";
 
@@ -25,11 +26,11 @@ const ERROR_MESSAGES: Record<string, string> = {
  * HTTP-статус и код ошибки от сервера (см. auth.rs::login), так что сам по
  * себе уже подсказывает, что не так, вместо бесполезного "Login failed".
  * Полную трассировку смотреть в devtools console (api/auth.ts логирует
- * каждый invoke) и в терминале, где запущено приложение (Rust eprintln!).
+ * каждый invoke) и в терминале, где запущено приложение.
  */
 function resolveErrorMessage(err: unknown): string {
   const raw = typeof err === "string" ? err : JSON.stringify(err);
-  console.error("[AuthPage] login error (полный):", err);
+  logger.error("auth-page", "login error", err);
   const knownCode = Object.keys(ERROR_MESSAGES).find((code) => raw.includes(code));
   return knownCode ? ERROR_MESSAGES[knownCode] : raw;
 }

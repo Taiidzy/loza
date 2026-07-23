@@ -171,6 +171,31 @@ struct SettingsView: View {
                         Text("Подключение")
                     }
 
+                    if session.session?.role == "admin" {
+                        Section {
+                            NavigationLink {
+                                UserManagementView()
+                            } label: {
+                                Label("Управление пользователями", systemImage: "person.2")
+                            }
+                            .listRowBackground(Color.white.opacity(0.04))
+                        } header: {
+                            Text("Администрирование")
+                        }
+                    }
+
+                    Section {
+                        HStack {
+                            Label("База данных", systemImage: "cylinder")
+                            Spacer()
+                            Text("В разработке")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .disabled(true)
+                        .listRowBackground(Color.white.opacity(0.04))
+                    }
+
                     Section {
                         Button(role: .destructive) {
                             showLogoutConfirm = true

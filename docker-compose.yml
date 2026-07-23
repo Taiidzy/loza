@@ -1,0 +1,48 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: loza-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-loza}
+      POSTGRES_USER: ${POSTGRES_USER:-loza}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - loza_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-loza} -d ${POSTGRES_DB:-loza}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: loza-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: ${PORT:-4242}
+      RUST_LOG: ${RUST_LOG:-loza_server=info,tower_http=info}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      BOOTSTRAP_ADMIN_DISPLAY_NAME: ${BOOTSTRAP_ADMIN_DISPLAY_NAME:-Administrator}
+      STORAGE_ROOT: /data/storage
+      DATABASE_URL: postgres://${POSTGRES_USER:-loza}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-loza}
+    ports:
+      - "${PORT:-4242}:4242"
+    volumes:
+      - loza_storage:/data/storage
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:4242/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  loza_postgres:
+  loza_storage:

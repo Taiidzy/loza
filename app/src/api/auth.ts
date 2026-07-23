@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { logger } from "../shared/utils/logger";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -23,15 +24,15 @@ export interface UserInfo {
  * в Rust-хранилище; сюда возвращается только безопасный UserInfo.
  */
 export async function authLogin(username: string, password: string): Promise<UserInfo> {
-  console.log("[auth] invoke(login) →", { username, password: "•".repeat(password.length) });
+  logger.info("auth", "invoke(login)", { username, password: "*".repeat(password.length) });
   try {
     const result = await invoke<UserInfo>("login", { username, password });
-    console.log("[auth] invoke(login) ← успех:", result);
+    logger.success("auth", "login succeeded", result);
     return result;
   } catch (err) {
     // Rust-команды при ошибке возвращают строку (см. describe_error в auth.rs) —
     // именно её и увидим здесь целиком, до любой локализации в AuthPage.
-    console.error("[auth] invoke(login) ← ошибка:", err);
+    logger.error("auth", "login failed", err);
     throw err;
   }
 }
@@ -57,13 +58,13 @@ export async function authLogout(): Promise<void> {
  * на экране ввода адреса сервера, до того как адрес сохранён.
  */
 export async function checkServerHealth(url: string): Promise<boolean> {
-  console.log("[auth] invoke(health_check) →", url);
+  logger.info("auth", "invoke(health_check)", url);
   try {
     const ok = await invoke<boolean>("health_check", { url });
-    console.log("[auth] invoke(health_check) ← ", ok);
+    logger.success("auth", "health_check completed", ok);
     return ok;
   } catch (err) {
-    console.error("[auth] invoke(health_check) ← ошибка:", err);
+    logger.error("auth", "health_check failed", err);
     return false;
   }
 }
@@ -88,9 +89,9 @@ export async function getServerUrl(): Promise<string | null> {
  * (со схемой, без конечного слэша), чтобы отобразить её как есть.
  */
 export async function setServerUrl(url: string): Promise<string> {
-  console.log("[auth] invoke(set_server_url) →", url);
+  logger.info("auth", "invoke(set_server_url)", url);
   const normalized = await invoke<string>("set_server_url", { url });
-  console.log("[auth] invoke(set_server_url) ← сохранено как:", normalized);
+  logger.success("auth", "server URL saved", normalized);
   return normalized;
 }
 

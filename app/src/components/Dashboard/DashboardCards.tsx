@@ -66,8 +66,10 @@ export function ClientsCard({ clients, delay }: { clients: ClientInfo[]; delay: 
             <div key={client.id} className={styles.clientRow}>
               <span className={`${styles.clientStatusDot} ${client.active ? styles.active : ""}`} />
               <div className={styles.clientInfo}>
-                <div className={styles.clientName}>{client.name}</div>
-                <div className={styles.clientDevice}>{client.device}</div>
+                <div className={styles.clientName}>{client.device || client.name}</div>
+                <div className={styles.clientDevice}>
+                  {client.active ? "активен" : "неактивен"} · {new Date(client.lastSeen).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" })}
+                </div>
               </div>
             </div>
           ))
@@ -80,8 +82,8 @@ export function ClientsCard({ clients, delay }: { clients: ClientInfo[]; delay: 
 // ─── Карточка хранилища ─────────────────────────────────────────────────────
 
 export function StorageCard({ storage, delay }: { storage: StorageInfo; delay: number }) {
-  const usedPercent = Math.min(100, Math.round((storage.usedBytes / storage.totalBytes) * 100));
-  const freeGB = Math.round((storage.totalBytes - storage.usedBytes) / 1024 ** 3);
+  const usedPercent = storage.totalBytes > 0 ? Math.min(100, Math.round((storage.usedBytes / storage.totalBytes) * 100)) : 0;
+  const freeGB = Math.max(0, Math.round((storage.totalBytes - storage.usedBytes) / 1024 ** 3));
 
   return (
     <Card delay={delay} flex={1.1} className={styles.storageCard}>

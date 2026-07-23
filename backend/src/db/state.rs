@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 
+use sqlx::PgPool;
 use sysinfo::System;
 
-use crate::models::{CalendarEvent, Session, User};
+use crate::models::Session;
 
 /// Сколько последних замеров CPU/RAM хранить для sparkline-графика нагрузки
 /// (LoadInfo.history во фронтенде — "last N samples").
@@ -14,8 +15,8 @@ pub const STORAGE_HISTORY_DAYS: usize = 7;
 
 #[derive(Clone)]
 pub struct AppState {
+    pub pool: PgPool,
     pub sessions: Arc<RwLock<HashMap<String, Session>>>,
-    pub users: Arc<RwLock<HashMap<String, User>>>,
     /// Общий sysinfo::System, переиспользуется между опросами (так рекомендует sysinfo).
     pub sys: Arc<Mutex<System>>,
     /// Кольцевой буфер последних замеров % загрузки CPU — источник LoadInfo.history.
@@ -25,23 +26,19 @@ pub struct AppState {
     /// Unix-время последнего добавленного дневного замера — чтобы не писать
     /// в storage_history на каждый тик статуса (раз в 2 сек), а раз в сутки.
     pub last_storage_sample_at: Arc<RwLock<u64>>,
-    /// События календаря, привязанные к username — у каждого пользователя
-    /// свой список (см. handlers/calendar.rs). In-memory, как sessions/users:
-    /// переживает ре-рендеры и переключение вкладок на клиенте, но не
-    /// переживает перезапуск backend-процесса.
-    pub events: Arc<RwLock<HashMap<String, Vec<CalendarEvent>>>>,
+    pub started_at: u64,
 }
 
 impl AppState {
-    pub fn new(users: HashMap<String, User>) -> Self {
+    pub fn new(pool: PgPool) -> Self {
         Self {
+            pool,
             sessions: Arc::new(RwLock::new(HashMap::new())),
-            users: Arc::new(RwLock::new(users)),
             sys: Arc::new(Mutex::new(System::new_all())),
             load_history: Arc::new(RwLock::new(Vec::with_capacity(LOAD_HISTORY_CAPACITY))),
             storage_history: Arc::new(RwLock::new(Vec::with_capacity(STORAGE_HISTORY_DAYS))),
             last_storage_sample_at: Arc::new(RwLock::new(0)),
-            events: Arc::new(RwLock::new(HashMap::new())),
+            started_at: crate::handlers::auth::now_secs(),
         }
     }
 

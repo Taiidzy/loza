@@ -64,23 +64,96 @@ struct ClientsCard: View {
 struct StorageCard: View {
     let storage: StorageInfo
     var delay: Double = 0
+    @State private var detailsExpanded = false
 
     var body: some View {
         DashboardCard(delay: delay) {
-            HStack(spacing: 18) {
-                StorageOrb(storage: storage)
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 18) {
+                    StorageOrb(storage: storage, expanded: $detailsExpanded)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    CardLabel(text: "Хранилище")
-                    Text("\(storage.usedPercent)%")
-                        .font(.system(size: 22, weight: .light))
-                        .foregroundStyle(.white)
-                    Text("свободно \(ByteFormat.gbInt(storage.freeBytes)) ГБ")
-                        .font(.system(size: 11))
-                        .foregroundStyle(LozaColor.textTertiary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        CardLabel(text: "Хранилище")
+                        Text("\(storage.usedPercent)%")
+                            .font(.system(size: 22, weight: .light))
+                            .foregroundStyle(.white)
+                        Text("свободно \(ByteFormat.gbInt(storage.freeBytes)) ГБ")
+                            .font(.system(size: 11))
+                            .foregroundStyle(LozaColor.textTertiary)
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                if detailsExpanded {
+                    StorageBreakdownPanel(storage: storage)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
         }
+    }
+}
+
+private struct StorageBreakdownPanel: View {
+    let storage: StorageInfo
+
+    private var segments: [(category: StorageCategory, share: Double)] {
+        let total = max(storage.categories.reduce(0) { $0 + $1.bytes }, 1)
+        return storage.categories.map { ($0, Double($0.bytes) / Double(total)) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("\(ByteFormat.gb(storage.usedBytes)) ГБ из \(ByteFormat.gb(storage.totalBytes)) ГБ")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.85))
+                Spacer()
+                Text("\(ByteFormat.gb(storage.freeBytes)) ГБ свободно")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.white.opacity(0.35))
+            }
+
+            GeometryReader { geo in
+                HStack(spacing: 1) {
+                    ForEach(segments, id: \.category.id) { seg in
+                        RoundedRectangle(cornerRadius: 0)
+                            .fill(seg.category.color)
+                            .frame(width: max(1, geo.size.width * seg.share))
+                    }
+                }
+            }
+            .frame(height: 7)
+            .background(Color.white.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+
+            VStack(spacing: 8) {
+                ForEach(segments, id: \.category.id) { seg in
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(seg.category.color)
+                            .frame(width: 7, height: 7)
+                        Text(seg.category.label)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.white.opacity(0.6))
+                        Spacer()
+                        Text("\(ByteFormat.gb(seg.category.bytes)) ГБ")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.white.opacity(0.35))
+                            .monospacedDigit()
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 16)
+        .padding(.bottom, 14)
+        .frame(maxWidth: .infinity)
+        .background(Color.white.opacity(0.035))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 

@@ -1,74 +1,54 @@
 use axum::{extract::Path, extract::State, http::StatusCode, response::Json};
 use uuid::Uuid;
 
-use crate::db::AppState;
-use crate::handlers::auth::touch_session;
+use crate::db::{AppState, repository};
+use crate::handlers::auth::{ErrorResponse, require_session};
 use crate::models::{CalendarEvent, CalendarEventDraft};
 
-use super::auth::ErrorResponse;
+type ApiError = (StatusCode, Json<ErrorResponse>);
 
-fn error(code: &str, msg: &str) -> (StatusCode, Json<ErrorResponse>) {
+fn database_error(error: sqlx::Error) -> ApiError {
+    tracing::error!(error = %error, "calendar database operation failed");
     (
-        StatusCode::UNAUTHORIZED,
+        StatusCode::SERVICE_UNAVAILABLE,
         Json(ErrorResponse {
-            error: msg.to_string(),
-            code: code.to_string(),
+            error: "The database is temporarily unavailable".to_string(),
+            code: "DATABASE_UNAVAILABLE".to_string(),
         }),
     )
 }
 
-fn not_found(id: &str) -> (StatusCode, Json<ErrorResponse>) {
+fn not_found(id: &str) -> ApiError {
     (
         StatusCode::NOT_FOUND,
         Json(ErrorResponse {
-            error: format!("Событие с id \"{}\" не найдено", id),
+            error: format!("Event with id {id} was not found"),
             code: "EVENT_NOT_FOUND".to_string(),
         }),
     )
 }
 
-/// Достаёт username из валидной сессии по заголовку x-session-token.
-/// Общая точка входа для всех calendar-хендлеров — события всегда привязаны
-/// к конкретному пользователю (см. решение из обсуждения ТЗ).
-fn require_username(
-    state: &AppState,
-    headers: &axum::http::HeaderMap,
-) -> Result<String, (StatusCode, Json<ErrorResponse>)> {
-    let token = headers
-        .get("x-session-token")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    if token.is_empty() {
-        return Err(error("NO_TOKEN", "Missing session token"));
-    }
-
-    match touch_session(state, token) {
-        Some((claims, _)) => Ok(claims.sub),
-        None => Err(error("INVALID_TOKEN", "Invalid or expired session")),
-    }
+fn require_username(state: &AppState, headers: &axum::http::HeaderMap) -> Result<String, ApiError> {
+    require_session(state, headers).map(|(claims, _)| claims.sub)
 }
 
-/// GET /calendar/events — все события текущего пользователя.
-/// Соответствует calendarService.getEvents() на фронте.
 pub async fn get_events(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
-) -> Result<Json<Vec<CalendarEvent>>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<Vec<CalendarEvent>>, ApiError> {
     let username = require_username(&state, &headers)?;
-    let events = state.events.read().unwrap();
-    Ok(Json(events.get(&username).cloned().unwrap_or_default()))
+    repository::list_events(&state.pool, &username)
+        .await
+        .map(Json)
+        .map_err(database_error)
 }
 
-/// POST /calendar/events — создать событие. Тело — CalendarEventDraft (без id).
-/// Соответствует calendarService.createEvent(draft) на фронте.
 pub async fn create_event(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Json(draft): Json<CalendarEventDraft>,
-) -> Result<Json<CalendarEvent>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<CalendarEvent>, ApiError> {
     let username = require_username(&state, &headers)?;
-
     let event = CalendarEvent {
         id: format!("evt-{}", Uuid::new_v4()),
         title: draft.title,
@@ -81,51 +61,48 @@ pub async fn create_event(
         is_multi_day: draft.is_multi_day,
         is_all_day: draft.is_all_day,
     };
-
-    let mut events = state.events.write().unwrap();
-    events.entry(username).or_default().push(event.clone());
-
+    repository::create_event(&state.pool, &username, &event)
+        .await
+        .map_err(database_error)?;
     Ok(Json(event))
 }
 
-/// PUT /calendar/events/:id — обновить событие целиком.
-/// Соответствует calendarService.updateEvent(event) на фронте (принимает
-/// полный CalendarEvent, включая id — как и клиентская сигнатура).
 pub async fn update_event(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Path(id): Path<String>,
     Json(updated): Json<CalendarEvent>,
-) -> Result<Json<CalendarEvent>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<CalendarEvent>, ApiError> {
     let username = require_username(&state, &headers)?;
-
-    let mut events = state.events.write().unwrap();
-    let list = events.entry(username).or_default();
-
-    let idx = list.iter().position(|e| e.id == id).ok_or_else(|| not_found(&id))?;
-    list[idx] = updated.clone();
-
+    if updated.id != id {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Event id does not match the request path".to_string(),
+                code: "EVENT_ID_MISMATCH".to_string(),
+            }),
+        ));
+    }
+    if !repository::update_event(&state.pool, &username, &id, &updated)
+        .await
+        .map_err(database_error)?
+    {
+        return Err(not_found(&id));
+    }
     Ok(Json(updated))
 }
 
-/// DELETE /calendar/events/:id — удалить событие.
-/// Соответствует calendarService.deleteEvent(id) на фронте.
 pub async fn delete_event(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
     Path(id): Path<String>,
-) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<StatusCode, ApiError> {
     let username = require_username(&state, &headers)?;
-
-    let mut events = state.events.write().unwrap();
-    let list = events.entry(username).or_default();
-
-    let before = list.len();
-    list.retain(|e| e.id != id);
-
-    if list.len() == before {
+    if !repository::delete_event(&state.pool, &username, &id)
+        .await
+        .map_err(database_error)?
+    {
         return Err(not_found(&id));
     }
-
     Ok(StatusCode::NO_CONTENT)
 }

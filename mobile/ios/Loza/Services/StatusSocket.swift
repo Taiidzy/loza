@@ -73,13 +73,16 @@ final class StatusSocket: ObservableObject {
 
     private func runOnce() async {
         guard let baseURL = await ServerConfig.shared.baseURL,
+              let token = await SessionStore.shared.session?.token,
               let wsURL = ServerConfig.webSocketURL(base: baseURL, path: "/ws/status") else {
-            connectionError = "Сервер не настроен"
+            connectionError = "Требуется авторизация"
             return
         }
 
         let session = URLSession(configuration: .default)
-        let socket = session.webSocketTask(with: wsURL)
+        var request = URLRequest(url: wsURL)
+        request.setValue(token, forHTTPHeaderField: "x-session-token")
+        let socket = session.webSocketTask(with: request)
         task = socket
         socket.resume()
         isConnected = true

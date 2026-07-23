@@ -44,7 +44,10 @@ pub fn normalize(input: &str) -> Option<String> {
 
 pub fn save_server_url(app: &AppHandle, url: &str) -> Result<(), String> {
     let store = app.store(STORE_FILE).map_err(|e| e.to_string())?;
-    let value = serde_json::to_value(StoredServerUrl { url: url.to_string() }).map_err(|e| e.to_string())?;
+    let value = serde_json::to_value(StoredServerUrl {
+        url: url.to_string(),
+    })
+    .map_err(|e| e.to_string())?;
     store.set(SERVER_URL_KEY, value);
     store.save().map_err(|e| e.to_string())
 }
@@ -66,13 +69,6 @@ pub fn delete_server_url(app: &AppHandle) -> Result<(), String> {
 /// точка правды вместо константы SERVER_URL.
 pub fn require_server_url(app: &AppHandle) -> Result<String, String> {
     load_server_url(app).ok_or_else(|| "NO_SERVER_URL: Server address not configured".to_string())
-}
-
-/// ws:// или wss:// вариант сохранённого адреса, для WS-стрима статуса.
-/// http -> ws, https -> wss, зеркалит логику ServerConfig.webSocketURL на iOS.
-pub fn require_ws_url(app: &AppHandle, path: &str) -> Result<String, String> {
-    let http_url = require_server_url(app)?;
-    require_ws_url_from(&http_url, path)
 }
 
 /// Вариант выше, но принимает уже известный адрес сервера напрямую —
@@ -106,7 +102,8 @@ pub fn get_server_url(app: AppHandle) -> Option<String> {
 /// Возвращает нормализованный адрес, чтобы React мог отобразить его как есть.
 #[tauri::command]
 pub fn set_server_url(app: AppHandle, url: String) -> Result<String, String> {
-    let normalized = normalize(&url).ok_or_else(|| "INVALID_URL: Некорректный адрес сервера".to_string())?;
+    let normalized =
+        normalize(&url).ok_or_else(|| "INVALID_URL: Некорректный адрес сервера".to_string())?;
     save_server_url(&app, &normalized)?;
     Ok(normalized)
 }

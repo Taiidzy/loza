@@ -75,14 +75,11 @@ pub async fn login(
     username: String,
     password: String,
 ) -> Result<UserInfo, String> {
-    let server_url = server_config::require_server_url(&app).map_err(|e| {
-        eprintln!("🔴 [login] адрес сервера не настроен: {}", e);
-        e
-    })?;
+    let server_url = server_config::require_server_url(&app)?;
     let device = device_label();
     let login_url = format!("{}/auth/login", server_url);
 
-    eprintln!("🔵 [login] POST {} (username={}, device={})", login_url, username, device);
+    eprintln!("\x1b[36m[INFO]\x1b[0m [desktop.auth] login request for {username} from {device}");
 
     let body = serde_json::json!({
         "username": username,
@@ -97,39 +94,36 @@ pub async fn login(
         .send()
         .await
         .map_err(|e| {
-            eprintln!("🔴 [login] запрос не дошёл до сервера: {}", e);
+            eprintln!("\x1b[33m[WARNING]\x1b[0m [desktop.auth] login request failed: {e}");
             format!("SERVER_UNREACHABLE: {}", e)
         })?;
 
     let status = resp.status();
-    eprintln!("🔵 [login] ответ сервера: HTTP {}", status);
+    eprintln!("\x1b[90m[DEBUG]\x1b[0m [desktop.auth] login response: {status}");
 
     let ok = status.is_success();
     if !ok {
-        // Читаем тело как текст сначала, чтобы залогировать его целиком
-        // независимо от того, распарсится оно как ServerErrorResponse или нет —
-        // именно это тело раньше терялось за generic "Login failed".
         let raw_body = resp.text().await.unwrap_or_default();
-        eprintln!("🔴 [login] тело ошибки от сервера: {}", raw_body);
-
         let err = serde_json::from_str::<ServerErrorResponse>(&raw_body).ok();
-        if err.is_none() {
-            eprintln!(
-                "🔴 [login] тело ошибки не распарсилось как {{error, code}} — проверьте, что \
-                 /auth/login на сервере точно отвечает на этот URL (не 404 от неверного пути, \
-                 не HTML от прокси, не другой сервис на этом порту)"
-            );
-        }
-        return Err(describe_error(err, &format!("UNKNOWN: Login failed (HTTP {})", status)));
+        eprintln!(
+            "\x1b[33m[WARNING]\x1b[0m [desktop.auth] login rejected: HTTP {status}, code={}",
+            err.as_ref()
+                .map(|body| body.code.as_str())
+                .unwrap_or("UNKNOWN")
+        );
+        return Err(describe_error(
+            err,
+            &format!("UNKNOWN: Login failed (HTTP {})", status),
+        ));
     }
 
     let raw_body = resp.text().await.map_err(|e| {
-        eprintln!("🔴 [login] не удалось прочитать тело успешного ответа: {}", e);
+        eprintln!("\x1b[31m[ERROR]\x1b[0m [desktop.auth] failed to read login response: {e}");
         format!("PARSE_ERROR: {}", e)
     })?;
 
     let login_resp = serde_json::from_str::<ServerLoginResponse>(&raw_body).map_err(|e| {
-        eprintln!("🔴 [login] тело успешного ответа не распарсилось как LoginResponse: {} | тело: {}", e, raw_body);
+        eprintln!("\x1b[31m[ERROR]\x1b[0m [desktop.auth] failed to parse login response: {e}");
         format!("PARSE_ERROR: {}", e)
     })?;
 
@@ -144,7 +138,10 @@ pub async fn login(
 
     session_store::save_session(&app, &session)?;
 
-    eprintln!("🟢 [login] успех: username={}, role={}", session.username, session.role);
+    eprintln!(
+        "\x1b[32m[SUCCESS]\x1b[0m [desktop.auth] login successful for {} ({})",
+        session.username, session.role
+    );
 
     Ok(UserInfo::from(&session))
 }
@@ -188,9 +185,10 @@ pub async fn get_current_user(
 /// Отзывает сессию на сервере и удаляет её из локального хранилища.
 #[tauri::command]
 pub async fn logout(app: AppHandle, state: tauri::State<'_, LozaState>) -> Result<(), String> {
-    if let (Some(session), Some(server_url)) =
-        (session_store::load_session(&app), server_config::load_server_url(&app))
-    {
+    if let (Some(session), Some(server_url)) = (
+        session_store::load_session(&app),
+        server_config::load_server_url(&app),
+    ) {
         let _ = state
             .client
             .post(format!("{}/auth/logout", server_url))
@@ -208,12 +206,17 @@ pub async fn logout(app: AppHandle, state: tauri::State<'_, LozaState>) -> Resul
 #[tauri::command]
 pub async fn health_check(state: tauri::State<'_, LozaState>, url: String) -> Result<bool, String> {
     let health_url = format!("{}/health", url);
-    eprintln!("🔵 [health_check] GET {}", health_url);
+    eprintln!("\x1b[90m[DEBUG]\x1b[0m [desktop.auth] health check: {health_url}");
 
     let resp = state.client.get(&health_url).send().await;
     match &resp {
-        Ok(r) => eprintln!("🔵 [health_check] ответ: HTTP {}", r.status()),
-        Err(e) => eprintln!("🔴 [health_check] запрос не дошёл: {}", e),
+        Ok(response) => eprintln!(
+            "\x1b[90m[DEBUG]\x1b[0m [desktop.auth] health check response: {}",
+            response.status()
+        ),
+        Err(error) => {
+            eprintln!("\x1b[33m[WARNING]\x1b[0m [desktop.auth] health check failed: {error}")
+        }
     }
 
     Ok(resp.map(|r| r.status().is_success()).unwrap_or(false))
