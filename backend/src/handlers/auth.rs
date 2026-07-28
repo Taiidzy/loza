@@ -2,7 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use axum::{
-    extract::{ConnectInfo, Path, State},
+    extract::{ConnectInfo, State},
     http::StatusCode,
     response::Json,
 };
@@ -16,8 +16,7 @@ use uuid::Uuid;
 use crate::db::{AppState, repository};
 use crate::handlers::jwt::{self, Claims};
 use crate::models::{
-    ChangePasswordRequest, CreateUserRequest, PublicUser, ROLE_ADMIN, ROLE_USER, Session,
-    UpdateQuotaRequest, User,
+    ROLE_ADMIN, Session, User,
 };
 
 #[derive(Deserialize)]
@@ -94,13 +93,6 @@ fn database_error(error: sqlx::Error) -> ApiError {
     )
 }
 
-fn is_unique_violation(error: &sqlx::Error) -> bool {
-    error
-        .as_database_error()
-        .and_then(|database_error| database_error.code())
-        .is_some_and(|code| code == "23505")
-}
-
 fn normalize_username(username: &str) -> Result<String, ApiError> {
     let username = username.trim().to_lowercase();
     let valid = username.len() >= 3
@@ -128,29 +120,6 @@ fn validate_password(password: &str) -> Result<(), ApiError> {
         ));
     }
     Ok(())
-}
-
-fn validate_quota(quota_bytes: Option<u64>) -> Result<(), ApiError> {
-    if quota_bytes.is_some_and(|value| value > i64::MAX as u64) {
-        return Err(error_with(
-            StatusCode::BAD_REQUEST,
-            "INVALID_QUOTA",
-            "Quota exceeds the maximum supported value",
-        ));
-    }
-    Ok(())
-}
-
-fn normalize_role(role: Option<String>) -> Result<String, ApiError> {
-    match role.unwrap_or_else(|| ROLE_USER.to_string()).as_str() {
-        ROLE_ADMIN => Ok(ROLE_ADMIN.to_string()),
-        ROLE_USER => Ok(ROLE_USER.to_string()),
-        _ => Err(error_with(
-            StatusCode::BAD_REQUEST,
-            "INVALID_ROLE",
-            "Role must be admin or user",
-        )),
-    }
 }
 
 async fn hash_password(password: String) -> Result<String, ApiError> {
@@ -222,21 +191,6 @@ pub async fn require_session(
     touch_session(state, token)
         .await
         .ok_or_else(|| unauthorized("INVALID_TOKEN", "Invalid or expired session"))
-}
-
-async fn require_admin(
-    state: &AppState,
-    headers: &axum::http::HeaderMap,
-) -> Result<(Claims, Session), ApiError> {
-    let (claims, session) = require_session(state, headers).await?;
-    if claims.role != ROLE_ADMIN {
-        return Err(error_with(
-            StatusCode::FORBIDDEN,
-            "FORBIDDEN",
-            "Administrator role is required",
-        ));
-    }
-    Ok((claims, session))
 }
 
 pub async fn bootstrap_admin(pool: &sqlx::PgPool) -> Result<(), String> {
@@ -386,137 +340,6 @@ pub async fn me(
         role: user.role,
         session_created_at: session.created_at,
     }))
-}
-
-pub async fn list_users(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-) -> Result<Json<Vec<PublicUser>>, ApiError> {
-    require_admin(&state, &headers).await?;
-    repository::list_users(&state.pool)
-        .await
-        .map(Json)
-        .map_err(database_error)
-}
-
-pub async fn create_user(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    Json(req): Json<CreateUserRequest>,
-) -> Result<Json<PublicUser>, ApiError> {
-    require_admin(&state, &headers).await?;
-    let username = normalize_username(&req.username)?;
-    validate_password(&req.password)?;
-    validate_quota(req.quota_bytes)?;
-    let user = User {
-        username: username.clone(),
-        password_hash: hash_password(req.password).await?,
-        display_name: req
-            .display_name
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| username.clone()),
-        role: normalize_role(req.role)?,
-        quota_bytes: req.quota_bytes,
-    };
-    match repository::create_user(&state.pool, &user).await {
-        Ok(()) => {
-            tracing::info!(username = %user.username, role = %user.role, "user created");
-            Ok(Json(user.public()))
-        }
-        Err(error) if is_unique_violation(&error) => Err(error_with(
-            StatusCode::CONFLICT,
-            "USER_EXISTS",
-            "User already exists",
-        )),
-        Err(error) => Err(database_error(error)),
-    }
-}
-
-pub async fn change_password(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    Path(username): Path<String>,
-    Json(req): Json<ChangePasswordRequest>,
-) -> Result<StatusCode, ApiError> {
-    let (claims, _) = require_session(&state, &headers).await?;
-    let target = normalize_username(&username)?;
-    let self_change = claims.sub == target;
-    if !self_change && claims.role != ROLE_ADMIN {
-        return Err(error_with(
-            StatusCode::FORBIDDEN,
-            "FORBIDDEN",
-            "Not allowed",
-        ));
-    }
-    validate_password(&req.new_password)?;
-    let user = repository::find_user(&state.pool, &target)
-        .await
-        .map_err(database_error)?
-        .ok_or_else(|| error_with(StatusCode::NOT_FOUND, "USER_NOT_FOUND", "User not found"))?;
-    if self_change
-        && !verify_password(req.current_password.unwrap_or_default(), user.password_hash).await
-    {
-        return Err(error_with(
-            StatusCode::FORBIDDEN,
-            "INVALID_CURRENT_PASSWORD",
-            "Current password is invalid",
-        ));
-    }
-    let password_hash = hash_password(req.new_password).await?;
-    repository::update_password(&state.pool, &target, &password_hash)
-        .await
-        .map_err(database_error)?;
-    repository::delete_sessions_for_user(&state.pool, &target)
-        .await
-        .map_err(database_error)?;
-    tracing::info!(username = %target, "password changed and sessions revoked");
-    Ok(StatusCode::NO_CONTENT)
-}
-
-pub async fn update_user_quota(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    Path(username): Path<String>,
-    Json(req): Json<UpdateQuotaRequest>,
-) -> Result<Json<PublicUser>, ApiError> {
-    require_admin(&state, &headers).await?;
-    let target = normalize_username(&username)?;
-    validate_quota(req.quota_bytes)?;
-    let user = repository::update_quota(&state.pool, &target, req.quota_bytes)
-        .await
-        .map_err(database_error)?
-        .ok_or_else(|| error_with(StatusCode::NOT_FOUND, "USER_NOT_FOUND", "User not found"))?;
-    tracing::info!(username = %target, quota_bytes = ?user.quota_bytes, "quota updated");
-    Ok(Json(user))
-}
-
-pub async fn delete_user(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    Path(username): Path<String>,
-) -> Result<StatusCode, ApiError> {
-    let (claims, _) = require_admin(&state, &headers).await?;
-    let target = normalize_username(&username)?;
-    if claims.sub == target {
-        return Err(error_with(
-            StatusCode::BAD_REQUEST,
-            "CANNOT_DELETE_SELF",
-            "You cannot delete your own account",
-        ));
-    }
-    if !repository::delete_user(&state.pool, &target)
-        .await
-        .map_err(database_error)?
-    {
-        return Err(error_with(
-            StatusCode::NOT_FOUND,
-            "USER_NOT_FOUND",
-            "User not found",
-        ));
-    }
-    tracing::warn!(username = %target, "user deleted and sessions revoked");
-    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn logout(State(state): State<AppState>, headers: axum::http::HeaderMap) -> StatusCode {

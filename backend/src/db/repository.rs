@@ -1,6 +1,6 @@
 use sqlx::{PgPool, Row};
 
-use crate::models::{CalendarEvent, PublicUser, Recurrence, Session, User};
+use crate::models::{CalendarEvent, Recurrence, Session, User};
 
 pub async fn connect_and_migrate(database_url: &str) -> Result<PgPool, sqlx::Error> {
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -40,24 +40,6 @@ pub async fn find_user(pool: &PgPool, username: &str) -> Result<Option<User>, sq
         .map(|row| row.map(user_from_row))
 }
 
-pub async fn list_users(pool: &PgPool) -> Result<Vec<PublicUser>, sqlx::Error> {
-    sqlx::query("SELECT username, display_name, role, quota_bytes FROM users ORDER BY username")
-        .fetch_all(pool)
-        .await
-        .map(|rows| {
-            rows.into_iter()
-                .map(|row| PublicUser {
-                    username: row.get("username"),
-                    display_name: row.get("display_name"),
-                    role: row.get("role"),
-                    quota_bytes: row
-                        .get::<Option<i64>, _>("quota_bytes")
-                        .and_then(|value| u64::try_from(value).ok()),
-                })
-                .collect()
-        })
-}
-
 pub async fn create_user(pool: &PgPool, user: &User) -> Result<(), sqlx::Error> {
     sqlx::query("INSERT INTO users (username, password_hash, display_name, role, quota_bytes) VALUES ($1, $2, $3, $4, $5)")
         .bind(&user.username)
@@ -68,45 +50,6 @@ pub async fn create_user(pool: &PgPool, user: &User) -> Result<(), sqlx::Error> 
         .execute(pool)
         .await
         .map(|_| ())
-}
-
-pub async fn update_password(
-    pool: &PgPool,
-    username: &str,
-    password_hash: &str,
-) -> Result<bool, sqlx::Error> {
-    sqlx::query("UPDATE users SET password_hash = $1, updated_at = now() WHERE username = $2")
-        .bind(password_hash)
-        .bind(username)
-        .execute(pool)
-        .await
-        .map(|result| result.rows_affected() == 1)
-}
-
-pub async fn update_quota(
-    pool: &PgPool,
-    username: &str,
-    quota_bytes: Option<u64>,
-) -> Result<Option<PublicUser>, sqlx::Error> {
-    sqlx::query("UPDATE users SET quota_bytes = $1, updated_at = now() WHERE username = $2 RETURNING username, display_name, role, quota_bytes")
-        .bind(quota_bytes.map(|value| value as i64))
-        .bind(username)
-        .fetch_optional(pool)
-        .await
-        .map(|row| row.map(|row| PublicUser {
-            username: row.get("username"),
-            display_name: row.get("display_name"),
-            role: row.get("role"),
-            quota_bytes: row.get::<Option<i64>, _>("quota_bytes").and_then(|value| u64::try_from(value).ok()),
-        }))
-}
-
-pub async fn delete_user(pool: &PgPool, username: &str) -> Result<bool, sqlx::Error> {
-    sqlx::query("DELETE FROM users WHERE username = $1")
-        .bind(username)
-        .execute(pool)
-        .await
-        .map(|result| result.rows_affected() == 1)
 }
 
 fn session_from_row(row: sqlx::postgres::PgRow) -> Session {
@@ -166,14 +109,6 @@ pub async fn delete_session(pool: &PgPool, token_hash: &str) -> Result<bool, sql
         .execute(pool)
         .await
         .map(|result| result.rows_affected() == 1)
-}
-
-pub async fn delete_sessions_for_user(pool: &PgPool, username: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("DELETE FROM sessions WHERE username = $1")
-        .bind(username)
-        .execute(pool)
-        .await
-        .map(|_| ())
 }
 
 pub async fn delete_expired_sessions(pool: &PgPool, now: u64) -> Result<(), sqlx::Error> {

@@ -80,22 +80,6 @@ async fn main() {
         .route("/auth/me", get(handlers::auth::me))
         .route("/auth/logout", post(handlers::auth::logout))
         .route("/auth/refresh", post(handlers::auth::refresh))
-        .route(
-            "/users",
-            get(handlers::auth::list_users).post(handlers::auth::create_user),
-        )
-        .route(
-            "/users/:username",
-            axum::routing::delete(handlers::auth::delete_user),
-        )
-        .route(
-            "/users/:username/password",
-            put(handlers::auth::change_password),
-        )
-        .route(
-            "/users/:username/quota",
-            put(handlers::auth::update_user_quota),
-        )
         .route("/status", get(handlers::status::get_status))
         .route("/ws/status", get(handlers::status::ws_status))
         .route(

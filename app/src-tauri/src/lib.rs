@@ -1,4 +1,6 @@
 use tauri::Manager;
+
+#[cfg(target_os = "macos")]
 use window_vibrancy::NSVisualEffectMaterial;
 
 #[cfg(target_os = "macos")]
@@ -12,7 +14,6 @@ mod calendar;
 mod server_config;
 mod session_store;
 mod status;
-mod users;
 
 // ─── Shared HTTP client state ─────────────────────────────────────────────────
 
@@ -64,11 +65,6 @@ pub fn run() {
             server_config::set_server_url,
             server_config::clear_server_url,
             status::get_server_status,
-            users::list_users,
-            users::create_user,
-            users::change_user_password,
-            users::update_user_quota,
-            users::delete_user,
             calendar::get_calendar_events,
             calendar::create_calendar_event,
             calendar::update_calendar_event,

@@ -43,7 +43,9 @@ export async function authLogin(username: string, password: string): Promise<Use
  * токена, Rust сам знает, что и как проверять.
  */
 export async function getCurrentUser(): Promise<UserInfo | null> {
-  return await invoke<UserInfo | null>("get_current_user");
+  let user = await invoke<UserInfo | null>("get_current_user");
+  logger.info("auth", "invoke(get_current_user)", user)
+  return user;
 }
 
 /**

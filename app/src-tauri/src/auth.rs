@@ -157,26 +157,60 @@ pub async fn get_current_user(
     app: AppHandle,
     state: tauri::State<'_, LozaState>,
 ) -> Result<Option<UserInfo>, String> {
+    eprintln!("\x1b[36m[INFO]\x1b[0m [desktop.auth] get_current_user called");
+    
+    // 1. Проверяем наличие локальной сессии
     let Some(session) = session_store::load_session(&app) else {
+        eprintln!("\x1b[33m[WARNING]\x1b[0m [desktop.auth] no local session found in keyring");
         return Ok(None);
     };
+    eprintln!("\x1b[90m[DEBUG]\x1b[0m [desktop.auth] local session loaded for user: {}", session.username);
+    
+    // 2. Проверяем наличие адреса сервера
     let Some(server_url) = server_config::load_server_url(&app) else {
+        eprintln!("\x1b[33m[WARNING]\x1b[0m [desktop.auth] no server URL configured");
         return Ok(None);
     };
-
+    
+    let url = format!("{}/auth/me", server_url);
+    eprintln!("\x1b[90m[DEBUG]\x1b[0m [desktop.auth] checking session with backend: {}", url);
+    
+    // 3. Делаем запрос к бэкенду
     let resp = state
         .client
-        .get(format!("{}/auth/me", server_url))
+        .get(&url)
         .header("x-session-token", &session.token)
         .send()
         .await;
-
+        
+    // 4. Обрабатываем ответ с логированием
     match resp {
-        Ok(r) if r.status().is_success() => Ok(Some(UserInfo::from(&session))),
-        _ => {
-            // Токен невалиден/истёк/сервер отверг — локальная сессия больше не актуальна.
-            let _ = session_store::clear_session(&app);
-            Ok(None)
+        Ok(r) => {
+            let status = r.status();
+            eprintln!("\x1b[90m[DEBUG]\x1b[0m [desktop.auth] /auth/me response status: {}", status);
+            
+            if status.is_success() {
+                Ok(Some(UserInfo::from(&session)))
+            } else {
+                let body = r.text().await.unwrap_or_default();
+                eprintln!("\x1b[33m[WARNING]\x1b[0m [desktop.auth] /auth/me failed with status {}: {}", status, body);
+                
+                // Чистим сессию ТОЛЬКО если бэкенд явно сказал, что токен невалиден
+                if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+                    eprintln!("\x1b[33m[WARNING]\x1b[0m [desktop.auth] token rejected by server, clearing local session");
+                    let _ = session_store::clear_session(&app);
+                    Ok(None)
+                } else {
+                    // При 404, 500 и других ошибках НЕ чистим сессию, а считаем юзера авторизованным
+                    eprintln!("\x1b[33m[WARNING]\x1b[0m [desktop.auth] keeping local session despite server error");
+                    Ok(Some(UserInfo::from(&session)))
+                }
+            }
+        }
+        Err(e) => {
+            // При сетевых ошибках (сервер недоступен) НЕ чистим сессию
+            eprintln!("\x1b[31m[ERROR]\x1b[0m [desktop.auth] network error during /auth/me: {}", e);
+            Ok(Some(UserInfo::from(&session)))
         }
     }
 }
