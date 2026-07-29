@@ -6,7 +6,6 @@ import AuthPage from "../pages/auth/AuthPage";
 import ServerSetupPage from "../pages/server-setup/ServerSetupPage";
 import DashboardPage from "../pages/dashboard/DashboardPage";
 import { getServerUrl } from "../api/auth";
-import { useIsMobile } from "../shared/hooks/useIsMobile";
 import styles from "./AppShell.module.css";
 
 /**
@@ -20,14 +19,7 @@ import styles from "./AppShell.module.css";
  * сервера ProtectedRoute всё равно не сможет ничего залогинить.
  */
 export default function App() {
-  const isMobile = useIsMobile();
   const [serverConfigured, setServerConfigured] = useState<boolean | null>(null);
-
-  // Класс на <html> нужен для CSS-переопределений вне React-дерева
-  // (например, в index.css для мобильных safe-area отступов).
-  useEffect(() => {
-    document.documentElement.classList.toggle("mobile", isMobile);
-  }, [isMobile]);
 
   useEffect(() => {
     let cancelled = false;
@@ -44,8 +36,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className={`${styles.shell} ${isMobile ? styles.mobile : ""}`}>
-      {!isMobile && <Titlebar />}
+    <div className={`${styles.shell}`}>
 
       {serverConfigured === null ? (
         // Мгновенная проверка стора при старте — обычно не видна пользователю,
