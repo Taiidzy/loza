@@ -215,7 +215,7 @@ export default function DashboardPage() {
           )}
 
           {activeSection === "activity" && <Activity />}
-          {activeSection === "loza" && <LozaTab />}
+          {activeSection === "loza" && <LozaTab status={status} />}
           {activeSection === "settings" && <SettingsPanel />}
         </div>
       </main>

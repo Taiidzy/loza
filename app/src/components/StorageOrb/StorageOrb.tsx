@@ -1,13 +1,8 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { AnimatePresence, motion, useAnimation } from "motion/react";
 import type { StorageInfo } from "../../types/serverStatus";
+import { formatGB } from "../../shared/utils/serverStorage";
 import styles from "./StorageOrb.module.css";
-
-/** Форматирует байты в гигабайты: >=100 ГБ — целое число, иначе один знак после запятой. */
-function formatGB(bytes: number): string {
-  const gb = bytes / 1024 ** 3;
-  return gb >= 100 ? Math.round(gb).toString() : gb.toFixed(1);
-}
 
 interface StorageOrbProps {
   storage: StorageInfo;
