@@ -98,7 +98,6 @@
 .ctrlBtnMaximize {
   background: #28c840;
 }
-
 /* ─── Light-mode fallback ────────────────────────────────── */
 @media (prefers-color-scheme: light) {
   .shell {
@@ -113,3 +112,4 @@
     color: rgba(0, 0, 0, 0.45);
   }
 }
+

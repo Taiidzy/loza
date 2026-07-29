@@ -27,7 +27,7 @@ export async function authLogin(username: string, password: string): Promise<Use
   logger.info("auth", "invoke(login)", { username, password: "*".repeat(password.length) });
   try {
     const result = await invoke<UserInfo>("login", { username, password });
-    logger.success("auth", "login succeeded", result);
+    logger.info("auth", "login succeeded", result);
     return result;
   } catch (err) {
     // Rust-команды при ошибке возвращают строку (см. describe_error в auth.rs) —
@@ -63,7 +63,7 @@ export async function checkServerHealth(url: string): Promise<boolean> {
   logger.info("auth", "invoke(health_check)", url);
   try {
     const ok = await invoke<boolean>("health_check", { url });
-    logger.success("auth", "health_check completed", ok);
+    logger.info("auth", "health_check completed", ok);
     return ok;
   } catch (err) {
     logger.error("auth", "health_check failed", err);
@@ -93,7 +93,7 @@ export async function getServerUrl(): Promise<string | null> {
 export async function setServerUrl(url: string): Promise<string> {
   logger.info("auth", "invoke(set_server_url)", url);
   const normalized = await invoke<string>("set_server_url", { url });
-  logger.success("auth", "server URL saved", normalized);
+  logger.info("auth", "server URL saved", normalized);
   return normalized;
 }
 

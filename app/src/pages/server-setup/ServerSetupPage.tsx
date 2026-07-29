@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { motion } from "motion/react";
 import { checkServerHealth, setServerUrl } from "../../api/auth";
-import { useIsMobile } from "../../shared/hooks/useIsMobile";
 import { CheckIcon } from "../../shared/icons/Icons";
 import ParticlesBackground from "../auth/ParticlesBackground";
 import styles from "../auth/AuthPage.module.css";
@@ -20,7 +19,6 @@ type SetupState = "idle" | "loading" | "success" | "error";
  * что показать дальше (AuthPage, так как сессии пока не будет).
  */
 export default function ServerSetupPage({ onConfigured }: { onConfigured: () => void }) {
-  const isMobile = useIsMobile();
 
   const [input, setInput] = useState("");
   const [state, setState] = useState<SetupState>("idle");
@@ -82,7 +80,7 @@ export default function ServerSetupPage({ onConfigured }: { onConfigured: () => 
       >
         <div className={styles.cardGlow} />
 
-        <div className={`${styles.card} ${isMobile ? styles.mobile : ""}`}>
+        <div className={`${styles.card}`}>
           <div className={styles.cardShimmer} />
 
           <div className={styles.cardInner}>

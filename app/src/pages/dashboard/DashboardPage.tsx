@@ -1,18 +1,17 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { motion } from "motion/react";
+import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import { authLogout, getCurrentUser, type UserInfo } from "../../api/auth";
 import { fetchServerStatus, subscribeServerStatus } from "../../api/serverStatus";
-import { useIsMobile } from "../../shared/hooks/useIsMobile";
 import { ActivityIcon, GridIcon, LeafIcon, LogoutIcon, SettingsIcon } from "../../shared/icons/Icons";
-import { NavItem, TabItem, type DashboardSection } from "../../components/Dashboard/DashboardNav";
+import { type DashboardSection } from "../../components/Dashboard/DashboardNav";
 import DashboardOverview from "./tabs/DashboardTab";
 import styles from "./DashboardPage.module.css";
 import Activity from "./tabs/ActivityTab";
 import SettingsPanel from "./tabs/SettingsPanel";
 import { ServerStatus } from "../../types/serverStatus";
+import LozaTab from "./tabs/LozaTab";
 
-/** Подписи и иконки для каждого раздела — общий источник для сайдбара и таббара. */
 const NAV_SECTIONS: { id: DashboardSection; label: string; icon: ReactNode }[] = [
   { id: "dashboard", label: "Обзор", icon: <GridIcon /> },
   { id: "activity", label: "Активность", icon: <ActivityIcon /> },
@@ -20,23 +19,28 @@ const NAV_SECTIONS: { id: DashboardSection; label: string; icon: ReactNode }[] =
   { id: "settings", label: "Настройки", icon: <SettingsIcon /> },
 ];
 
+const MenuToggleIcon = () => (
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="3" y1="12" x2="21" y2="12"></line>
+    <line x1="3" y1="6" x2="21" y2="6"></line>
+    <line x1="3" y1="18" x2="21" y2="18"></line>
+  </svg>
+);
+
 export default function DashboardPage() {
   const navigate = useNavigate();
-  const isMobile = useIsMobile();
-
-  // ProtectedRoute уже гарантирует, что сессия есть на момент рендера этой
-  // страницы — здесь просто подтягиваем данные пользователя для шапки/сайдбара.
-  // Токен React не видит и не запрашивает — это забота Rust-слоя (см. api/auth.ts).
   const [user, setUser] = useState<UserInfo | null>(null);
 
   const [activeSection, setActiveSection] = useState<DashboardSection>("dashboard");
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [time, setTime] = useState(new Date());
 
   const [status, setStatus] = useState<ServerStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
 
-  // Часы в шапке — обновляются раз в секунду
+  const isDashboardActive = activeSection === "dashboard";
+
   useEffect(() => {
     const id = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(id);
@@ -46,7 +50,6 @@ export default function DashboardPage() {
     getCurrentUser().then(setUser).catch(() => setUser(null));
   }, []);
 
-  // Разовый снимок для первого рендера — до того как придёт первое событие подписки.
   const loadStatus = useCallback(async () => {
     try {
       const data = await fetchServerStatus();
@@ -59,8 +62,6 @@ export default function DashboardPage() {
     }
   }, []);
 
-  // Первичный снимок + подписка на поток обновлений (Tauri-событие поверх
-  // WebSocket-соединения с сервером — React не опрашивает сервер сам).
   useEffect(() => {
     loadStatus();
 
@@ -93,66 +94,118 @@ export default function DashboardPage() {
   const userDisplayName = user?.display_name || user?.username;
 
   return (
-    <div className={`${styles.page} ${isMobile ? styles.mobile : ""}`}>
-      {/* ── Сайдбар (десктоп) ── */}
-      {!isMobile && (
-        <motion.aside
-          className={styles.sidebar}
-          initial={{ opacity: 0, x: -16 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
-        >
-          <div className={styles.userBadge}>
-            <div className={styles.userAvatar}>{(userDisplayName || "U")[0].toUpperCase()}</div>
-            <div style={{ minWidth: 0 }}>
-              <div className={styles.userName}>{userDisplayName}</div>
-              <div className={styles.userRole}>{user?.role}</div>
+    <div className={styles.page}>
+      {/* ── Сайдбар ── */}
+      <motion.aside
+        className={styles.sidebar}
+        initial={false}
+        animate={{ width: isSidebarOpen ? 220 : 64 }}
+        transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+      >
+        <div className={styles.userBadge}>
+          <motion.div 
+            className={styles.profileWrapper}
+            initial={false}
+            animate={{ 
+              opacity: isSidebarOpen ? 1 : 0, 
+              width: isSidebarOpen ? 154 : 0 // Анимируем к жестко заданному значению
+            }}
+            transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+          >
+            <div className={styles.profileInner}>
+              <div className={styles.userAvatar}>{(userDisplayName || "U")[0].toUpperCase()}</div>
+              <div className={styles.userInfo}>
+                <div className={styles.userName}>{userDisplayName}</div>
+                <div className={styles.userRole}>{user?.role}</div>
+              </div>
             </div>
-          </div>
+          </motion.div>
 
-          <div className={styles.sidebarNav}>
-            {NAV_SECTIONS.map((section) => (
-              <NavItem
-                key={section.id}
-                icon={section.icon}
-                label={section.label}
-                active={activeSection === section.id}
-                onClick={() => setActiveSection(section.id)}
-              />
-            ))}
-          </div>
-
-          <button onClick={handleLogout} className={styles.logoutButton}>
-            <LogoutIcon />
-            Выйти
+          <button className={styles.toggleBtn} onClick={() => setIsSidebarOpen(!isSidebarOpen)}>
+            <MenuToggleIcon />
           </button>
-        </motion.aside>
-      )}
+        </div>
+
+        <div className={styles.sidebarNav}>
+          {NAV_SECTIONS.map((section) => (
+            <div key={section.id} onClick={() => setActiveSection(section.id)} className={`${styles.navItem} ${activeSection === section.id ? styles.active : ""}`}>
+              {section.icon}
+              <motion.span 
+                 initial={false}
+                 animate={{ opacity: isSidebarOpen ? 1 : 0, width: isSidebarOpen ? "auto" : 0, marginLeft: isSidebarOpen ? 12 : 0 }}
+                 style={{ overflow: "hidden", whiteSpace: "nowrap" }}
+                 transition={{ duration: 0.25, ease: "easeInOut" }}
+              >
+                {section.label}
+              </motion.span>
+            </div>
+          ))}
+        </div>
+
+        <AnimatePresence>
+          {!isDashboardActive && (
+            <motion.div
+              className={styles.sidebarDateTime}
+              initial={{ opacity: 0, height: 0, marginTop: 0 }}
+              animate={{ opacity: 1, height: "auto", marginTop: "auto" }}
+              exit={{ opacity: 0, height: 0, marginTop: 0, overflow: "hidden" }}
+              transition={{ duration: 0.3, ease: "easeInOut" }}
+            >
+              {isSidebarOpen ? (
+                <>
+                  <div className={styles.sidebarDate}>{dateStr}</div>
+                  <div className={styles.sidebarTime}>{timeStr}</div>
+                </>
+              ) : (
+                <div className={styles.sidebarTime} style={{ fontSize: "11px" }}>{timeStr.substring(0, 5)}</div>
+              )}
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        <button onClick={handleLogout} className={styles.logoutButton}>
+          <LogoutIcon />
+          <motion.span 
+            initial={false}
+            animate={{ opacity: isSidebarOpen ? 1 : 0, width: isSidebarOpen ? "auto" : 0, marginLeft: isSidebarOpen ? 12 : 0 }}
+            style={{ overflow: "hidden", whiteSpace: "nowrap" }}
+            transition={{ duration: 0.25, ease: "easeInOut" }}
+          >
+            Выйти
+          </motion.span>
+        </button>
+      </motion.aside>
 
       {/* ── Основной контент ── */}
       <main className={styles.main}>
-        <motion.div
-          className={`${styles.header} ${isMobile ? styles.mobile : ""}`}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.15, duration: 0.35 }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-            <div className={styles.greetingIcon}>
-              <LeafIcon />
-            </div>
-            <div style={{ minWidth: 0 }}>
-              <div className={`${styles.headerTitle} ${isMobile ? styles.mobile : ""}`}>Обзор системы</div>
-              <div className={styles.headerDate}>{dateStr}</div>
-            </div>
-          </div>
-          <div className={styles.headerTime}>{timeStr}</div>
-        </motion.div>
+        <AnimatePresence initial={false}>
+          {isDashboardActive && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+              style={{ overflow: "hidden", flexShrink: 0 }}
+            >
+              <div className={styles.header}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
+                  <div className={styles.greetingIcon}>
+                    <LeafIcon />
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div className={styles.headerTitle}>Обзор системы</div>
+                    <div className={styles.headerDate}>{dateStr}</div>
+                  </div>
+                </div>
+                <div className={styles.headerTime}>{timeStr}</div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-        <div className={`${styles.body} ${isMobile ? styles.mobile : ""}`}>
+        <div className={styles.body}>
           {activeSection === "dashboard" && (
             <DashboardOverview
-              isMobile={isMobile}
               status={status}
               statusError={statusError}
               statusLoading={statusLoading}
@@ -161,55 +214,11 @@ export default function DashboardPage() {
             />
           )}
 
-          {activeSection === "activity" && (
-            <Activity />
-          )}
-
-          {activeSection === "loza" && (
-            <DashboardPlaceholder section={activeSection} />
-          )}
-
-          {activeSection === "settings" && <SettingsPanel user={user} />}
+          {activeSection === "activity" && <Activity />}
+          {activeSection === "loza" && <LozaTab />}
+          {activeSection === "settings" && <SettingsPanel />}
         </div>
-
-        {/* ── Таббар (мобильный) ── */}
-        {isMobile && (
-          <motion.nav
-            className={styles.tabBar}
-            initial={{ opacity: 0, y: 12 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-          >
-            {NAV_SECTIONS.map((section) => (
-              <TabItem
-                key={section.id}
-                icon={section.icon}
-                label={section.label}
-                active={activeSection === section.id}
-                onClick={() => setActiveSection(section.id)}
-              />
-            ))}
-            <TabItem icon={<LogoutIcon />} label="Выйти" active={false} onClick={handleLogout} />
-          </motion.nav>
-        )}
       </main>
     </div>
   );
-}
-
-// ─── Заглушка для разделов без контента ─────────────────────────────────────
-
-const PLACEHOLDER_LABELS: Record<Exclude<DashboardSection, "dashboard" | "settings">, string> = {
-  activity: "Раздел «Активность» в разработке",
-  loza: "Раздел «Loza» в разработке",
-};
-
-/**
- * Временная заглушка для разделов навигации, у которых ещё нет контента.
- * Раньше клик по этим вкладкам в сайдбаре/таббаре подсвечивал пункт меню,
- * но экран не менялся вообще — выглядело как баг. Явная заглушка честно
- * показывает пользователю, что раздел ещё не готов.
- */
-function DashboardPlaceholder({ section }: { section: Exclude<DashboardSection, "dashboard" | "settings"> }) {
-  return <div className={styles.placeholderPanel}>{PLACEHOLDER_LABELS[section]}</div>;
 }

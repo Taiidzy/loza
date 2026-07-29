@@ -6,7 +6,6 @@ import styles from "../DashboardPage.module.css";
 // ─── Содержимое вкладки "Обзор" ─────────────────────────────────────────────
 
 interface DashboardOverviewProps {
-  isMobile: boolean;
   status: ServerStatus | null;
   statusError: string | null;
   statusLoading: boolean;
@@ -23,7 +22,6 @@ interface DashboardOverviewProps {
  * вкладок вообще не влияло на то, что отображается на экране.
  */
 export default function DashboardOverview({
-  isMobile,
   status,
   statusError,
   statusLoading,
@@ -43,7 +41,7 @@ export default function DashboardOverview({
       )}
 
       {/* Строка карточек статистики */}
-      <div className={`${styles.statsRow} ${isMobile ? styles.mobile : ""}`}>
+      <div className={`${styles.statsRow}`}>
         {isFirstLoad ? (
           <>
             <CardSkeleton delay={0.18} />
@@ -60,10 +58,10 @@ export default function DashboardOverview({
       </div>
 
       {/* Статус сервисов + лента активности */}
-      <div className={`${styles.panelsRow} ${isMobile ? styles.mobile : ""}`}>
+      <div className={`${styles.panelsRow}`}>
 
         <motion.div
-          className={`${styles.panel} ${styles.activityPanel} ${isMobile ? styles.mobile : ""}`}
+          className={`${styles.panel} ${styles.activityPanel}`}
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.34, duration: 0.4, ease: [0.22, 1, 0.36, 1] }}

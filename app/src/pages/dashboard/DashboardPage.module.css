@@ -6,29 +6,86 @@
   background: transparent;
 }
 
-.page.mobile {
-  flex-direction: column;
-}
-
 /* ── Сайдбар (десктоп) ── */
 
 .sidebar {
-  width: 180px;
   flex-shrink: 0;
   border-right: 1px solid rgba(255, 255, 255, 0.06);
   display: flex;
   flex-direction: column;
-  padding: 18px 12px;
-  gap: 4px;
+  padding: 16px 12px;
+  gap: 8px;
+  background: rgba(20, 20, 28, 0.4);
+  overflow: hidden;
+  white-space: nowrap; 
+}
+
+.toggleBtn {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  transition: all 0.2s ease;
+  flex-shrink: 0; /* Чтобы кнопка не сжималась при скрытии сайдбара */
+}
+
+.toggleBtn:hover {
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .userBadge {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 10px 14px;
+  padding: 4px 4px 16px 4px;
   margin-bottom: 4px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  min-height: 52px;
+  /* Убрали динамический justify-content, все сделают margin у кнопки */
+}
+
+.profileWrapper {
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.profileInner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* Строго фиксируем ширину. Так контент внутри никогда не сплющится 
+     при анимации родителя, он будет просто плавно скрываться/открываться */
+  width: 154px; 
+}
+
+.toggleBtn {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+  
+  /* Магия позиционирования: 
+     - Когда профиля нет (width: 0), кнопка встает ровно по центру.
+     - Когда профиль есть, margin-left: auto отталкивает ее вправо. */
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.toggleBtn:hover {
+  color: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .userAvatar {
@@ -43,6 +100,11 @@
   font-weight: 600;
   color: rgba(255, 255, 255, 0.9);
   flex-shrink: 0;
+}
+
+.userInfo {
+  min-width: 0;
+  flex: 1;
 }
 
 .userName {
@@ -64,17 +126,47 @@
 .sidebarNav {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
   flex: 1;
+  overflow: hidden;
 }
 
-/* ── Пункт навигации (общий вид для сайдбара и таббара) ── */
+/* ── Блок времени в сайдбаре ── */
+
+.sidebarDateTime {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 12px 0;
+  margin-top: auto;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.sidebarDate {
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.3);
+  text-transform: capitalize;
+}
+
+.sidebarTime {
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.7);
+  letter-spacing: 0.04em;
+}
+
+/* ── Пункт навигации ── */
 
 .navItem {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 8px 12px;
+  padding: 10px;
   border-radius: var(--radius-sm);
   background: transparent;
   border: 1px solid transparent;
@@ -86,6 +178,12 @@
   text-align: left;
   transition: all 0.18s ease;
   letter-spacing: 0.02em;
+  overflow: hidden;
+}
+
+.navItem:hover {
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(255, 255, 255, 0.6);
 }
 
 .navItem.active {
@@ -95,11 +193,16 @@
   font-weight: 500;
 }
 
+.navItem svg, .logoutButton svg {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+}
+
 .logoutButton {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
+  padding: 10px;
   border-radius: var(--radius-sm);
   background: transparent;
   border: 1px solid transparent;
@@ -107,46 +210,13 @@
   font-size: 12px;
   cursor: pointer;
   transition: all 0.18s ease;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .logoutButton:hover {
   color: rgba(255, 100, 100, 0.75);
   background: rgba(255, 80, 80, 0.08);
-}
-
-/* ── Таббар (мобильный) ── */
-
-.tabBar {
-  display: flex;
-  align-items: center;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-  padding: 8px 6px;
-  padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
-  flex-shrink: 0;
-  background: rgba(20, 20, 28, 0.6);
-}
-
-.tabItem {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-  padding: 6px 4px;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  border: none;
-  color: rgba(255, 255, 255, 0.38);
-  font-size: 10px;
-  font-weight: 400;
-  cursor: pointer;
-  flex: 1;
-  transition: color 0.18s ease;
-  letter-spacing: 0.02em;
-}
-
-.tabItem.active {
-  color: rgba(255, 182, 210, 0.9);
-  font-weight: 500;
 }
 
 /* ── Основной контент ── */
@@ -166,20 +236,13 @@
   padding: 16px 24px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
   gap: 12px;
-}
-
-.header.mobile {
-  padding: 14px 16px;
+  background: transparent;
 }
 
 .headerTitle {
   font-size: 14px;
   font-weight: 500;
   color: rgba(255, 255, 255, 0.82);
-}
-
-.headerTitle.mobile {
-  font-size: 13px;
 }
 
 .headerDate {
@@ -211,13 +274,6 @@
   gap: 18px;
 }
 
-.body.mobile {
-  padding: 16px;
-  gap: 14px;
-}
-
-/* ── Баннер ошибки статуса сервера ── */
-
 .errorBanner {
   display: flex;
   align-items: center;
@@ -240,21 +296,12 @@
   cursor: pointer;
 }
 
-/* ── Строка карточек статистики ── */
-
 .statsRow {
   display: flex;
   flex-direction: row;
   gap: 12px;
   flex-wrap: wrap;
 }
-
-.statsRow.mobile {
-  flex-direction: column;
-  flex-wrap: nowrap;
-}
-
-/* ── Универсальная карточка ── */
 
 .card {
   flex: 1;
@@ -281,8 +328,6 @@
   text-transform: uppercase;
   margin-bottom: 12px;
 }
-
-/* ── Карточка клиентов ── */
 
 .clientsCount {
   display: flex;
@@ -352,8 +397,6 @@
   color: rgba(255, 255, 255, 0.28);
 }
 
-/* ── Карточка хранилища ── */
-
 .storageCard {
   flex: 1.1;
   display: flex;
@@ -374,8 +417,6 @@
   font-size: 11px;
   color: var(--color-text-muted);
 }
-
-/* ── Карточка нагрузки ── */
 
 .loadHeader {
   display: flex;
@@ -440,16 +481,10 @@
   border-radius: 3px;
 }
 
-/* ── Панели статуса и активности ── */
-
 .panelsRow {
   display: flex;
   flex-direction: row;
   gap: 12px;
-}
-
-.panelsRow.mobile {
-  flex-direction: column;
 }
 
 .panel {
@@ -457,10 +492,6 @@
   border: 1px solid var(--color-surface-border);
   border-radius: var(--radius-lg);
   padding: 18px 20px;
-}
-
-.panel.mobile {
-  padding: 16px;
 }
 
 .panel.statusPanel {
@@ -485,8 +516,6 @@
   color: rgba(255, 255, 255, 0.25);
   padding: 8px 0;
 }
-
-/* Строка сервиса в панели статуса */
 
 .serviceRow {
   display: flex;
@@ -536,8 +565,6 @@
   background: var(--color-error);
 }
 
-/* Строка события в ленте активности */
-
 .activityRow {
   display: flex;
   align-items: center;
@@ -569,8 +596,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* ── Приветственный баннер ── */
-
 .greetingBanner {
   background: linear-gradient(135deg, rgba(255, 182, 210, 0.07) 0%, rgba(180, 120, 255, 0.05) 100%);
   border: 1px solid rgba(255, 182, 210, 0.12);
@@ -579,11 +604,6 @@
   display: flex;
   align-items: center;
   gap: 14px;
-}
-
-.greetingBanner.mobile {
-  padding: 14px 16px;
-  margin-bottom: 8px;
 }
 
 .greetingIcon {
@@ -616,8 +636,6 @@
   color: rgba(255, 255, 255, 0.28);
   margin-top: 3px;
 }
-
-/* ── Заглушка для ещё не реализованных вкладок ── */
 
 .placeholderPanel {
   flex: 1;

@@ -2,7 +2,6 @@ import { useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useNavigate } from "react-router-dom";
 import { authLogin } from "../../api/auth";
-import { useIsMobile } from "../../shared/hooks/useIsMobile";
 import { CheckIcon, EyeIcon } from "../../shared/icons/Icons";
 import { logger } from "../../shared/utils/logger";
 import ParticlesBackground from "./ParticlesBackground";
@@ -38,7 +37,6 @@ function resolveErrorMessage(err: unknown): string {
 /** Экран входа: форма логин/пароль поверх анимированного фона с частицами. */
 export default function AuthPage() {
   const navigate = useNavigate();
-  const isMobile = useIsMobile();
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -115,7 +113,7 @@ export default function AuthPage() {
       >
         <div className={styles.cardGlow} />
 
-        <div className={`${styles.card} ${isMobile ? styles.mobile : ""}`}>
+        <div className={`${styles.card}`}>
           <div className={styles.cardShimmer} />
 
           <div className={styles.cardInner}>
