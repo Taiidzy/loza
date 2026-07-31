@@ -37,7 +37,7 @@ export default function App() {
 
   return (
     <div className={`${styles.shell}`}>
-
+      <Titlebar />
       {serverConfigured === null ? (
         // Мгновенная проверка стора при старте — обычно не видна пользователю,
         // но избегает "мигания" ServerSetupPage перед тем, как AuthPage
