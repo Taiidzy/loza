@@ -65,7 +65,7 @@ struct UserManagementView: View {
             }
         }
         .scrollContentBackground(.hidden)
-        .lozaBackground()
+        .background { LozaBackgroundView() }
         .navigationTitle("Пользователи")
         .task { await load() }
         .confirmationDialog("Удалить пользователя?", isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } }), titleVisibility: .visible) {

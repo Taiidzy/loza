@@ -37,7 +37,7 @@ enum LozaColor {
     )
 
     enum GlassStyle {
-        case ultraThin, thin, regular, thick, ultraThick
+        case regular
     }
 }
 
@@ -79,10 +79,7 @@ struct LozaCardBackground: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 26.0, *) {
             content
-                .background(in: RoundedRectangle(cornerRadius: radius, style: .continuous)) {
-                    Color.clear
-                        .glassEffect(glassMaterial(glassStyle))
-                }
+                .glassEffect(glassMaterial(glassStyle), in: RoundedRectangle(cornerRadius: radius, style: .continuous))
         } else {
             content
                 .background(
@@ -102,11 +99,7 @@ struct LozaCardBackground: ViewModifier {
 @available(iOS 26.0, *)
 private func glassMaterial(_ style: LozaColor.GlassStyle) -> Glass {
     switch style {
-    case .ultraThin:  return .ultraThin
-    case .thin:       return .thin
-    case .regular:    return .regular
-    case .thick:      return .thick
-    case .ultraThick: return .ultraThick
+    case .regular: return .regular
     }
 }
 
@@ -123,10 +116,7 @@ extension View {
                    style: LozaColor.GlassStyle = .regular) -> some View {
         if #available(iOS 26.0, *) {
             self
-                .background(in: RoundedRectangle(cornerRadius: radius, style: .continuous)) {
-                    Color.clear
-                        .glassEffect(glassMaterial(style))
-                }
+                .glassEffect(glassMaterial(style), in: RoundedRectangle(cornerRadius: radius, style: .continuous))
                 .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
         } else {
             self
@@ -141,18 +131,22 @@ extension View {
 
 // ─── Full-screen background ─────────────────────────────────────────────────────
 
+/// Standalone background view that can be used as a ZStack child.
+struct LozaBackgroundView: View {
+    var body: some View {
+        LozaColor.bgMobile
+            .ignoresSafeArea()
+    }
+}
+
 extension View {
-    /// Full-screen background: on iOS 26+ this resolves to the system
+    /// Adds a full-screen background: on iOS 26+ this resolves to the system
     /// Liquid Glass background (dark in dark-mode); on older versions it
     /// falls back to LozaColor.bgMobile.
     @ViewBuilder
     func lozaBackground() -> some View {
-        if #available(iOS 26.0, *) {
-            Color(uiColor: .systemBackground)
-        } else {
-            LozaColor.bgMobile
-        }
-        .ignoresSafeArea()
+        self
+            .background { LozaBackgroundView() }
     }
 }
 
@@ -165,15 +159,14 @@ extension View {
     @ViewBuilder
     func lozaMiniGlass(radius: CGFloat, fallbackOpacity: Double = 0.05) -> some View {
         if #available(iOS 26.0, *) {
-            background(in: RoundedRectangle(cornerRadius: radius, style: .continuous)) {
-                Color.clear
-                    .glassEffect(.regular)
-            }
+            self
+                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: radius, style: .continuous))
         } else {
-            background(
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(Color.white.opacity(fallbackOpacity))
-            )
+            self
+                .background(
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .fill(Color.white.opacity(fallbackOpacity))
+                )
         }
     }
 }

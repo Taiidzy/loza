@@ -10,6 +10,7 @@
 //  this port mirrors MOCK_FS / RECENT / DOWNLOADS verbatim. Storage usage
 //  under the sidebar, however, is live — read from StatusSocket.shared.status.
 
+import Combine
 import SwiftUI
 
 // ─── View model ─────────────────────────────────────────────────────────────────
@@ -115,7 +116,7 @@ struct LozaView: View {
 
                 mainContent
             }
-            .lozaBackground()
+            .background { LozaBackgroundView() }
             .navigationBarTitleDisplayMode(.inline)
         }
         .onAppear {
@@ -244,7 +245,7 @@ struct LozaView: View {
             Text("\(storage.usedPercent)%")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.white.opacity(0.6))
-            Text(ByteFormat.gbInt(storage.usedBytes))
+            Text("\(ByteFormat.gbInt(storage.usedBytes)) ГБ")
                 .font(.system(size: 8))
                 .foregroundStyle(.white.opacity(0.25))
         }
@@ -290,7 +291,7 @@ struct LozaView: View {
                 }
                 .padding(.horizontal, 4)
                 .frame(height: 26)
-                .lozaGlass(radius: LozaMetrics.pillRadius, style: .thin)
+                .lozaGlass(radius: LozaMetrics.pillRadius)
                 .clipShape(RoundedRectangle(cornerRadius: LozaMetrics.pillRadius, style: .continuous))
             }
             .padding(.horizontal, 16)
@@ -519,6 +520,13 @@ struct LozaView: View {
         return find(MockData.fileSystem, id) ?? id
     }
 
+    private func sidebarLabel(_ text: String) -> some View {
+        Text(text.uppercased())
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.2))
+            .tracking(0.6)
+    }
+
     private func systemIcon(for section: LozaSection) -> String {
         switch section {
         case .files:     return "folder"
@@ -530,13 +538,13 @@ struct LozaView: View {
     }
 
     private var emptyTitle: String {
-        if !search.isEmpty { return "Ничего не найдено" }
-        return section == .trash ? "Корзина пуста" : "Папка пуста"
+        if !model.search.isEmpty { return "Ничего не найдено" }
+        return model.section == .trash ? "Корзина пуста" : "Папка пуста"
     }
 
     private var emptySubtitle: String {
-        if !search.isEmpty { return "По запросу «\(search)» ничего нет" }
-        return section == .trash ? "Удалённые файлы будут появляться здесь" : "Здесь пока нет файлов"
+        if !model.search.isEmpty { return "По запросу «\(model.search)» ничего нет" }
+        return model.section == .trash ? "Удалённые файлы будут появляться здесь" : "Здесь пока нет файлов"
     }
 
     private func plural(count: Int) -> String {

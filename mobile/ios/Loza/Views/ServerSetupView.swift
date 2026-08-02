@@ -26,7 +26,7 @@ struct ServerSetupView: View {
 
     var body: some View {
         ZStack {
-            .lozaBackground()
+            LozaBackgroundView()
 
             ParticlesView()
                 .ignoresSafeArea()
@@ -84,7 +84,7 @@ struct ServerSetupView: View {
             .padding(.horizontal, 14)
             .padding(.top, 9)
             .padding(.bottom, 8)
-            .background(
+            .background {
                 if #available(iOS 26.0, *) {
                     RoundedRectangle(cornerRadius: LozaMetrics.fieldRadius, style: .continuous)
                         .fill(Color.clear)
@@ -93,7 +93,7 @@ struct ServerSetupView: View {
                     RoundedRectangle(cornerRadius: LozaMetrics.fieldRadius, style: .continuous)
                         .fill(Color.white.opacity(0.04))
                 }
-            )
+            }
             .overlay(
                 RoundedRectangle(cornerRadius: LozaMetrics.fieldRadius, style: .continuous)
                     .stroke(

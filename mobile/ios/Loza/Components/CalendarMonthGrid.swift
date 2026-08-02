@@ -15,7 +15,7 @@ import SwiftUI
 struct CalendarMonthGrid: View {
     @Binding var currentMonth: Date
     @Binding var selectedDate: Date?
-    let store: CalendarEventsStore
+    @ObservedObject var store: CalendarEventsStore
 
     @State private var isPickerOpen = false
 
@@ -27,7 +27,7 @@ struct CalendarMonthGrid: View {
             header
                 .padding(.bottom, 16)
 
-            HStack(spacing: 6) {
+            HStack(spacing: 0) {
                 ForEach(weekDays, id: \.self) { d in
                     Text(d)
                         .font(.system(size: 10))
@@ -36,18 +36,16 @@ struct CalendarMonthGrid: View {
                         .frame(maxWidth: .infinity)
                 }
             }
+            .padding(.horizontal, 4)
             .padding(.bottom, 8)
 
             let days = daysInGrid()
             let rows = days.chunked(into: 7)
 
-            VStack(spacing: 4) {
+            VStack(spacing: 0) {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, week in
-                    HStack(spacing: 4) {
-                        ForEach(week, id: \.self) { day in
-                            dayCell(day)
-                        }
-                    }
+                    weekRow(week)
+                        .padding(.vertical, 1)
                 }
             }
         }
@@ -119,6 +117,90 @@ struct CalendarMonthGrid: View {
         return f.string(from: currentMonth)
     }
 
+    // ─── Week row (date cells + continuous multi-day bar overlay) ─────────
+
+    @ViewBuilder
+    private func weekRow(_ week: [Date]) -> some View {
+        let weekMultiDay = multiDayEventsForWeek(week)
+
+        ZStack(alignment: .topLeading) {
+            // Date cells (date number + single-day dots)
+            HStack(spacing: 0) {
+                ForEach(week, id: \.self) { day in
+                    dayCell(day)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+
+            // Continuous multi-day bar overlay
+            if !weekMultiDay.isEmpty {
+                GeometryReader { geo in
+                    let cellWidth = geo.size.width / 7
+                    let barHeight: CGFloat = 3
+                    let barY: CGFloat = 28
+
+                    ForEach(weekMultiDay) { evt in
+                        let (startCol, endCol) = columnRange(event: evt, week: week)
+                        let x = CGFloat(startCol) * cellWidth
+                        let w = CGFloat(endCol - startCol + 1) * cellWidth
+                        let slot = store.eventSlots[evt.id] ?? 0
+                        let y = barY + CGFloat(slot) * (barHeight + 2)
+
+                        Capsule()
+                            .fill(evt.color)
+                            .frame(width: w, height: barHeight)
+                            .position(x: x + w / 2, y: y + barHeight / 2)
+                    }
+                }
+                .frame(height: 60)
+            }
+        }
+    }
+
+    /// Returns the unique multi-day events for this week, deduplicated by sourceId,
+    /// sorted by slot then start date.
+    private func multiDayEventsForWeek(_ week: [Date]) -> [ExpandedCalendarEvent] {
+        guard let firstDay = week.first, let lastDay = week.last else { return [] }
+        let firstKey = DateKeyFormat.string(from: firstDay)
+        let lastKey = DateKeyFormat.string(from: lastDay)
+
+        var seen = Set<String>()
+        var result: [ExpandedCalendarEvent] = []
+
+        for day in week {
+            let (_, multiDay) = store.getEventsForDay(day)
+            for evt in multiDay {
+                guard !seen.contains(evt.id) else { continue }
+                seen.insert(evt.id)
+                if evt.startDate <= lastKey && evt.endDate >= firstKey {
+                    result.append(evt)
+                }
+            }
+        }
+
+        return result.sorted { (lhs, rhs) -> Bool in
+            let ls = store.eventSlots[lhs.id] ?? 0
+            let rs = store.eventSlots[rhs.id] ?? 0
+            if ls != rs { return ls < rs }
+            return lhs.startDate < rhs.startDate
+        }
+    }
+
+    /// Returns (startColumn, endColumn) for an event within a week (0-6).
+    private func columnRange(event: ExpandedCalendarEvent, week: [Date]) -> (Int, Int) {
+        guard let firstDay = week.first, let lastDay = week.last else { return (0, 0) }
+        let firstKey = DateKeyFormat.string(from: firstDay)
+        let lastKey = DateKeyFormat.string(from: lastDay)
+
+        let startKey = max(event.startDate, firstKey)
+        let endKey = min(event.endDate, lastKey)
+
+        let startCol = calendar.dateComponents([.day], from: firstDay, to: DateKeyFormat.date(from: startKey)).day ?? 0
+        let endCol = calendar.dateComponents([.day], from: firstDay, to: DateKeyFormat.date(from: endKey)).day ?? 0
+
+        return (max(0, startCol), min(6, endCol))
+    }
+
     // ─── Day cell ───────────────────────────────────────────────────────────
 
     @ViewBuilder
@@ -141,17 +223,10 @@ struct CalendarMonthGrid: View {
                             : .white.opacity(0.2)
                     )
 
-                // Multi-day lines (stacked)
+                // Space reserved for multi-day bars (rendered at row level)
                 if !multiDay.isEmpty {
-                    VStack(spacing: 2) {
-                        ForEach(multiDay.prefix(2)) { evt in
-                            Capsule()
-                                .fill(evt.color)
-                                .frame(height: 3)
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.horizontal, 2)
+                    let slotCount = min(multiDay.prefix(2).count, 2)
+                    Color.clear.frame(height: CGFloat(slotCount) * 5)
                 }
 
                 // Single-day dots
@@ -211,7 +286,7 @@ extension Array {
 
 #Preview {
     ZStack {
-        .lozaBackground()
+        LozaBackgroundView()
         CalendarMonthGrid(currentMonth: .constant(Date()), selectedDate: .constant(Date()), store: CalendarEventsStore())
             .padding()
     }

@@ -67,7 +67,7 @@ struct MainTabView: View {
                 CalendarView()
             }
             Tab_(value: .loza, label: "Loza", systemImage: "leaf") {
-                LozaPlaceholderView()
+                LozaView()
             }
             Tab_(value: .settings, label: "Настройки", systemImage: "gearshape") {
                 SettingsView(showLogoutConfirm: $showLogoutConfirm)
@@ -109,7 +109,7 @@ struct LozaPlaceholderView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                .lozaBackground()
+                LozaBackgroundView()
                 ContentUnavailableView(
                     "Loza",
                     systemImage: "leaf",
@@ -132,7 +132,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                .lozaBackground()
+                LozaBackgroundView()
 
                 List {
                     Section {
@@ -173,31 +173,6 @@ struct SettingsView: View {
                         .listRowBackground(lozaListRowBackground())
                     } header: {
                         Text("Подключение")
-                    }
-
-                    if session.session?.role == "admin" {
-                        Section {
-                            NavigationLink {
-                                UserManagementView()
-                            } label: {
-                                Label("Управление пользователями", systemImage: "person.2")
-                            }
-                            .listRowBackground(lozaListRowBackground())
-                        } header: {
-                            Text("Администрирование")
-                        }
-                    }
-
-                    Section {
-                        HStack {
-                            Label("База данных", systemImage: "cylinder")
-                            Spacer()
-                            Text("В разработке")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .disabled(true)
-                        .listRowBackground(lozaListRowBackground())
                     }
 
                     Section {

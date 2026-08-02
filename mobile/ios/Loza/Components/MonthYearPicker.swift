@@ -70,7 +70,7 @@ struct MonthYearPicker: View {
                         .foregroundStyle(isActive ? .white : .white.opacity(0.6))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 9)
-                        .background(
+                        .background {
                             if #available(iOS 26.0, *) {
                                 if isActive {
                                     RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -84,7 +84,7 @@ struct MonthYearPicker: View {
                                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                                     .fill(isActive ? LozaColor.accentPink.opacity(0.25) : Color.white.opacity(0.04))
                             }
-                        )
+                        }
                     }
                     .buttonStyle(.plain)
                 }
@@ -99,7 +99,7 @@ struct MonthYearPicker: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 9)
                 }
-                .background(
+                .background {
                     if #available(iOS 26.0, *) {
                         RoundedRectangle(cornerRadius: 8, style: .continuous)
                             .fill(Color.clear)
@@ -107,20 +107,20 @@ struct MonthYearPicker: View {
                     } else {
                         RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.04))
                     }
-                )
+                }
         }
         .padding(16)
         .frame(width: 260)
         .glassEffect(.regular, in: .rect(cornerRadius: 18))
-        .overlay(
+        .overlay {
             if #available(iOS 26.0, *) {
                 /* No stroke on iOS 26 — Liquid Glass handles borders */
-                EmptyView()
+                Color.clear
             } else {
                 RoundedRectangle(cornerRadius: 18)
                     .stroke(Color.white.opacity(0.08), lineWidth: 1)
             }
-        )
+        }
         .onChange(of: currentDate) { _, newValue in
             viewYear = calendar.component(.year, from: newValue)
         }

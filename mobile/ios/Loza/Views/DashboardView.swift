@@ -56,7 +56,7 @@ struct DashboardView: View {
                 }
                 .padding(16)
             }
-            .lozaBackground()
+            .background { LozaBackgroundView() }
             .navigationTitle("Обзор системы")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

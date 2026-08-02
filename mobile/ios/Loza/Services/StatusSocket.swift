@@ -24,6 +24,7 @@
 //    Push:      {"type":"push","method":"status.update","params":{...}}
 //               {"type":"push","method":"calendar.event.created","params":{...}}
 
+import Combine
 import Foundation
 import OSLog
 
@@ -64,7 +65,7 @@ final class StatusSocket: ObservableObject {
     private let decoder = JSONDecoder()
     private var pendingRequests: [String: PendingRequest] = [:]
 
-    private var calendarObservers: [WeakRef<CalendarEventPushObserver>] = []
+    private var calendarObservers: [CalendarObserverRef] = []
 
     private let logger = Logger(subsystem: "Loza", category: "websocket")
 
@@ -80,8 +81,8 @@ final class StatusSocket: ObservableObject {
     // MARK: - Calendar push observers
 
     func addCalendarObserver(_ observer: CalendarEventPushObserver) {
-        calendarObservers.append(WeakRef(observer))
-        calendarObservers.removeAll { $0.value == nil }
+        calendarObservers.append(CalendarObserverRef(observer))
+        calendarObservers.removeAll { $0.observer == nil }
     }
 
     // MARK: - Lifecycle
@@ -116,10 +117,15 @@ final class StatusSocket: ObservableObject {
         method: String,
         paramsData: Data? = nil
     ) async throws -> Data? {
-        let paramsData = paramsData ?? try JSONEncoder().encode(EmptyParams())  // {}
+        let resolvedParams: Data
+        if let paramsData {
+            resolvedParams = paramsData
+        } else {
+            resolvedParams = try JSONEncoder().encode(EmptyParams())
+        }
 
         let id = UUID().uuidString
-        let paramsJSON = try JSONSerialization.jsonObject(with: paramsData)
+        let paramsJSON = try JSONSerialization.jsonObject(with: resolvedParams)
         let requestJSON: [String: Any] = [
             "id": id,
             "method": method,
@@ -241,7 +247,6 @@ final class StatusSocket: ObservableObject {
         while shouldRun, socket.state == .running {
             do {
                 let message = try await socket.receive()
-                guard let message else { break } // close frame
                 switch message {
                 case .string(let text):
                     handle(text)
@@ -249,8 +254,6 @@ final class StatusSocket: ObservableObject {
                     if let text = String(data: data, encoding: .utf8) {
                         handle(text)
                     }
-                case .ping, .pong, .closed, .binary:
-                    break
                 @unknown default:
                     break
                 }
@@ -309,7 +312,7 @@ final class StatusSocket: ObservableObject {
     // MARK: - Push dispatch
 
     private func handlePush(json: [String: Any]) {
-        calendarObservers.removeAll { $0.value == nil }
+        calendarObservers.removeAll { $0.observer == nil }
         guard let method = json["method"] as? String,
               let params = json["params"], !(params is NSNull) else { return }
 
@@ -324,7 +327,7 @@ final class StatusSocket: ObservableObject {
         case "calendar.event.created", "calendar.event.updated":
             if let data = paramsData,
                let dto = try? decoder.decode(CalendarEventDTO.self, from: data) {
-                for obs in calendarObservers.compactMap({ $0.value }) {
+                for obs in calendarObservers.compactMap({ $0.observer }) {
                     if method == "calendar.event.created" {
                         obs.calendarEventCreated(dto)
                     } else {
@@ -335,7 +338,7 @@ final class StatusSocket: ObservableObject {
         case "calendar.event.deleted":
             if let data = paramsData,
                let dto = try? decoder.decode(DeleteParamsDTO.self, from: data) {
-                for obs in calendarObservers.compactMap({ $0.value }) {
+                for obs in calendarObservers.compactMap({ $0.observer }) {
                     obs.calendarEventDeleted(id: dto.id)
                 }
             }
@@ -379,8 +382,8 @@ private struct DeleteParamsDTO: Decodable {
 
 // ─── Weak wrapper (prevents retain cycles for observers) ──────────────────────
 
-private final class WeakRef<T: AnyObject> {
-    private weak var _value: T?
-    init(_ value: T) { _value = value }
-    var value: T? { _value }
+private final class CalendarObserverRef {
+    private weak var _observer: AnyObject?
+    init(_ observer: CalendarEventPushObserver) { _observer = observer }
+    var observer: (any CalendarEventPushObserver)? { _observer as? any CalendarEventPushObserver }
 }

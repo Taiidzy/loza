@@ -15,7 +15,7 @@ struct LozaApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
-                .preferredInterfaceStyle(.dark)
+                .preferredColorScheme(.dark)
         }
     }
 }

@@ -8,7 +8,7 @@
 //  yet, so we mirror the same mock tree here. Storage stats, however, are
 //  live: read from StatusSocket.shared.status.storage.
 
-import Foundation
+import SwiftUI
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 

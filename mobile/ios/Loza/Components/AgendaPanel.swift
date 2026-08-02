@@ -49,7 +49,7 @@ struct AgendaPanel: View {
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
-                        .background(
+                        .background {
                             if #available(iOS 26.0, *) {
                                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                                     .fill(Color.clear)
@@ -57,7 +57,7 @@ struct AgendaPanel: View {
                             } else {
                                 RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.03))
                             }
-                        )
+                        }
                     }
                     .buttonStyle(.plain)
                 }
