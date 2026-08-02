@@ -71,7 +71,15 @@ struct DayEventsPanel: View {
                                 }
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 9)
-                                .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.03)))
+                                .background(
+                                    if #available(iOS 26.0, *) {
+                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                            .fill(Color.clear)
+                                            .glassEffect(.regular)
+                                    } else {
+                                        RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.03))
+                                    }
+                                )
                             }
                             .buttonStyle(.plain)
                         }
@@ -84,7 +92,15 @@ struct DayEventsPanel: View {
                         .foregroundStyle(.white.opacity(0.75))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 9)
-                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.05)))
+                        .background(
+                            if #available(iOS 26.0, *) {
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(Color.clear)
+                                    .glassEffect(.regular)
+                            } else {
+                                RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.05))
+                            }
+                        )
                 }
                 .padding(.top, 8)
             }

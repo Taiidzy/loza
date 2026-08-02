@@ -48,7 +48,7 @@ struct CalendarView: View {
                 }
                 .padding(16)
             }
-            .background(LozaColor.bgMobile.ignoresSafeArea())
+            .lozaBackground()
             .navigationTitle("Активность")
             .navigationBarTitleDisplayMode(.inline)
         }

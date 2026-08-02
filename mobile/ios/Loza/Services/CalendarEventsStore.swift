@@ -12,7 +12,7 @@ import SwiftUI
 import Combine
 
 @MainActor
-final class CalendarEventsStore: ObservableObject {
+final class CalendarEventsStore: ObservableObject, CalendarEventPushObserver {
     @Published private(set) var events: [CalendarEvent] = []
     @Published private(set) var isLoading = true
     @Published var error: String?
@@ -26,6 +26,14 @@ final class CalendarEventsStore: ObservableObject {
 
     private var visibleRangeStart: Date = Date()
     private var visibleRangeEnd: Date = Date()
+
+    init() {
+        // Subscribe to calendar push notifications from sibling client
+        // connections (e.g. a desktop browser creating an event while the
+        // phone's CalendarView is open). The originating connection receives
+        // its own echo push, so every handler below is idempotent.
+        StatusSocket.shared.addCalendarObserver(self)
+    }
 
     func reload() async {
         isLoading = true
@@ -67,6 +75,37 @@ final class CalendarEventsStore: ObservableObject {
 
     func deleteEvent(_ id: String) async throws {
         try await CalendarService.deleteEvent(id)
+        events.removeAll { $0.id == id }
+        recompute()
+    }
+
+    // ─── CalendarEventPushObserver ─────────────────────────────────────────────
+    // Reconciles local state with mutations from sibling connections. All
+    // handlers are idempotent: the originating connection also receives its
+    // own echo push (the server broadcasts to all of a user's sockets), so
+    // a create whose event.id already exists is skipped, etc.
+
+    func calendarEventCreated(_ event: CalendarEventDTO) {
+        // The originating connection already appended the result locally in
+        // createEvent; skip the echo to avoid duplicates.
+        guard !events.contains(where: { $0.id == event.id }) else { return }
+        events.append(CalendarMapper.map(event))
+        recompute()
+    }
+
+    func calendarEventUpdated(_ event: CalendarEventDTO) {
+        // Upsert: replace if present (the originating conn. did this from the
+        // WS response), no-op insert otherwise (sibling update).
+        let mapped = CalendarMapper.map(event)
+        if let idx = events.firstIndex(where: { $0.id == event.id }) {
+            events[idx] = mapped
+        } else {
+            events.append(mapped)
+        }
+        recompute()
+    }
+
+    func calendarEventDeleted(id: String) {
         events.removeAll { $0.id == id }
         recompute()
     }

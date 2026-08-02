@@ -14,11 +14,11 @@
 //  An earlier mocked version of this screen had invented one; dropped
 //  when wiring up real networking to stay faithful to the server.
 //
-//  Live updates now come from StatusSocket (WS /ws/status), same source
-//  and cadence as the desktop app's status::spawn_status_listener — one
-//  GET /status for the first paint (matches Tauri's get_server_status
-//  command, used before the WS stream has connected), then the socket
-//  takes over.
+//  Live updates now come from StatusSocket over the unified /ws/app WebSocket
+//  (same source and cadence as the desktop app's status::spawn_status_listener,
+//  now multiplexed onto /ws/app alongside calendar requests). One GET /status
+//  for the first paint (matches Tauri's get_server_status command, used before
+//  the WS stream has connected), then the socket takes over.
 //
 
 import SwiftUI
@@ -26,7 +26,7 @@ import Combine
 
 struct DashboardView: View {
     @EnvironmentObject private var session: SessionStore
-    @StateObject private var socket = StatusSocket()
+    @ObservedObject private var socket = StatusSocket.shared
 
     @State private var initialStatus: ServerStatus?
     @State private var statusLoading = true
@@ -56,7 +56,7 @@ struct DashboardView: View {
                 }
                 .padding(16)
             }
-            .background(LozaColor.bgMobile.ignoresSafeArea())
+            .lozaBackground()
             .navigationTitle("Обзор системы")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -82,9 +82,7 @@ struct DashboardView: View {
         }
         .task {
             await loadInitialStatus()
-            socket.start()
         }
-        .onDisappear { socket.stop() }
         .onReceive(timer) { now = $0 }
     }
 

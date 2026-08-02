@@ -25,3 +25,5 @@ argon2 = "0.5"
 password-hash = { version = "0.5", features = ["rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 sha2 = "0.10"
+dashmap = "6"
+futures-util = "0.3"

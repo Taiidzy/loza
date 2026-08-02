@@ -82,6 +82,7 @@ async fn main() {
         .route("/auth/refresh", post(handlers::auth::refresh))
         .route("/status", get(handlers::status::get_status))
         .route("/ws/status", get(handlers::status::ws_status))
+        .route("/ws/app", get(handlers::ws::ws_app))
         .route(
             "/calendar/events",
             get(handlers::calendar::get_events).post(handlers::calendar::create_event),

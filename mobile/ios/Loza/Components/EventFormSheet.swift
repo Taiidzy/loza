@@ -114,7 +114,7 @@ struct EventFormSheet: View {
                 }
             }
             .scrollContentBackground(.hidden)
-            .background(LozaColor.bgMobile.ignoresSafeArea())
+            .lozaBackground()
             .navigationTitle(existingEvent != nil ? "Редактировать событие" : "Новое событие")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

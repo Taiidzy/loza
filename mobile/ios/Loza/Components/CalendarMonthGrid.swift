@@ -211,7 +211,7 @@ extension Array {
 
 #Preview {
     ZStack {
-        LozaColor.bgMobile.ignoresSafeArea()
+        .lozaBackground()
         CalendarMonthGrid(currentMonth: .constant(Date()), selectedDate: .constant(Date()), store: CalendarEventsStore())
             .padding()
     }

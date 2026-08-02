@@ -47,11 +47,7 @@ struct CardSkeleton: View {
 
     var body: some View {
         RoundedRectangle(cornerRadius: LozaMetrics.cardRadius, style: .continuous)
-            .fill(Color.white.opacity(0.03))
-            .overlay(
-                RoundedRectangle(cornerRadius: LozaMetrics.cardRadius, style: .continuous)
-                    .stroke(Color.white.opacity(0.06), lineWidth: 1)
-            )
+            .lozaGlass(radius: LozaMetrics.cardRadius)
             .frame(height: 148)
             .opacity(appeared ? 1 : 0)
             .offset(y: appeared ? 0 : 12)

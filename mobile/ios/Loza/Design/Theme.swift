@@ -35,6 +35,10 @@ enum LozaColor {
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
+
+    enum GlassStyle {
+        case ultraThin, thin, regular, thick, ultraThick
+    }
 }
 
 enum LozaMetrics {
@@ -67,25 +71,125 @@ extension Color {
 }
 
 // Small helper so cards look identical to the web "Card" component:
-// translucent fill + hairline stroke + 16pt radius.
+// on iOS 26 this is true Liquid Glass; on older versions a translucent
+// fill + hairline stroke + 16pt radius.
 struct LozaCardBackground: ViewModifier {
     var radius: CGFloat = LozaMetrics.cardRadius
+    var glassStyle: LozaColor.GlassStyle = .regular
     func body(content: Content) -> some View {
-        content
-            .background(
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill(LozaColor.cardFill)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .stroke(LozaColor.cardStroke, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+        if #available(iOS 26.0, *) {
+            content
+                .background(in: RoundedRectangle(cornerRadius: radius, style: .continuous)) {
+                    Color.clear
+                        .glassEffect(glassMaterial(glassStyle))
+                }
+        } else {
+            content
+                .background(
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .fill(LozaColor.cardFill)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .stroke(LozaColor.cardStroke, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+        }
+    }
+}
+
+// The `glassMaterial` helper returns a Glass for iOS 26+.
+@available(iOS 26.0, *)
+private func glassMaterial(_ style: LozaColor.GlassStyle) -> Glass {
+    switch style {
+    case .ultraThin:  return .ultraThin
+    case .thin:       return .thin
+    case .regular:    return .regular
+    case .thick:      return .thick
+    case .ultraThick: return .ultraThick
     }
 }
 
 extension View {
-    func lozaCard(radius: CGFloat = LozaMetrics.cardRadius) -> some View {
-        modifier(LozaCardBackground(radius: radius))
+    func lozaCard(radius: CGFloat = LozaMetrics.cardRadius,
+                  glassStyle: LozaColor.GlassStyle = .regular) -> some View {
+        modifier(LozaCardBackground(radius: radius, glassStyle: glassStyle))
+    }
+
+    /// Applies a Liquid Glass background to any view (iOS 26+) with a
+    /// translucent-fallback for older versions.
+    @ViewBuilder
+    func lozaGlass(radius: CGFloat = LozaMetrics.cardRadius,
+                   style: LozaColor.GlassStyle = .regular) -> some View {
+        if #available(iOS 26.0, *) {
+            self
+                .background(in: RoundedRectangle(cornerRadius: radius, style: .continuous)) {
+                    Color.clear
+                        .glassEffect(glassMaterial(style))
+                }
+                .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+        } else {
+            self
+                .background(
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .fill(LozaColor.cardFill)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+        }
+    }
+}
+
+// ─── Full-screen background ─────────────────────────────────────────────────────
+
+extension View {
+    /// Full-screen background: on iOS 26+ this resolves to the system
+    /// Liquid Glass background (dark in dark-mode); on older versions it
+    /// falls back to LozaColor.bgMobile.
+    @ViewBuilder
+    func lozaBackground() -> some View {
+        if #available(iOS 26.0, *) {
+            Color(uiColor: .systemBackground)
+        } else {
+            LozaColor.bgMobile
+        }
+        .ignoresSafeArea()
+    }
+}
+
+// ─── Small tile background (icon backgrounds, picker cells) ───────────────────────
+
+extension View {
+    /// For small rounded-rectangle backgrounds that on iOS < 26 used
+    /// `.fill(Color.white.opacity(0.0X))` + a stroke. On iOS 26+ these
+    /// become true mini glass tiles.
+    @ViewBuilder
+    func lozaMiniGlass(radius: CGFloat, fallbackOpacity: Double = 0.05) -> some View {
+        if #available(iOS 26.0, *) {
+            background(in: RoundedRectangle(cornerRadius: radius, style: .continuous)) {
+                Color.clear
+                    .glassEffect(.regular)
+            }
+        } else {
+            background(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(Color.white.opacity(fallbackOpacity))
+            )
+        }
+    }
+}
+
+// ─── List row background ──────────────────────────────────────────────────────────
+
+extension View {
+    /// On iOS 26+, List rows get the system Liquid Glass background for free,
+    /// so we pass `.clear` to let it show through. On older versions we keep
+    /// the classic translucent card fill.
+    @ViewBuilder
+    func lozaListRowBackground() -> some View {
+        if #available(iOS 26.0, *) {
+            Color.clear
+        } else {
+            Color.white.opacity(0.04)
+        }
     }
 }

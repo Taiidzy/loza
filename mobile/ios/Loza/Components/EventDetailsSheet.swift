@@ -54,11 +54,19 @@ struct EventDetailsSheet: View {
                             .padding(.vertical, 11)
                     }
                     .foregroundStyle(.white.opacity(0.9))
-                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.08)))
+                    .background(
+                        if #available(iOS 26.0, *) {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(Color.clear)
+                                .glassEffect(.regular)
+                        } else {
+                            RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.08))
+                        }
+                    )
                 }
             }
             .padding(20)
-            .background(LozaColor.bgMobile.ignoresSafeArea())
+            .lozaBackground()
             .navigationTitle(event.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

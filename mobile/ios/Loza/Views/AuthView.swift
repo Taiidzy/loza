@@ -33,7 +33,7 @@ struct AuthView: View {
 
     var body: some View {
         ZStack {
-            LozaColor.bgMobile.ignoresSafeArea()
+            .lozaBackground()
 
             ParticlesView()
                 .ignoresSafeArea()
@@ -172,8 +172,14 @@ struct AuthView: View {
         .padding(.top, 9)
         .padding(.bottom, 8)
         .background(
-            RoundedRectangle(cornerRadius: LozaMetrics.fieldRadius, style: .continuous)
-                .fill(Color.white.opacity(0.04))
+            if #available(iOS 26.0, *) {
+                RoundedRectangle(cornerRadius: LozaMetrics.fieldRadius, style: .continuous)
+                    .fill(Color.clear)
+                    .glassEffect(.regular)
+            } else {
+                RoundedRectangle(cornerRadius: LozaMetrics.fieldRadius, style: .continuous)
+                    .fill(Color.white.opacity(0.04))
+            }
         )
         .overlay(
             RoundedRectangle(cornerRadius: LozaMetrics.fieldRadius, style: .continuous)

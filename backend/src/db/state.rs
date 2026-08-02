@@ -3,8 +3,11 @@ use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
+use dashmap::DashMap;
 use sqlx::PgPool;
 use sysinfo::System;
+use tokio::sync::mpsc::UnboundedSender;
+use uuid::Uuid;
 
 use crate::config::Config;
 use crate::models::StorageCategory;
@@ -20,6 +23,11 @@ const MAX_LOGIN_FAILURES: u32 = 5;
 const MAX_LOGIN_RATE_LIMIT_ENTRIES: usize = 10_000;
 const STORAGE_CATEGORY_CACHE_SECS: u64 = 60;
 const MAX_STATUS_WS_CONNECTIONS: usize = 20;
+const MAX_APP_WS_CONNECTIONS: usize = 50;
+
+type WsMessage = axum::extract::ws::Message;
+type WsClientEntry = (Uuid, UnboundedSender<WsMessage>);
+pub type ClientRegistry = Arc<DashMap<String, Vec<WsClientEntry>>>;
 
 #[derive(Clone, Copy)]
 struct LoginAttempt {
@@ -41,6 +49,9 @@ pub struct AppState {
     pub storage_history: Arc<RwLock<Vec<f32>>>,
     storage_categories: Arc<Mutex<Option<(u64, Vec<StorageCategory>)>>>,
     status_ws_connections: Arc<AtomicUsize>,
+    app_ws_connections: Arc<AtomicUsize>,
+    /// username → list of (connection_id, sender) for broadcasting events.
+    pub ws_clients: ClientRegistry,
     /// Unix-время последнего добавленного дневного замера — чтобы не писать
     /// в storage_history на каждый тик статуса (раз в 2 сек), а раз в сутки.
     pub last_storage_sample_at: Arc<RwLock<u64>>,
@@ -58,6 +69,8 @@ impl AppState {
             storage_history: Arc::new(RwLock::new(Vec::with_capacity(STORAGE_HISTORY_DAYS))),
             storage_categories: Arc::new(Mutex::new(None)),
             status_ws_connections: Arc::new(AtomicUsize::new(0)),
+            app_ws_connections: Arc::new(AtomicUsize::new(0)),
+            ws_clients: Arc::new(DashMap::new()),
             last_storage_sample_at: Arc::new(RwLock::new(0)),
             started_at: crate::handlers::auth::now_secs(),
         }
@@ -183,6 +196,55 @@ impl AppState {
 
     pub fn release_status_ws(&self) {
         self.status_ws_connections.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    pub fn try_acquire_app_ws(&self) -> bool {
+        let mut current = self.app_ws_connections.load(Ordering::Relaxed);
+        loop {
+            if current >= MAX_APP_WS_CONNECTIONS {
+                return false;
+            }
+            match self.app_ws_connections.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(next) => current = next,
+            }
+        }
+    }
+
+    pub fn release_app_ws(&self) {
+        self.app_ws_connections.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    pub fn register_ws_client(&self, username: &str) -> (Uuid, tokio::sync::mpsc::UnboundedReceiver<WsMessage>) {
+        let conn_id = Uuid::new_v4();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        self.ws_clients
+            .entry(username.to_string())
+            .or_default()
+            .push((conn_id, tx));
+        (conn_id, rx)
+    }
+
+    pub fn unregister_ws_client(&self, username: &str, conn_id: Uuid) {
+        if let Some(mut clients) = self.ws_clients.get_mut(username) {
+            clients.retain(|(id, _)| *id != conn_id);
+            if clients.is_empty() {
+                clients.shrink_to_fit();
+            }
+        }
+    }
+
+    pub fn broadcast_to_user(&self, username: &str, message: WsMessage) {
+        if let Some(clients) = self.ws_clients.get(username) {
+            for (_id, tx) in clients.iter() {
+                let _ = tx.send(message.clone());
+            }
+        }
     }
 }
 

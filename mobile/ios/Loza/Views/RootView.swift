@@ -79,12 +79,16 @@ struct MainTabView: View {
             Button("Выйти", role: .destructive) { Task { await logout() } }
             Button("Отмена", role: .cancel) {}
         }
+        .task {
+            StatusSocket.shared.start()
+        }
     }
 
     private func logout() async {
         if let token = session.session?.token {
             await AuthService.logout(token: token)
         }
+        StatusSocket.shared.stop()
         session.clear()
     }
 
@@ -105,7 +109,7 @@ struct LozaPlaceholderView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                LozaColor.bgMobile.ignoresSafeArea()
+                .lozaBackground()
                 ContentUnavailableView(
                     "Loza",
                     systemImage: "leaf",
@@ -128,7 +132,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                LozaColor.bgMobile.ignoresSafeArea()
+                .lozaBackground()
 
                 List {
                     Section {
@@ -149,7 +153,7 @@ struct SettingsView: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        .listRowBackground(Color.white.opacity(0.04))
+                        .listRowBackground(lozaListRowBackground())
                     }
 
                     Section {
@@ -159,14 +163,14 @@ struct SettingsView: View {
                             Text(serverConfig.baseURL?.host ?? "—")
                                 .foregroundStyle(.secondary)
                         }
-                        .listRowBackground(Color.white.opacity(0.04))
+                        .listRowBackground(lozaListRowBackground())
 
                         Button {
                             showChangeServerConfirm = true
                         } label: {
                             Label("Сменить сервер", systemImage: "arrow.triangle.2.circlepath")
                         }
-                        .listRowBackground(Color.white.opacity(0.04))
+                        .listRowBackground(lozaListRowBackground())
                     } header: {
                         Text("Подключение")
                     }
@@ -178,7 +182,7 @@ struct SettingsView: View {
                             } label: {
                                 Label("Управление пользователями", systemImage: "person.2")
                             }
-                            .listRowBackground(Color.white.opacity(0.04))
+                            .listRowBackground(lozaListRowBackground())
                         } header: {
                             Text("Администрирование")
                         }
@@ -193,7 +197,7 @@ struct SettingsView: View {
                                 .foregroundStyle(.secondary)
                         }
                         .disabled(true)
-                        .listRowBackground(Color.white.opacity(0.04))
+                        .listRowBackground(lozaListRowBackground())
                     }
 
                     Section {
@@ -202,7 +206,7 @@ struct SettingsView: View {
                         } label: {
                             Label("Выйти", systemImage: "rectangle.portrait.and.arrow.right")
                         }
-                        .listRowBackground(Color.white.opacity(0.04))
+                        .listRowBackground(lozaListRowBackground())
                     }
                 }
                 .scrollContentBackground(.hidden)
