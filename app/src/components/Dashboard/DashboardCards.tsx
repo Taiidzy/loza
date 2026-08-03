@@ -111,10 +111,10 @@ export function LoadCard({ load, delay }: { load: LoadInfo; delay: number }) {
       <div className={styles.loadHeader}>
         <div>
           <div className={styles.loadCpuValue}>
-            <span className={styles.loadCpuNumber}>{load.cpuPercent}%</span>
+            <span className={styles.loadCpuNumber}>{load.cpuPercent.toFixed(1)}%</span>
             <span className={styles.loadCpuLabel}>CPU</span>
           </div>
-          <div className={styles.loadRam}>RAM {load.memPercent}%</div>
+          <div className={styles.loadRam}>RAM {load.memPercent.toFixed(1)}%</div>
         </div>
         <Sparkline values={load.history} color="rgba(180,120,255,0.8)" />
       </div>

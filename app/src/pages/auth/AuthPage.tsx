@@ -2,7 +2,8 @@ import { useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useNavigate } from "react-router-dom";
 import { authLogin } from "../../api/auth";
-import { CheckIcon, EyeIcon } from "../../shared/icons/Icons";
+import { clearServerUrl } from "../../api/auth";
+import { CheckIcon, EyeIcon, RefreshIcon, ServerIcon } from "../../shared/icons/Icons";
 import { logger } from "../../shared/utils/logger";
 import ParticlesBackground from "./ParticlesBackground";
 import styles from "./AuthPage.module.css";
@@ -44,6 +45,12 @@ export default function AuthPage() {
   const [focusedField, setFocusedField] = useState<string | null>(null);
   const [loginState, setLoginState] = useState<LoginState>("idle");
   const [errorMsg, setErrorMsg] = useState("");
+  const [confirmingChange, setConfirmingChange] = useState(false);
+
+  const handleChangeServer = async () => {
+    await clearServerUrl();
+    window.location.reload();
+  };
 
   const handleSubmit = async () => {
     if (loginState === "loading") return;
@@ -230,6 +237,44 @@ export default function AuthPage() {
                   )}
                 </span>
               </motion.button>
+            </motion.div>
+
+            {/* Кнопка "Сменить сервер" */}
+            <motion.div
+              className={styles.changeServerWrap}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.34, duration: 0.35 }}
+            >
+              {!confirmingChange ? (
+                <button
+                  type="button"
+                  onClick={() => setConfirmingChange(true)}
+                  className={styles.changeServerButton}
+                >
+                  <ServerIcon size={13} />
+                  Сменить сервер
+                </button>
+              ) : (
+                <div className={styles.changeServerConfirm}>
+                  <span className={styles.changeServerConfirmText}>
+                    Потребуется войти заново. Продолжить?
+                  </span>
+                  <button
+                    className={styles.changeServerConfirmBtn}
+                    onClick={handleChangeServer}
+                  >
+                    <RefreshIcon size={13} />
+                    Сменить
+                  </button>
+                  <button
+                    className={styles.changeServerCancelBtn}
+                    onClick={() => setConfirmingChange(false)}
+                  >
+                    Отмена
+                  </button>
+                </div>
+              )}
             </motion.div>
           </div>
         </div>

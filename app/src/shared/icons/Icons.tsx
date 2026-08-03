@@ -145,3 +145,43 @@ export function CheckIcon({ size = 14 }: IconProps) {
     </svg>
   );
 }
+
+/** Иконка сервера для кнопки "Сменить сервер". */
+export function ServerIcon({ size = 14 }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <rect x="3" y="4" width="18" height="14" rx="2" />
+      <line x1="3" y1="10" x2="21" y2="10" />
+      <path d="M8 14h.01M12 14h.01M16 14h.01" />
+    </svg>
+  );
+}
+
+/** Иконка стрелки для кнопки "Сменить сервер". */
+export function RefreshIcon({ size = 14 }: IconProps) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M3 12a9 9 0 0 1 9-9 9 9 0 0 1 9 9 9 9 0 0 1-9 9 9 9 0 0 1-9-9" />
+      <line x1="12" y1="5" x2="12" y2="12" />
+      <line x1="15" y1="15" x2="12" y2="12" />
+    </svg>
+  );
+}
