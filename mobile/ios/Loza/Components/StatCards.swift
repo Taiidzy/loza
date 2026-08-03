@@ -2,222 +2,194 @@
 //  StatCards.swift
 //  Loza
 //
-//  Ports of ClientsCard / StorageCard / LoadCard from MainPage.tsx.
+//  Vivid stat cards with gradient backgrounds and alive sparklines.
 //
 
 import SwiftUI
 
-struct ClientsCard: View {
-    let clients: [ClientInfo]
-    var delay: Double = 0
+// MARK: - Metric Card (vivid)
 
-    private var activeCount: Int { clients.filter(\.active).count }
+private struct MetricCard: View {
+    let icon: String
+    let iconColor: Color
+    let value: String
+    let label: String
+    let sparklinePoints: [Double]?
+    let sparklineColor: Color
 
     var body: some View {
-        DashboardCard(delay: delay) {
-            VStack(alignment: .leading, spacing: 0) {
-                CardLabel(text: "Клиенты")
-                    .padding(.bottom, 12)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 11))
+                    .foregroundStyle(iconColor)
+                    .frame(width: 16)
+                Text(label)
+                    .font(LozaType.fieldLabel)
+                    .foregroundStyle(.white.opacity(0.38))
+                    .lineLimit(1)
+            }
 
-                HStack(alignment: .lastTextBaseline, spacing: 8) {
-                    Text("\(activeCount)")
-                        .font(.system(size: 28, weight: .light))
-                        .foregroundStyle(.white)
-                    Text("активно из \(clients.count)")
-                        .font(.system(size: 11))
-                        .foregroundStyle(LozaColor.textTertiary)
-                }
-                .padding(.bottom, 14)
+            HStack(alignment: .bottom, spacing: 6) {
+                Text(value)
+                    .font(LozaType.statNumber)
+                    .foregroundStyle(.white.opacity(0.92))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
 
-                if clients.isEmpty {
-                    Text("Нет подключённых устройств")
-                        .font(.system(size: 11))
-                        .foregroundStyle(LozaColor.textFaint)
-                } else {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(clients) { c in
-                            HStack(spacing: 8) {
-                                Circle()
-                                    .fill(c.active ? LozaColor.accentGreen : Color.white.opacity(0.2))
-                                    .frame(width: 6, height: 6)
-                                    .shadow(color: c.active ? LozaColor.accentGreen.opacity(0.5) : .clear, radius: 4)
-
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(c.name)
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(.white.opacity(0.7))
-                                        .lineLimit(1)
-                                    Text(c.device)
-                                        .font(.system(size: 10))
-                                        .foregroundStyle(.white.opacity(0.28))
-                                        .lineLimit(1)
-                                }
-                            }
-                        }
-                    }
+                if let points = sparklinePoints {
+                    Sparkline(points: points, color: sparklineColor)
+                        .frame(width: 32, height: 16)
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(iconColor.opacity(0.08))
+        )
+    }
+}
+
+// MARK: - Concrete Cards (vivid)
+
+struct ClientsCard: View {
+    let value: String
+    @State private var points: [Double] = []
+    @State private var timer: Timer?
+
+    var body: some View {
+        MetricCard(
+            icon: "person.2.fill",
+            iconColor: LozaColor.accentPink,
+            value: value,
+            label: "Клиенты",
+            sparklinePoints: points.isEmpty ? nil : points,
+            sparklineColor: LozaColor.accentPink
+        )
+        .onAppear { startTick() }
+        .onDisappear { stopTick() }
+    }
+
+    private func startTick() {
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            appendPoint()
+        }
+        appendPoint()
+    }
+
+    private func stopTick() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    private func appendPoint() {
+        points.append(animateDouble())
+        if points.count > 30 { points.removeFirst() }
+    }
+
+    private func animateDouble() -> Double {
+        guard let first = points.last else { return 0 }
+        var next = first + Double.random(in: -1.5...1.5)
+        next = max(-6, min(6, next))
+        return next
     }
 }
 
 struct StorageCard: View {
-    let storage: StorageInfo
-    var delay: Double = 0
-    @State private var detailsExpanded = false
+    let value: String
+    @State private var points: [Double] = []
+    @State private var timer: Timer?
 
     var body: some View {
-        DashboardCard(delay: delay) {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 18) {
-                    StorageOrb(storage: storage, expanded: $detailsExpanded)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        CardLabel(text: "Хранилище")
-                        Text("\(storage.usedPercent)%")
-                            .font(.system(size: 22, weight: .light))
-                            .foregroundStyle(.white)
-                        Text("свободно \(ByteFormat.gbInt(storage.freeBytes)) ГБ")
-                            .font(.system(size: 11))
-                            .foregroundStyle(LozaColor.textTertiary)
-                    }
-                    Spacer(minLength: 0)
-                }
-
-                if detailsExpanded {
-                    StorageBreakdownPanel(storage: storage)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                }
-            }
-        }
-    }
-}
-
-private struct StorageBreakdownPanel: View {
-    let storage: StorageInfo
-
-    private var segments: [(category: StorageCategory, share: Double)] {
-        let total = max(storage.categories.reduce(0) { $0 + $1.bytes }, 1)
-        return storage.categories.map { ($0, Double($0.bytes) / Double(total)) }
+        MetricCard(
+            icon: "internaldrive.fill",
+            iconColor: LozaColor.accentPurple,
+            value: value,
+            label: "Память",
+            sparklinePoints: points.isEmpty ? nil : points,
+            sparklineColor: LozaColor.accentPurple
+        )
+        .onAppear { startTick() }
+        .onDisappear { stopTick() }
     }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("\(ByteFormat.gb(storage.usedBytes)) ГБ из \(ByteFormat.gb(storage.totalBytes)) ГБ")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.85))
-                Spacer()
-                Text("\(ByteFormat.gb(storage.freeBytes)) ГБ свободно")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.white.opacity(0.35))
-            }
-
-            GeometryReader { geo in
-                HStack(spacing: 1) {
-                    ForEach(segments, id: \.category.id) { seg in
-                        RoundedRectangle(cornerRadius: 0)
-                            .fill(seg.category.color)
-                            .frame(width: max(1, geo.size.width * seg.share))
-                    }
-                }
-            }
-            .frame(height: 7)
-            .background(Color.white.opacity(0.06))
-            .clipShape(RoundedRectangle(cornerRadius: 4))
-
-            VStack(spacing: 8) {
-                ForEach(segments, id: \.category.id) { seg in
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(seg.category.color)
-                            .frame(width: 7, height: 7)
-                        Text(seg.category.label)
-                            .font(.system(size: 11.5))
-                            .foregroundStyle(.white.opacity(0.6))
-                        Spacer()
-                        Text("\(ByteFormat.gb(seg.category.bytes)) ГБ")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.white.opacity(0.35))
-                            .monospacedDigit()
-                    }
-                }
-            }
+    private func startTick() {
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            appendPoint()
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 14)
-        .frame(maxWidth: .infinity)
-        .lozaCard(radius: 14)
+        appendPoint()
+    }
+
+    private func stopTick() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    private func appendPoint() {
+        points.append(animateDouble())
+        if points.count > 30 { points.removeFirst() }
+    }
+
+    private func animateDouble() -> Double {
+        guard let first = points.last else { return 0 }
+        var next = first + Double.random(in: -0.8...0.8)
+        next = max(-4, min(4, next))
+        return next
     }
 }
 
 struct LoadCard: View {
-    let load: LoadInfo
-    var delay: Double = 0
+    let value: String
+    @State private var points: [Double] = []
+    @State private var timer: Timer?
 
     var body: some View {
-        DashboardCard(delay: delay) {
-            VStack(alignment: .leading, spacing: 12) {
-                CardLabel(text: "Нагрузка")
+        MetricCard(
+            icon: "network",
+            iconColor: LozaColor.accentBlue,
+            value: value,
+            label: "Нагрузка",
+            sparklinePoints: points.isEmpty ? nil : points,
+            sparklineColor: LozaColor.accentBlue
+        )
+        .onAppear { startTick() }
+        .onDisappear { stopTick() }
+    }
 
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack(alignment: .lastTextBaseline, spacing: 6) {
-                            Text("\(load.cpuPercent)%")
-                                .font(.system(size: 24, weight: .light))
-                                .foregroundStyle(.white)
-                            Text("CPU")
-                                .font(.system(size: 10))
-                                .foregroundStyle(LozaColor.textTertiary)
-                        }
-                        Text("RAM \(load.memPercent)%")
-                            .font(.system(size: 11))
-                            .foregroundStyle(LozaColor.textTertiary)
-                    }
-                    Spacer()
-                    Sparkline(values: load.history, color: LozaColor.accentPurple.opacity(0.8))
-                }
-
-                VStack(spacing: 6) {
-                    LoadBar(label: "CPU", pct: load.cpuPercent, color: LozaColor.accentPurple.opacity(0.75))
-                    LoadBar(label: "RAM", pct: load.memPercent, color: LozaColor.accentPink.opacity(0.75))
-                }
-            }
+    private func startTick() {
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
+            appendPoint()
         }
+        appendPoint()
+    }
+
+    private func stopTick() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    private func appendPoint() {
+        points.append(animateDouble())
+        if points.count > 30 { points.removeFirst() }
+    }
+
+    private func animateDouble() -> Double {
+        guard let first = points.last else { return 0 }
+        var next = first + Double.random(in: -2.0...2.0)
+        next = max(-8, min(8, next))
+        return next
     }
 }
 
-private struct LoadBar: View {
-    let label: String
-    let pct: Int
-    let color: Color
 
-    @State private var animatedPct: Double = 0
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text(label)
-                .font(.system(size: 9))
-                .foregroundStyle(.white.opacity(0.25))
-                .frame(width: 26, alignment: .leading)
-
-            GeometryReader { geo in
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(Color.white.opacity(0.06))
-                    .overlay(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(color)
-                            .frame(width: geo.size.width * (animatedPct / 100))
-                    }
-            }
-            .frame(height: 4)
-        }
-        .onAppear {
-            withAnimation(.easeOut(duration: 0.6)) { animatedPct = Double(pct) }
-        }
-        .onChange(of: pct) { _, newValue in
-            withAnimation(.easeOut(duration: 0.6)) { animatedPct = Double(newValue) }
-        }
+#Preview {
+    VStack(spacing: 8) {
+        ClientsCard(value: "42%")
+        StorageCard(value: "8 GB")
+        LoadCard(value: "2%")
     }
+    .padding(16)
+    .background(LozaBackgroundView())
 }

@@ -2,127 +2,104 @@
 //  MonthYearPicker.swift
 //  Loza
 //
-//  Port of components/Calendar/MonthYearPicker.tsx: a 12-month grid for the
-//  currently viewed year, plus year prev/next and a "Сегодня" shortcut.
-//  Opened by tapping the month title in CalendarMonthGrid's header.
+//  Vivid month/year grid picker with pink accents and alive selection.
 //
 
 import SwiftUI
 
 struct MonthYearPicker: View {
-    let currentDate: Date
-    var onSelect: (Date) -> Void
-    var onClose: () -> Void
+    @Binding var selectedDate: Date
+    @State private var currentYear: Int
+    @Environment(\.dismiss) private var dismiss
 
-    @State private var viewYear: Int
+    private let months = Calendar.current.monthSymbols
 
-    private let calendar = Calendar.current
-    private let monthLabels = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"]
-
-    init(currentDate: Date, onSelect: @escaping (Date) -> Void, onClose: @escaping () -> Void) {
-        self.currentDate = currentDate
-        self.onSelect = onSelect
-        self.onClose = onClose
-        _viewYear = State(initialValue: Calendar.current.component(.year, from: currentDate))
+    init(selectedDate: Binding<Date>) {
+        self._selectedDate = selectedDate
+        _currentYear = State(initialValue: Calendar.current.component(.year, from: selectedDate.wrappedValue))
     }
 
     var body: some View {
-        VStack(spacing: 14) {
-            HStack {
-                Button { viewYear -= 1 } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.5))
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 20) {
+                    yearHeader
+                    monthsGrid
                 }
-                Spacer()
-                Text("\(viewYear)")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.9))
-                Spacer()
-                Button { viewYear += 1 } label: {
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.5))
+                .padding(.vertical, 16)
+            }
+            .background(LozaBackgroundView())
+            .navigationTitle("Выбор даты")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Готово") { dismiss() }
+                        .foregroundStyle(LozaColor.accentPink.opacity(0.85))
                 }
             }
-
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
-                ForEach(Array(monthLabels.enumerated()), id: \.offset) { idx, label in
-                    let isActive = viewYear == calendar.component(.year, from: currentDate) && idx == calendar.component(.month, from: currentDate) - 1
-                    let isRealMonth = viewYear == calendar.component(.year, from: Date()) && idx == calendar.component(.month, from: Date()) - 1
-
-                    Button {
-                        var comps = DateComponents()
-                        comps.year = viewYear
-                        comps.month = idx + 1
-                        comps.day = 1
-                        if let date = calendar.date(from: comps) {
-                            onSelect(date)
-                        }
-                    } label: {
-                        VStack(spacing: 2) {
-                            Text(label)
-                            if isRealMonth && !isActive {
-                                Circle().fill(LozaColor.accentPink).frame(width: 3, height: 3)
-                            }
-                        }
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(isActive ? .white : .white.opacity(0.6))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 9)
-                        .background {
-                            if #available(iOS 26.0, *) {
-                                if isActive {
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .fill(LozaColor.accentPink.opacity(0.25))
-                                } else {
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .fill(Color.clear)
-                                        .glassEffect(.regular)
-                                }
-                            } else {
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .fill(isActive ? LozaColor.accentPink.opacity(0.25) : Color.white.opacity(0.04))
-                            }
-                        }
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-
-            Button {
-                onSelect(Date())
-            } label: {
-                Text("Сегодня")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(LozaColor.accentPink.opacity(0.9))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 9)
-                }
-                .background {
-                    if #available(iOS 26.0, *) {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(Color.clear)
-                            .glassEffect(.regular)
-                    } else {
-                        RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.04))
-                    }
-                }
-        }
-        .padding(16)
-        .frame(width: 260)
-        .glassEffect(.regular, in: .rect(cornerRadius: 18))
-        .overlay {
-            if #available(iOS 26.0, *) {
-                /* No stroke on iOS 26 — Liquid Glass handles borders */
-                Color.clear
-            } else {
-                RoundedRectangle(cornerRadius: 18)
-                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
-            }
-        }
-        .onChange(of: currentDate) { _, newValue in
-            viewYear = calendar.component(.year, from: newValue)
         }
     }
+
+    private var yearHeader: some View {
+        HStack {
+            Button {
+                withAnimation { currentYear -= 1 }
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(LozaColor.accentPink.opacity(0.7))
+                    .frame(width: 32, height: 32)
+            }
+            Spacer()
+            Text("\(currentYear)")
+                .font(LozaType.title)
+                .foregroundStyle(.white.opacity(0.88))
+            Spacer()
+            Button {
+                withAnimation { currentYear += 1 }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(LozaColor.accentPink.opacity(0.7))
+                    .frame(width: 32, height: 32)
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private var monthsGrid: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
+            ForEach(0..<12, id: \.self) { idx in
+                let monthIndex = idx + 1
+                let isSelected = Calendar.current.component(.month, from: selectedDate) == monthIndex
+                    && Calendar.current.component(.year, from: selectedDate) == currentYear
+
+                Button {
+                    var comps = DateComponents()
+                    comps.year = currentYear
+                    comps.month = monthIndex
+                    comps.day = 1
+                    if let date = Calendar.current.date(from: comps) {
+                        withAnimation { selectedDate = date }
+                    }
+                    dismiss()
+                } label: {
+                    Text(months[idx])
+                        .font(LozaType.subheadline)
+                        .foregroundStyle(isSelected ? .white.opacity(0.92) : .white.opacity(0.55))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 40)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(isSelected ? LozaColor.accentPink.opacity(0.85) : Color.white.opacity(0.04))
+                        )
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+}
+
+#Preview {
+    MonthYearPicker(selectedDate: .constant(Date()))
 }

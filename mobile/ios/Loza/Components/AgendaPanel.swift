@@ -2,85 +2,88 @@
 //  AgendaPanel.swift
 //  Loza
 //
-//  Port of components/Calendar/AgendaPanel.tsx: list of upcoming events
-//  ("Сегодня" / "Завтра" / "12 июля" date labels), tapping a row opens
-//  details — same as DayEventsPanel, owner of modal state is the parent.
+//  Vivid upcoming events panel with gradient header and alive rows.
 //
 
 import SwiftUI
 
 struct AgendaPanel: View {
-    let events: [ExpandedCalendarEvent]
-    var isLoading: Bool = false
-    var limit: Int = 8
-    var onSelect: (ExpandedCalendarEvent) -> Void
+    let events: [CalendarEvent]
+    var onEventTap: ((CalendarEvent) -> Void)?
+
+    private var upcoming: [CalendarEvent] {
+        let today = Calendar.current.startOfDay(for: Date())
+        return events
+            .filter { ev in
+                let eventStart = EventTime.start(date: ev.startDate, time: ev.startTime)
+                return eventStart >= today
+            }
+            .sorted { (EventTime.start(date: $0.startDate, time: $0.startTime) < EventTime.start(date: $1.startDate, time: $1.startTime)) }
+            .prefix(5)
+            .map { $0 }
+    }
 
     var body: some View {
-        let items = Array(events.prefix(limit))
+        if !upcoming.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.up.circle")
+                        .font(.system(size: 11))
+                        .foregroundStyle(LozaColor.accentBlue.opacity(0.8))
+                    Text("Ближайшие")
+                        .font(LozaType.subheadline)
+                        .foregroundStyle(.white.opacity(0.88))
+                    Spacer(minLength: 4)
+                    Text("\(upcoming.count)")
+                        .font(LozaType.fieldLabel)
+                        .foregroundStyle(.white.opacity(0.88))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(LozaColor.accentBlue.opacity(0.3)))
+                }
 
-        if isLoading {
-            Text("Загрузка…")
-                .font(.system(size: 11))
-                .foregroundStyle(LozaColor.textFaint)
-        } else if items.isEmpty {
-            Text("Нет предстоящих событий")
-                .font(.system(size: 11))
-                .foregroundStyle(LozaColor.textFaint)
-        } else {
-            VStack(spacing: 6) {
-                ForEach(items) { evt in
-                    Button { onSelect(evt) } label: {
-                        HStack(spacing: 10) {
+                ForEach(upcoming, id: \.id) { event in
+                    Button { onEventTap?(event) } label: {
+                        HStack(spacing: 6) {
                             Circle()
-                                .fill(evt.color)
-                                .frame(width: 7, height: 7)
-                                .shadow(color: evt.color.opacity(0.5), radius: 4)
+                                .fill(event.color)
+                                .frame(width: 6, height: 6)
+                                .shadow(color: event.color.opacity(0.3), radius: 2)
 
                             VStack(alignment: .leading, spacing: 1) {
-                                Text(evt.title)
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundStyle(.white.opacity(0.8))
+                                Text(event.title)
+                                    .font(LozaType.body)
+                                    .foregroundStyle(.white.opacity(0.88))
                                     .lineLimit(1)
-                                Text(subtitle(evt))
-                                    .font(.system(size: 10.5))
-                                    .foregroundStyle(.white.opacity(0.3))
+
+                                let start = EventTime.start(date: event.startDate, time: event.startTime)
+                                Text(start.formatted(date: .abbreviated, time: .shortened))
+                                    .font(LozaType.fieldLabel)
+                                    .foregroundStyle(.white.opacity(0.42))
                             }
-                            Spacer()
+
+                            Spacer(minLength: 4)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.white.opacity(0.15))
                         }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .background {
-                            if #available(iOS 26.0, *) {
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(Color.clear)
-                                    .glassEffect(.regular)
-                            } else {
-                                RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.03))
-                            }
-                        }
+                        .padding(8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(Color.white.opacity(0.04))
+                        )
                     }
-                    .buttonStyle(.plain)
                 }
             }
+            .padding(14)
+            .glassEffect(.regular, in: .rect(cornerRadius: LozaMetrics.cardRadius))
+            .padding(.horizontal, 12)
         }
     }
+}
 
-    private func subtitle(_ evt: ExpandedCalendarEvent) -> String {
-        var s = dayLabel(DateKeyFormat.date(from: evt.startDate))
-        if evt.isMultiDay {
-            s += " – \(dayLabel(DateKeyFormat.date(from: evt.endDate)))"
-        }
-        s += " · " + EventTime.label(isAllDay: evt.isAllDay, startTime: evt.startTime, endTime: evt.endTime)
-        return s
-    }
-
-    private func dayLabel(_ date: Date) -> String {
-        let cal = Calendar.current
-        if cal.isDateInToday(date) { return "Сегодня" }
-        if cal.isDateInTomorrow(date) { return "Завтра" }
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "ru_RU")
-        f.dateFormat = "d MMMM"
-        return f.string(from: date)
-    }
+#Preview {
+    AgendaPanel(events: [])
+        .padding()
+        .background(LozaBackgroundView())
 }

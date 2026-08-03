@@ -2,133 +2,137 @@
 //  LozaFileComponents.swift
 //  Loza
 //
-//  Sub-components for LozaView: the recursive folder tree (TreeRow) and the
-//  live storage panel (StoragePanel). Mirrors the Tree + storage sidebar
-//  helpers in pages/dashboard/tabs/LozaTab.tsx.
+//  Vivid tree row with gradient selection, colored icons, alive storage panel.
+//
 
 import SwiftUI
 
-// ─── Folder tree (recursive, mirrors the Tree JSX component) ────────────────────
-
-struct TreeRow: View {
+struct LozaTreeRowView: View {
     let node: FileNode
-    let path: [String]
-    let currentPath: [String]
-    let onSelect: (String) -> Void
-    let onNavigate: (String) -> Void
+    var isSelected = false
+    var onTap: (() -> Void)?
+    var onInfo: (() -> Void)?
 
-    private var isFolder: Bool { node.type == .folder }
-    private var isCurrent: Bool {
-        currentPath.count == path.count && currentPath.enumerated().allSatisfy { $0.element == path[$0.offset] }
+    @State private var isExpanded = false
+    @State private var isHovered = false
+
+    private var icon: String {
+        FileIcon.icon(for: node.type)
     }
-    private var isAncestor: Bool {
-        currentPath.count > path.count && path.enumerated().allSatisfy { $0.element == currentPath[$0.offset] }
+
+    private var iconColor: Color {
+        FileIcon.color(for: node.type, custom: node.color)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            if path.count > 1 {
-                Button {
-                    onNavigate(node.id)
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: FileIcon.icon(for: node.type))
-                            .font(.system(size: 13))
-                            .foregroundStyle(node.color.map { Color(hexString: $0) } ?? FileIcon.color(for: node.type))
-                        Text(node.name)
-                            .font(.system(size: 12))
-                            .foregroundStyle(isCurrent ? .white.opacity(0.85) : (isAncestor ? .white.opacity(0.5) : .white.opacity(0.45)))
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .padding(.vertical, 5)
-                    .padding(.leading, path.count > 1 ? CGFloat(path.count - 1) * 14 : 0)
+        Button(action: {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                if node.type == .folder {
+                    isExpanded.toggle()
                 }
-                .buttonStyle(.plain)
+                onTap?()
             }
+        }) {
+            HStack(spacing: 8) {
+                if node.type != .folder || true { indentView }
 
-            if let children = node.children, !children.isEmpty {
-                ForEach(children.filter { $0.type == .folder }) { child in
-                    TreeRow(
-                        node: child,
-                        path: path + [child.id],
-                        currentPath: currentPath,
-                        onSelect: onSelect,
-                        onNavigate: onNavigate
+                Image(systemName: icon)
+                    .font(.system(size: 14))
+                    .foregroundStyle(iconColor.opacity(0.85))
+                    .frame(width: 20)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(node.name)
+                        .font(LozaType.body)
+                        .foregroundStyle(.white.opacity(0.88))
+                        .lineLimit(1)
+
+                    if node.type == .folder, let size = node.size {
+                        Text(size)
+                            .font(LozaType.fieldLabel)
+                            .foregroundStyle(.white.opacity(0.38))
+                    }
+                }
+
+                Spacer(minLength: 4)
+
+                if node.starred {
+                    Image(systemName: "star.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(LozaColor.accentYellow.opacity(0.7))
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(
+                        isSelected ? LozaColor.accentPink.opacity(0.2)
+                        : isHovered ? Color.white.opacity(0.03)
+                        : Color.clear
                     )
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in isHovered = hovering }
+
+        if isExpanded, let children = node.children {
+            ForEach(children) { child in
+                LozaTreeRowView(
+                    node: child,
+                    isSelected: false,
+                    onTap: { onTap?() },
+                    onInfo: { onInfo?() }
+                )
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+    }
+
+    private var indentView: some View {
+        HStack(spacing: 0) {
+            ForEach(0..<max(0, node.id.count - 2), id: \.self) { _ in
+                Rectangle()
+                    .fill(.white.opacity(0.05))
+                    .frame(width: 12)
+            }
+        }
+    }
+}
+
+// MARK: - Storage Panel (for sidebar)
+
+struct StoragePanel: View {
+    let storageUsed: String?
+    let storageTotal: String?
+
+    var body: some View {
+        if let used = storageUsed, let total = storageTotal {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Хранилище")
+                    .font(LozaType.fieldLabel)
+                    .foregroundStyle(.white.opacity(0.35))
+
+                HStack {
+                    Text(used)
+                        .font(LozaType.subheadline)
+                        .foregroundStyle(.white.opacity(0.78))
+                    Text("/")
+                        .font(LozaType.caption)
+                        .foregroundStyle(.white.opacity(0.3))
+                    Text(total)
+                        .font(LozaType.subheadline)
+                        .foregroundStyle(.white.opacity(0.55))
                 }
             }
         }
     }
 }
 
-// ─── Storage panel (live stats from StatusSocket, mirrors LozaTab storage div) ───
-
-struct StoragePanel: View {
-    let storage: StorageInfo
-
-    private var usedPercent: Int {
-        storage.totalBytes > 0 ? min(100, Int(Double(storage.usedBytes) / Double(storage.totalBytes) * 100)) : 0
+#Preview {
+    VStack(spacing: 12) {
+        LozaTreeRowView(node: MockData.fileSystem)
     }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Хранилище")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.white.opacity(0.28))
-                    .textCase(.uppercase)
-                    .tracking(0.8)
-                Text("\(usedPercent)%")
-                    .font(.system(size: 20, weight: .light))
-                    .foregroundStyle(.white)
-            }
-
-            HStack(spacing: 2) {
-                ForEach(storage.categories, id: \.id) { cat in
-                    RoundedRectangle(cornerRadius: 0)
-                        .fill(cat.color)
-                        .frame(maxWidth: .infinity)
-                }
-            }
-            .frame(height: 5)
-            .lozaGlass(radius: 3)
-
-            VStack(spacing: 6) {
-                ForEach(storage.categories) { cat in
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(cat.color)
-                            .frame(width: 7, height: 7)
-                        Text(cat.label)
-                            .font(.system(size: 10.5))
-                            .foregroundStyle(.white.opacity(0.5))
-                        Spacer()
-                        Text(ByteFormat.gb(cat.bytes))
-                            .font(.system(size: 10))
-                            .foregroundStyle(.white.opacity(0.28))
-                            .monospacedDigit()
-                    }
-                }
-            }
-
-            HStack(spacing: 4) {
-                Text(ByteFormat.gb(storage.usedBytes))
-                    .font(.system(size: 10))
-                    .foregroundStyle(.white.opacity(0.32))
-                Text("из")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.white.opacity(0.22))
-                Text(ByteFormat.gb(storage.totalBytes))
-                    .font(.system(size: 10))
-                    .foregroundStyle(.white.opacity(0.32))
-                Spacer()
-                Text(ByteFormat.gb(storage.freeBytes))
-                    .font(.system(size: 10))
-                    .foregroundStyle(.white.opacity(0.22))
-            }
-            .monospacedDigit()
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
+    .padding()
+    .background(LozaBackgroundView())
 }

@@ -2,292 +2,217 @@
 //  CalendarMonthGrid.swift
 //  Loza
 //
-//  Port of components/Calendar/CalendarCard.tsx: month grid, day cells with
-//  multi-day event "lines" (stacked by slot) and single-day event dots,
-//  today/selected highlighting, and a tap-to-open month/year picker in the
-//  header. Presentational only — selection, month, and event data all come
-//  from the parent (CalendarView), same relationship as CustomCalendar/
-//  ActivityTab on desktop.
+//  Vivid month grid with pink accents, gradient nav arrows, alive selected state.
 //
 
 import SwiftUI
 
 struct CalendarMonthGrid: View {
-    @Binding var currentMonth: Date
-    @Binding var selectedDate: Date?
-    @ObservedObject var store: CalendarEventsStore
+    @Binding var selectedDate: Date
+    var events: [CalendarEvent]
 
-    @State private var isPickerOpen = false
+    @State private var currentMonth: Date
+    @State private var direction: CalendarViewDirection = .none
+    @State private var weekOf: Date?
 
     private let calendar = Calendar.current
-    private let weekDays = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 0), count: 7)
+
+    enum CalendarViewDirection { case left, right, none }
+
+    init(selectedDate: Binding<Date>, events: [CalendarEvent]) {
+        self._selectedDate = selectedDate
+        self.events = events
+        self._currentMonth = State(initialValue: Calendar.current.startOfMonth(for: selectedDate.wrappedValue))
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-                .padding(.bottom, 16)
+        VStack(spacing: 0) {
+            monthHeader
+                .padding(.top, 2)
+                .padding(.horizontal, 4)
+                .padding(.bottom, 4)
 
-            HStack(spacing: 0) {
-                ForEach(weekDays, id: \.self) { d in
-                    Text(d)
-                        .font(.system(size: 10))
-                        .tracking(0.6)
-                        .foregroundStyle(LozaColor.textTertiary)
-                        .frame(maxWidth: .infinity)
-                }
-            }
-            .padding(.horizontal, 4)
-            .padding(.bottom, 8)
+            weekdayHeader
+                .padding(.horizontal, 4)
+                .padding(.bottom, 6)
 
-            let days = daysInGrid()
-            let rows = days.chunked(into: 7)
-
-            VStack(spacing: 0) {
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, week in
-                    weekRow(week)
-                        .padding(.vertical, 1)
-                }
-            }
+            daysGrid
         }
-        .padding(16)
-        .lozaCard()
-        .overlay(alignment: .top) {
-            if isPickerOpen {
-                MonthYearPicker(currentDate: currentMonth, onSelect: { date in
-                    currentMonth = date
-                    isPickerOpen = false
-                }, onClose: { isPickerOpen = false })
-                .padding(.top, 52)
-                .zIndex(20)
-            }
-        }
+        .padding(14)
+        .glassEffect(.regular, in: .rect(cornerRadius: LozaMetrics.cardRadius))
+        .padding(.horizontal, 12)
+        .gesture(swipeGesture)
     }
 
-    // ─── Header ─────────────────────────────────────────────────────────────
+    // MARK: - Month Header
 
-    private var header: some View {
-        HStack {
+    private var monthHeader: some View {
+        let monthTitle = currentMonth.formatted(.dateTime.year().month(.wide))
+        return HStack {
             Button {
-                withAnimation(.easeOut(duration: 0.25)) {
-                    currentMonth = calendar.date(byAdding: .month, value: -1, to: currentMonth) ?? currentMonth
-                }
+                withAnimation { currentMonth = calendar.date(byAdding: .month, value: -1, to: currentMonth)! }
+                UIImpactFeedbackGenerator(style: .soft).impactOccurred()
             } label: {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.4))
-                    .frame(width: 30, height: 30)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(LozaColor.accentPink.opacity(0.7))
+                    .frame(width: 32, height: 32)
             }
-
             Spacer()
-
-            Button {
-                withAnimation(.easeOut(duration: 0.15)) { isPickerOpen.toggle() }
-            } label: {
-                HStack(spacing: 4) {
-                    Text(monthYearLabel)
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.9))
-                        .textCase(.lowercase)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.3))
-                        .rotationEffect(.degrees(isPickerOpen ? 180 : 0))
-                }
-            }
-
+            Text(monthTitle)
+                .font(LozaType.title)
+                .foregroundStyle(.white.opacity(0.88))
+                .id(monthTitle + "\(currentMonth)")
+                .transition(.asymmetric(
+                    insertion: .move(edge: direction == .left ? .trailing : .leading).combined(with: .opacity),
+                    removal: .move(edge: direction == .left ? .leading : .trailing).combined(with: .opacity)
+                ))
             Spacer()
-
             Button {
-                withAnimation(.easeOut(duration: 0.25)) {
-                    currentMonth = calendar.date(byAdding: .month, value: 1, to: currentMonth) ?? currentMonth
-                }
+                withAnimation { currentMonth = calendar.date(byAdding: .month, value: 1, to: currentMonth)! }
+                UIImpactFeedbackGenerator(style: .soft).impactOccurred()
             } label: {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.4))
-                    .frame(width: 30, height: 30)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(LozaColor.accentPink.opacity(0.7))
+                    .frame(width: 32, height: 32)
             }
         }
     }
 
-    private var monthYearLabel: String {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "ru_RU")
-        f.dateFormat = "LLLL yyyy"
-        return f.string(from: currentMonth)
+    // MARK: - Weekday Header
+
+    private var weekdayHeader: some View {
+        let symbols = calendar.veryShortWeekdaySymbols
+        return HStack {
+            ForEach(symbols, id: \.self) { sym in
+                Text(sym)
+                    .font(LozaType.fieldLabel)
+                    .foregroundStyle(.white.opacity(0.42))
+                    .frame(maxWidth: .infinity)
+            }
+        }
     }
 
-    // ─── Week row (date cells + continuous multi-day bar overlay) ─────────
+    // MARK: - Days Grid
 
-    @ViewBuilder
-    private func weekRow(_ week: [Date]) -> some View {
-        let weekMultiDay = multiDayEventsForWeek(week)
-
-        ZStack(alignment: .topLeading) {
-            // Date cells (date number + single-day dots)
-            HStack(spacing: 0) {
-                ForEach(week, id: \.self) { day in
-                    dayCell(day)
-                        .frame(maxWidth: .infinity)
-                }
-            }
-
-            // Continuous multi-day bar overlay
-            if !weekMultiDay.isEmpty {
-                GeometryReader { geo in
-                    let cellWidth = geo.size.width / 7
-                    let barHeight: CGFloat = 3
-                    let barY: CGFloat = 28
-
-                    ForEach(weekMultiDay) { evt in
-                        let (startCol, endCol) = columnRange(event: evt, week: week)
-                        let x = CGFloat(startCol) * cellWidth
-                        let w = CGFloat(endCol - startCol + 1) * cellWidth
-                        let slot = store.eventSlots[evt.id] ?? 0
-                        let y = barY + CGFloat(slot) * (barHeight + 2)
-
-                        Capsule()
-                            .fill(evt.color)
-                            .frame(width: w, height: barHeight)
-                            .position(x: x + w / 2, y: y + barHeight / 2)
+    private var daysGrid: some View {
+        let days = generateDays()
+        return LazyVGrid(columns: columns, spacing: 0) {
+            ForEach(days, id: \.self) { date in
+                DayCell(
+                    date: date,
+                    isCurrentMonth: calendar.isDate(date, equalTo: currentMonth, toGranularity: .month),
+                    isToday: calendar.isDateInToday(date),
+                    isSelected: calendar.isDate(date, inSameDayAs: selectedDate),
+                    hasEvents: events.contains { ev in
+                        let eventDate = EventTime.start(date: ev.startDate, time: ev.startTime)
+                        return calendar.isDate(eventDate, inSameDayAs: date)
+                    },
+                    weekOf: weekOf,
+                    onSelect: {
+                        withAnimation(.easeInOut(duration: 0.15)) { selectedDate = date }
+                        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
                     }
-                }
-                .frame(height: 60)
+                )
             }
         }
+        .animation(.easeInOut(duration: 0.25), value: currentMonth)
     }
 
-    /// Returns the unique multi-day events for this week, deduplicated by sourceId,
-    /// sorted by slot then start date.
-    private func multiDayEventsForWeek(_ week: [Date]) -> [ExpandedCalendarEvent] {
-        guard let firstDay = week.first, let lastDay = week.last else { return [] }
-        let firstKey = DateKeyFormat.string(from: firstDay)
-        let lastKey = DateKeyFormat.string(from: lastDay)
+    // MARK: - Swipe
 
-        var seen = Set<String>()
-        var result: [ExpandedCalendarEvent] = []
-
-        for day in week {
-            let (_, multiDay) = store.getEventsForDay(day)
-            for evt in multiDay {
-                guard !seen.contains(evt.id) else { continue }
-                seen.insert(evt.id)
-                if evt.startDate <= lastKey && evt.endDate >= firstKey {
-                    result.append(evt)
+    private var swipeGesture: some Gesture {
+        DragGesture(minimumDistance: 20, coordinateSpace: .local)
+            .onEnded { value in
+                let threshold: CGFloat = 30
+                if value.translation.width < -threshold {
+                    direction = .left
+                    withAnimation { currentMonth = calendar.date(byAdding: .month, value: 1, to: currentMonth)! }
+                } else if value.translation.width > threshold {
+                    direction = .right
+                    withAnimation { currentMonth = calendar.date(byAdding: .month, value: -1, to: currentMonth)! }
                 }
             }
-        }
-
-        return result.sorted { (lhs, rhs) -> Bool in
-            let ls = store.eventSlots[lhs.id] ?? 0
-            let rs = store.eventSlots[rhs.id] ?? 0
-            if ls != rs { return ls < rs }
-            return lhs.startDate < rhs.startDate
-        }
     }
 
-    /// Returns (startColumn, endColumn) for an event within a week (0-6).
-    private func columnRange(event: ExpandedCalendarEvent, week: [Date]) -> (Int, Int) {
-        guard let firstDay = week.first, let lastDay = week.last else { return (0, 0) }
-        let firstKey = DateKeyFormat.string(from: firstDay)
-        let lastKey = DateKeyFormat.string(from: lastDay)
-
-        let startKey = max(event.startDate, firstKey)
-        let endKey = min(event.endDate, lastKey)
-
-        let startCol = calendar.dateComponents([.day], from: firstDay, to: DateKeyFormat.date(from: startKey)).day ?? 0
-        let endCol = calendar.dateComponents([.day], from: firstDay, to: DateKeyFormat.date(from: endKey)).day ?? 0
-
-        return (max(0, startCol), min(6, endCol))
-    }
-
-    // ─── Day cell ───────────────────────────────────────────────────────────
-
-    @ViewBuilder
-    private func dayCell(_ day: Date) -> some View {
-        let isCurrentMonth = calendar.isDate(day, equalTo: currentMonth, toGranularity: .month)
-        let isSelected = selectedDate.map { calendar.isDate($0, inSameDayAs: day) } ?? false
-        let isToday = calendar.isDateInToday(day)
-        let (singleDay, multiDay) = store.getEventsForDay(day)
-
-        Button {
-            withAnimation(.easeOut(duration: 0.15)) { selectedDate = day }
-        } label: {
-            VStack(spacing: 3) {
-                Text("\(calendar.component(.day, from: day))")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(
-                        isSelected ? LozaColor.accentPink
-                            : isToday ? LozaColor.accentPink.opacity(0.85)
-                            : isCurrentMonth ? .white.opacity(0.75)
-                            : .white.opacity(0.2)
-                    )
-
-                // Space reserved for multi-day bars (rendered at row level)
-                if !multiDay.isEmpty {
-                    let slotCount = min(multiDay.prefix(2).count, 2)
-                    Color.clear.frame(height: CGFloat(slotCount) * 5)
-                }
-
-                // Single-day dots
-                if !singleDay.isEmpty {
-                    HStack(spacing: 2) {
-                        ForEach(singleDay.prefix(3)) { evt in
-                            Circle()
-                                .fill(evt.color)
-                                .frame(width: 4, height: 4)
-                        }
-                    }
-                } else if multiDay.isEmpty {
-                    // Reserve vertical space so rows don't jump in height
-                    Color.clear.frame(height: 4)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(isSelected ? LozaColor.accentPink.opacity(0.12) : Color.clear)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(isSelected ? LozaColor.accentPink.opacity(0.35) : Color.clear, lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-    }
-
-    // ─── Grid math ──────────────────────────────────────────────────────────
-
-    private func daysInGrid() -> [Date] {
-        guard let monthInterval = calendar.dateInterval(of: .month, for: currentMonth) else { return [] }
-        let firstOfMonth = monthInterval.start
-
-        // ISO-style week starting Monday, matches weekDays order above.
-        let weekday = calendar.component(.weekday, from: firstOfMonth) // 1 = Sunday
-        let mondayOffset = (weekday + 5) % 7
-        guard let gridStart = calendar.date(byAdding: .day, value: -mondayOffset, to: firstOfMonth) else { return [] }
-
+    private func generateDays() -> [Date] {
+        guard let monthInterval = calendar.dateInterval(of: .month, for: currentMonth),
+              let monthFirstWeek = calendar.dateInterval(of: .weekOfMonth, for: monthInterval.start) else { return [] }
+        let startDay = monthFirstWeek.start
         var days: [Date] = []
-        var cursor = gridStart
+        var current = startDay
         for _ in 0..<42 {
-            days.append(cursor)
-            cursor = calendar.date(byAdding: .day, value: 1, to: cursor) ?? cursor
+            days.append(current)
+            current = calendar.date(byAdding: .day, value: 1, to: current)!
         }
         return days
     }
 }
 
-extension Array {
-    func chunked(into size: Int) -> [[Element]] {
-        stride(from: 0, to: count, by: size).map { Array(self[$0..<Swift.min($0 + size, count)]) }
+// MARK: - Day Cell
+
+private struct DayCell: View {
+    let date: Date
+    let isCurrentMonth: Bool
+    let isToday: Bool
+    let isSelected: Bool
+    let hasEvents: Bool
+    let weekOf: Date?
+    let onSelect: () -> Void
+
+    private var dayNumber: String {
+        let f = DateFormatter()
+        f.dateFormat = "d"
+        return f.string(from: date)
+    }
+
+    var body: some View {
+        Button(action: onSelect) {
+            VStack(spacing: 2) {
+                Text(dayNumber)
+                    .font(.system(size: 16, weight: isSelected ? .bold : .regular))
+                    .foregroundStyle(
+                        isSelected ? .white.opacity(0.92)
+                        : isToday ? LozaColor.accentPink
+                        : isCurrentMonth ? .white.opacity(0.65) : .white.opacity(0.18)
+                    )
+                    .frame(width: 34, height: 34)
+                    .background(
+                        Group {
+                            if isSelected {
+                                Circle().fill(LozaColor.accentPink.opacity(0.85))
+                            }
+                        }
+                    )
+
+                if hasEvents {
+                    Circle()
+                        .fill(isCurrentMonth ? LozaColor.accentPink.opacity(0.7) : .white.opacity(0.2))
+                        .frame(width: 3, height: 3)
+                } else {
+                    Circle().fill(.clear).frame(width: 3, height: 3)
+            }
+            }
+            .padding(.vertical, 1)
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - Calendar helpers
+
+extension Calendar {
+    func startOfMonth(for date: Date) -> Date {
+        let components = self.dateComponents([.year, .month], from: date)
+        return self.date(from: components) ?? date
     }
 }
 
 #Preview {
-    ZStack {
-        LozaBackgroundView()
-        CalendarMonthGrid(currentMonth: .constant(Date()), selectedDate: .constant(Date()), store: CalendarEventsStore())
-            .padding()
-    }
+    CalendarMonthGrid(selectedDate: .constant(Date()), events: [])
+        .padding()
+        .background(LozaBackgroundView())
 }

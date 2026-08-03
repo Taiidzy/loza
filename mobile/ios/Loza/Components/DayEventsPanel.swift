@@ -2,114 +2,109 @@
 //  DayEventsPanel.swift
 //  Loza
 //
-//  Port of components/Calendar/DayEventsPanel.tsx: list of events for the
-//  selected day; tapping a row opens details (sheet), "Добавить" / the big
-//  empty-state button open the create sheet. State for which sheet is open
-//  lives in the parent CalendarView, same as ActivityTab owning DayEventsPanel's
-//  modal state on desktop — this view just reports taps upward.
+//  Vivid day events panel with gradient create button and alive rows.
 //
 
 import SwiftUI
 
 struct DayEventsPanel: View {
-    let selectedDate: Date?
-    let dayEvents: [ExpandedCalendarEvent]
-    var onSelect: (ExpandedCalendarEvent) -> Void
-    var onCreate: () -> Void
+    let selectedDate: Date
+    let events: [CalendarEvent]
+    var onCreate: (() -> Void)?
+    var onEventTap: ((CalendarEvent) -> Void)?
+
+    private var dayEvents: [CalendarEvent] {
+        events.filter { ev in
+            let eventDate = EventTime.start(date: ev.startDate, time: ev.startTime)
+            return Calendar.current.isDate(eventDate, inSameDayAs: selectedDate)
+        }
+        .sorted { (EventTime.start(date: $0.startDate, time: $0.startTime) < EventTime.start(date: $1.startDate, time: $1.startTime)) }
+    }
+
+    private var hasEvents: Bool { !dayEvents.isEmpty }
 
     var body: some View {
-        if selectedDate == nil {
-            Text("Выберите день в календаре")
-                .font(.system(size: 12))
-                .foregroundStyle(LozaColor.textFaint)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if dayEvents.isEmpty {
-            VStack {
-                Spacer()
-                Button(action: onCreate) {
-                    Text("+ Создать событие")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(LozaColor.accentPink.opacity(0.9))
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 10)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(LozaColor.accentPink.opacity(0.1))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .stroke(LozaColor.accentPink.opacity(0.25), lineWidth: 1)
-                        )
-                }
-                Spacer()
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            VStack(spacing: 0) {
-                ScrollView {
-                    VStack(spacing: 6) {
-                        ForEach(dayEvents) { evt in
-                            Button {
-                                onSelect(evt)
-                            } label: {
-                                HStack(spacing: 10) {
-                                    Circle()
-                                        .fill(evt.color)
-                                        .frame(width: 7, height: 7)
-                                        .shadow(color: evt.color.opacity(0.5), radius: 4)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "list.bullet")
+                    .font(.system(size: 11))
+                    .foregroundStyle(LozaColor.accentPink.opacity(0.8))
+                Text(hasEvents ? "События" : "Нет событий")
+                    .font(LozaType.subheadline)
+                    .foregroundStyle(.white.opacity(0.88))
 
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(evt.title)
-                                            .font(.system(size: 12.5, weight: .medium))
-                                            .foregroundStyle(.white.opacity(0.85))
-                                            .lineLimit(1)
-                                        Text(rowSubtitle(evt))
-                                            .font(.system(size: 10.5))
-                                            .foregroundStyle(.white.opacity(0.32))
-                                    }
-                                    Spacer()
-                                }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 9)
-                                .background {
-                                    if #available(iOS 26.0, *) {
-                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                            .fill(Color.clear)
-                                            .glassEffect(.regular)
-                                    } else {
-                                        RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.03))
-                                    }
-                                }
+                Spacer(minLength: 4)
+
+                if hasEvents {
+                    Text("\(dayEvents.count)")
+                        .font(LozaType.fieldLabel)
+                        .foregroundStyle(.white.opacity(0.88))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(LozaColor.accentPink.opacity(0.3)))
+                }
+
+                Button(action: { onCreate?() }) {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(LozaColor.accentPink.opacity(0.75))
+                }
+            }
+
+            if hasEvents {
+                ForEach(dayEvents, id: \.id) { event in
+                    Button { onEventTap?(event) } label: {
+                        HStack(spacing: 6) {
+                            Rectangle()
+                                .fill(event.color)
+                                .frame(width: 3, height: 24)
+                                .clipShape(Capsule())
+
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(event.title)
+                                    .font(LozaType.body)
+                                    .foregroundStyle(.white.opacity(0.88))
+                                    .lineLimit(1)
+
+                                let start = EventTime.start(date: event.startDate, time: event.startTime)
+                                let end = EventTime.end(date: event.endDate, time: event.endTime)
+                                Text("\(start.timeString) — \(end.timeString)")
+                                    .font(LozaType.fieldLabel)
+                                    .foregroundStyle(.white.opacity(0.42))
                             }
-                            .buttonStyle(.plain)
+
+                            Spacer(minLength: 4)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 9))
+                                .foregroundStyle(.white.opacity(0.15))
                         }
+                        .padding(8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(Color.white.opacity(0.04))
+                        )
                     }
                 }
-
-                Button(action: onCreate) {
-                    Text("Добавить")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.75))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 9)
-                        .background {
-                            if #available(iOS 26.0, *) {
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                    .fill(Color.clear)
-                                    .glassEffect(.regular)
-                            } else {
-                                RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.05))
-                            }
-                        }
+            } else {
+                HStack(spacing: 6) {
+                    Image(systemName: "sun.max")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.28))
+                    Text("Свободный день")
+                        .font(LozaType.body)
+                        .foregroundStyle(.white.opacity(0.42))
                 }
-                .padding(.top, 8)
+                .frame(maxWidth: .infinity, minHeight: 52)
             }
         }
+        .padding(14)
+        .glassEffect(.regular, in: .rect(cornerRadius: LozaMetrics.cardRadius))
+        .padding(.horizontal, 12)
     }
+}
 
-    private func rowSubtitle(_ evt: ExpandedCalendarEvent) -> String {
-        var label = EventTime.label(isAllDay: evt.isAllDay, startTime: evt.startTime, endTime: evt.endTime)
-        if evt.recurrence != .none { label += " · повторяется" }
-        return label
-    }
+#Preview {
+    DayEventsPanel(selectedDate: Date(), events: [])
+        .padding()
+        .background(LozaBackgroundView())
 }

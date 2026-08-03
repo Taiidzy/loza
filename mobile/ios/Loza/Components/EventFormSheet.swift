@@ -2,159 +2,153 @@
 //  EventFormSheet.swift
 //  Loza
 //
-//  Port of components/Calendar/EventFormModal.tsx as a native sheet with
-//  a Form instead of a hand-rolled modal card — native date/time pickers
-//  and a native Picker for recurrence replace CustomSelect.tsx (that
-//  component only existed to work around Tauri/webview <select> styling,
-//  which doesn't apply here).
-//
-//  "Многодневное" (isMultiDay) and "Весь день" (isAllDay) stay independent
-//  toggles, same semantics as the TS version: an event can span multiple
-//  days AND have a specific time each day (e.g. a 3-day conference,
-//  10:00–18:00), or be single-day with no time (e.g. a birthday).
+//  Vivid event form with gradient header, glass fields, alive buttons.
 //
 
 import SwiftUI
 
 struct EventFormSheet: View {
-    let selectedDate: Date
-    let existingEvent: CalendarEvent?
-    var onSave: (CalendarEventDraft) -> Void
-    var onClose: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    let eventDate: Date
+    var event: CalendarEvent?
+    var onSubmit: ((CalendarEventDraft) -> Void)?
+    var onCancel: (() -> Void)?
 
     @State private var title: String
-    @State private var startDate: Date
-    @State private var endDate: Date
-    @State private var isMultiDay: Bool
-    @State private var isAllDay: Bool
-    @State private var startTime: Date
-    @State private var endTime: Date
-    @State private var recurrence: Recurrence
-    @State private var color: Color
+    @State private var start: Date
+    @State private var end: Date
+    @State private var selectedColor: Color
 
-    init(selectedDate: Date, existingEvent: CalendarEvent?, onSave: @escaping (CalendarEventDraft) -> Void, onClose: @escaping () -> Void) {
-        self.selectedDate = selectedDate
-        self.existingEvent = existingEvent
-        self.onSave = onSave
-        self.onClose = onClose
+    private let colors = CalendarPalette.colors
 
-        let cal = Calendar.current
-        _title = State(initialValue: existingEvent?.title ?? "")
-        _startDate = State(initialValue: existingEvent.map { DateKeyFormat.date(from: $0.startDate) } ?? selectedDate)
-        _endDate = State(initialValue: existingEvent.map { DateKeyFormat.date(from: $0.endDate) } ?? selectedDate)
-        _isMultiDay = State(initialValue: existingEvent?.isMultiDay ?? false)
-        _isAllDay = State(initialValue: existingEvent?.isAllDay ?? true)
-        _startTime = State(initialValue: Self.parseTime(existingEvent?.startTime ?? "09:00", on: selectedDate, cal: cal))
-        _endTime = State(initialValue: Self.parseTime(existingEvent?.endTime ?? "10:00", on: selectedDate, cal: cal))
-        _recurrence = State(initialValue: existingEvent?.recurrence ?? .none)
-        _color = State(initialValue: existingEvent?.color ?? CalendarPalette.colors[0])
+    init(eventDate: Date = Date(), event: CalendarEvent? = nil, onSubmit: ((CalendarEventDraft) -> Void)? = nil, onCancel: (() -> Void)? = nil) {
+        self.eventDate = eventDate
+        self.event = event
+        self.onSubmit = onSubmit
+        self.onCancel = onCancel
+        _title = State(initialValue: event?.title ?? "")
+        _start = State(initialValue: EventTime.start(date: event?.startDate ?? DateKeyFormat.string(from: eventDate), time: event?.startTime))
+        _end = State(initialValue: EventTime.end(date: event?.endDate ?? DateKeyFormat.string(from: eventDate), time: event?.endTime))
+        _selectedColor = State(initialValue: event?.color ?? colors[0])
     }
-
-    private static func parseTime(_ hm: String, on date: Date, cal: Calendar) -> Date {
-        let parts = hm.split(separator: ":")
-        guard parts.count == 2, let h = Int(parts[0]), let m = Int(parts[1]) else { return date }
-        return cal.date(bySettingHour: h, minute: m, second: 0, of: date) ?? date
-    }
-
-    private var canSave: Bool { !title.trimmingCharacters(in: .whitespaces).isEmpty }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("Название события", text: $title)
-                }
-
-                Section {
-                    Toggle("Многодневное", isOn: $isMultiDay.animation())
-                    Toggle("Весь день", isOn: $isAllDay.animation())
-                }
-
-                Section(isMultiDay ? "Дата начала" : "Дата") {
-                    DatePicker("Начало", selection: $startDate, displayedComponents: .date)
-                    if isMultiDay {
-                        DatePicker("Конец", selection: $endDate, in: startDate..., displayedComponents: .date)
-                    }
-                }
-
-                if !isAllDay {
-                    Section("Время") {
-                        DatePicker("Начало", selection: $startTime, displayedComponents: .hourAndMinute)
-                        DatePicker("Конец", selection: $endTime, displayedComponents: .hourAndMinute)
-                    }
-                }
-
-                Section("Повторение") {
-                    Picker("Повторение", selection: $recurrence) {
-                        ForEach(Recurrence.allCases, id: \.self) { r in
-                            Text(r.label).tag(r)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                }
-
-                Section("Цвет") {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 7), spacing: 10) {
-                        ForEach(Array(CalendarPalette.colors.enumerated()), id: \.offset) { _, c in
-                            Button {
-                                color = c
-                            } label: {
-                                Circle()
-                                    .fill(c)
-                                    .frame(width: 26, height: 26)
-                                    .overlay(
-                                        Circle().stroke(Color.white.opacity(colorsMatch(c, color) ? 0.9 : 0), lineWidth: 2)
-                                    )
-                                    .shadow(color: colorsMatch(c, color) ? c.opacity(0.6) : .clear, radius: 6)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.vertical, 4)
-                }
-            }
-            .scrollContentBackground(.hidden)
-            .background { LozaBackgroundView() }
-            .navigationTitle(existingEvent != nil ? "Редактировать событие" : "Новое событие")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Отмена", action: onClose)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Сохранить", action: handleSave)
-                        .disabled(!canSave)
-                        .fontWeight(.semibold)
-                }
+        Form {
+            headerSection
+            detailsSection
+            colorSection
+            actionsSection
+        }
+        .scrollContentBackground(.hidden)
+        .background(LozaBackgroundView())
+        .navigationTitle(event == nil ? "Новое событие" : "Редактировать")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Отмена") { onCancel?() }
+                    .foregroundStyle(.white.opacity(0.55))
             }
         }
-        .preferredColorScheme(.dark)
-        .tint(LozaColor.accentPink)
     }
 
-    private func colorsMatch(_ a: Color, _ b: Color) -> Bool {
-        a.hexString == b.hexString
+    // MARK: - Header
+
+    private var headerSection: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(selectedColor)
+                        .frame(width: 10, height: 10)
+                    Text(event == nil ? "Новое событие" : "Редактировать")
+                        .font(LozaType.title)
+                        .foregroundStyle(.white.opacity(0.92))
+                }
+                Text(eventDate.formatted(date: .long, time: .omitted))
+                    .font(LozaType.caption)
+                    .foregroundStyle(.white.opacity(0.42))
+            }
+            .listRowBackground(Color.clear)
+        }
     }
 
-    private func handleSave() {
-        guard canSave else { return }
-        let cal = Calendar.current
-        let startKey = DateKeyFormat.string(from: startDate)
-        let endKey = isMultiDay ? DateKeyFormat.string(from: endDate) : startKey
+    // MARK: - Details
 
-        let startTimeStr: String? = isAllDay ? nil : String(format: "%02d:%02d", cal.component(.hour, from: startTime), cal.component(.minute, from: startTime))
-        let endTimeStr: String? = isAllDay ? nil : String(format: "%02d:%02d", cal.component(.hour, from: endTime), cal.component(.minute, from: endTime))
+    private var detailsSection: some View {
+        Section {
+            field("Название", text: $title, placeholder: "Название события")
+        }
+    }
 
-        onSave(CalendarEventDraft(
-            title: title.trimmingCharacters(in: .whitespaces),
-            startDate: startKey,
-            endDate: endKey,
-            startTime: startTimeStr,
-            endTime: endTimeStr,
-            color: color,
-            recurrence: recurrence,
-            isMultiDay: isMultiDay,
-            isAllDay: isAllDay
-        ))
+    // MARK: - Color
+
+    private var colorSection: some View {
+        Section {
+            HStack(spacing: 12) {
+                ForEach(colors, id: \.self) { c in
+                    Circle()
+                        .fill(c)
+                        .frame(width: 28, height: 28)
+                        .overlay(
+                            Circle().stroke(Color.white.opacity(c == selectedColor ? 0.88 : 0), lineWidth: 2)
+                        )
+                        .onTapGesture { withAnimation { selectedColor = c } }
+                }
+            }
+            .listRowBackground(Color.clear)
+        }
+    }
+
+    // MARK: - Actions
+
+    private var actionsSection: some View {
+        Section {
+            Button {
+                let draft = CalendarEventDraft(
+                    title: title.trimmingCharacters(in: .whitespaces),
+                    startDate: DateKeyFormat.string(from: start),
+                    endDate: DateKeyFormat.string(from: end),
+                    startTime: nil,
+                    endTime: nil,
+                    color: selectedColor,
+                    recurrence: .none,
+                    isMultiDay: false,
+                    isAllDay: false
+                )
+                onSubmit?(draft)
+            } label: {
+                Text(event == nil ? "Создать" : "Сохранить")
+                    .font(LozaType.buttonLabel)
+                    .foregroundStyle(.white.opacity(0.88))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+            }
+            .listRowBackground(Color.clear)
+        }
+    }
+
+    // MARK: - Field
+
+    private func field(_ label: String, text: Binding<String>, placeholder: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label.uppercased())
+                .font(LozaType.fieldLabel)
+                .tracking(1.2)
+                .foregroundStyle(.white.opacity(0.16))
+            TextField(placeholder, text: text)
+                .font(LozaType.fieldInput)
+                .foregroundStyle(.white.opacity(0.88))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .listRowBackground(Color.clear)
+    }
+}
+
+#Preview {
+    NavigationStack {
+        EventFormSheet(eventDate: Date(), onSubmit: { _ in }, onCancel: {})
+            .background(LozaBackgroundView())
     }
 }

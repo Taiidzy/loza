@@ -1,83 +1,198 @@
+//
+//  UserManagementView.swift
+//  Loza
+//
+//  Vivid user management with avatar circles, gradient buttons, glass card.
+//
+
 import SwiftUI
 
 struct UserManagementView: View {
     @EnvironmentObject private var session: SessionStore
     @State private var users: [ManagedUserDTO] = []
-    @State private var errorMessage: String?
-    @State private var selectedUsername = ""
-    @State private var currentPassword = ""
-    @State private var newPassword = ""
-    @State private var newUsername = ""
-    @State private var newDisplayName = ""
-    @State private var newUserPassword = ""
-    @State private var newRole = "user"
-    @State private var newQuota = "10737418240"
-    @State private var deleteTarget: ManagedUserDTO?
-    @State private var isWorking = false
-
-    private let quotas: [(String, UInt64?)] = [("10 GB", 10 * 1024 * 1024 * 1024), ("50 GB", 50 * 1024 * 1024 * 1024), ("100 GB", 100 * 1024 * 1024 * 1024), ("Unlimited", nil)]
+    @State private var isLoading = false
+    @State private var showCreate = false
 
     var body: some View {
-        List {
-            if let errorMessage { Text(errorMessage).foregroundStyle(LozaColor.accentRed) }
-            Section("Пользователи") {
-                ForEach(users) { item in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(item.displayName.isEmpty ? item.username : item.displayName).foregroundStyle(LozaColor.textPrimary)
-                                Text("\(item.username) · \(item.role) · \(quotaLabel(item.quotaBytes))").font(.caption).foregroundStyle(LozaColor.textSecondary)
-                            }
-                            Spacer()
-                            if item.username != session.session?.username {
-                                Button(role: .destructive) { deleteTarget = item } label: { Image(systemName: "trash") }
-                            }
-                        }
-                        Picker("Квота", selection: Binding(get: { item.quotaBytes.map(String.init) ?? "unlimited" }, set: { value in Task { await updateQuota(item.username, value) } })) {
-                            ForEach(quotas, id: \.0) { label, value in Text(label).tag(value.map(String.init) ?? "unlimited") }
-                        }
-                        .disabled(isWorking)
+        ScrollView {
+            VStack(spacing: 12) {
+                ForEach(users) { user in
+                    userCard(user)
+                }
+
+                if users.isEmpty && !isLoading {
+                    emptyState
+                }
+
+                if isLoading {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 20)
+                }
+            }
+            .padding(.vertical, 12)
+        }
+        .navigationTitle("Пользователи")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showCreate = true
+                } label: {
+                    Image(systemName: "person.badge.plus")
+                        .foregroundStyle(LozaColor.accentPink.opacity(0.85))
+                }
+            }
+        }
+        .sheet(isPresented: $showCreate) {
+            NavigationStack {
+                CreateUserView(onCreated: {
+                    showCreate = false
+                    Task { await fetchUsers() }
+                })
+                .background(LozaBackgroundView())
+            }
+        }
+        .task { await fetchUsers() }
+    }
+
+    private func fetchUsers() async {
+        isLoading = true
+        do {
+            users = try await UserManagementService.list()
+        } catch {
+            // silently handle
+        }
+        isLoading = false
+    }
+
+    private func userCard(_ user: ManagedUserDTO) -> some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle()
+                    .fill(LozaColor.accentGradient)
+                    .frame(width: 40, height: 40)
+                Text(String(user.displayName.prefix(1)).uppercased())
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.white)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(user.displayName)
+                    .font(LozaType.subheadline)
+                    .foregroundStyle(.white.opacity(0.88))
+                Text(user.role)
+                    .font(LozaType.caption)
+                    .foregroundStyle(.white.opacity(0.42))
+            }
+
+            Spacer()
+
+            if user.role != "admin" {
+                Button {
+                    Task {
+                        try? await UserManagementService.delete(username: user.username)
+                        await fetchUsers()
                     }
-                    .padding(.vertical, 4)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12))
+                        .foregroundStyle(LozaColor.accentRed.opacity(0.65))
+                }
+            }
+        }
+        .padding(14)
+        .glassEffect(.regular, in: .rect(cornerRadius: LozaMetrics.cardRadius))
+        .padding(.horizontal, 12)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "person.2.slash")
+                .font(.system(size: 28))
+                .foregroundStyle(.white.opacity(0.2))
+            Text("Нет пользователей")
+                .font(LozaType.subheadline)
+                .foregroundStyle(.white.opacity(0.55))
+        }
+        .frame(maxWidth: .infinity, minHeight: 100)
+    }
+}
+
+// MARK: - Create User
+
+struct CreateUserView: View {
+    @EnvironmentObject private var session: SessionStore
+    @Environment(\.dismiss) private var dismiss
+    var onCreated: (() -> Void)?
+
+    @State private var username = ""
+    @State private var password = ""
+    @State private var displayName = ""
+    @State private var role = "user"
+
+    var body: some View {
+        Form {
+            Section("Новый пользователь") {
+                field("Логин", text: $username)
+                field("Пароль", text: $password)
+                field("Имя", text: $displayName)
+
+                Picker("Роль", selection: $role) {
+                    Text("user").tag("user")
+                    Text("admin").tag("admin")
                 }
             }
 
-            Section("Создать пользователя") {
-                TextField("Логин", text: $newUsername).textInputAutocapitalization(.never).autocorrectionDisabled()
-                TextField("Отображаемое имя", text: $newDisplayName)
-                SecureField("Пароль", text: $newUserPassword)
-                Picker("Роль", selection: $newRole) { Text("User").tag("user"); Text("Admin").tag("admin") }
-                Picker("Квота", selection: $newQuota) { ForEach(quotas, id: \.0) { label, value in Text(label).tag(value.map(String.init) ?? "unlimited") } }
-                Button("Создать") { Task { await createUser() } }.disabled(isWorking || newUsername.isEmpty || newUserPassword.isEmpty)
-            }
-
-            Section("Смена пароля") {
-                Picker("Пользователь", selection: $selectedUsername) { ForEach(users) { Text($0.username).tag($0.username) } }
-                if selectedUsername == session.session?.username { SecureField("Текущий пароль", text: $currentPassword) }
-                SecureField("Новый пароль", text: $newPassword)
-                Button("Сменить пароль") { Task { await changePassword() } }
-                    .disabled(isWorking || selectedUsername.isEmpty || newPassword.isEmpty || (selectedUsername == session.session?.username && currentPassword.isEmpty))
-            }
-
-            Section("База данных") {
-                HStack { Label("Источник данных", systemImage: "cylinder"); Spacer(); Text("В разработке").foregroundStyle(LozaColor.textSecondary) }
-                    .disabled(true)
+            Section {
+                Button {
+                    Task {
+                        let body = CreateUserBody(
+                            username: username.trimmingCharacters(in: .whitespaces),
+                            password: password,
+                            displayName: displayName.trimmingCharacters(in: .whitespaces),
+                            role: role,
+                            quotaBytes: nil
+                        )
+                        _ = try? await UserManagementService.create(body)
+                        onCreated?()
+                    }
+                } label: {
+                    Text("Создать")
+                        .font(LozaType.buttonLabel)
+                        .foregroundStyle(.white.opacity(0.88))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 11)
+                }
+                .listRowBackground(Color.clear)
             }
         }
         .scrollContentBackground(.hidden)
-        .background { LozaBackgroundView() }
-        .navigationTitle("Пользователи")
-        .task { await load() }
-        .confirmationDialog("Удалить пользователя?", isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } }), titleVisibility: .visible) {
-            Button("Удалить", role: .destructive) { if let target = deleteTarget { Task { await delete(target) } } }
+        .background(LozaBackgroundView())
+        .navigationTitle("Новый пользователь")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Отмена") { dismiss() }
+                    .foregroundStyle(.white.opacity(0.55))
+            }
         }
     }
 
-    private func quotaLabel(_ bytes: UInt64?) -> String { bytes.map { "\($0 / 1024 / 1024 / 1024) GB" } ?? "Unlimited" }
-    private func quotaValue(_ value: String) -> UInt64? { value == "unlimited" ? nil : UInt64(value) }
-    private func load() async { do { users = try await UserManagementService.list(); if selectedUsername.isEmpty { selectedUsername = users.first?.username ?? "" } } catch { errorMessage = error.localizedDescription } }
-    private func updateQuota(_ username: String, _ value: String) async { isWorking = true; defer { isWorking = false }; do { _ = try await UserManagementService.updateQuota(username: username, quotaBytes: quotaValue(value)); await load() } catch { errorMessage = error.localizedDescription } }
-    private func createUser() async { isWorking = true; defer { isWorking = false }; do { _ = try await UserManagementService.create(CreateUserBody(username: newUsername, password: newUserPassword, displayName: newDisplayName.isEmpty ? nil : newDisplayName, role: newRole, quotaBytes: quotaValue(newQuota))); newUsername = ""; newDisplayName = ""; newUserPassword = ""; await load() } catch { errorMessage = error.localizedDescription } }
-    private func changePassword() async { isWorking = true; defer { isWorking = false }; do { try await UserManagementService.changePassword(username: selectedUsername, current: selectedUsername == session.session?.username ? currentPassword : nil, new: newPassword); currentPassword = ""; newPassword = "" } catch { errorMessage = error.localizedDescription } }
-    private func delete(_ target: ManagedUserDTO) async { isWorking = true; defer { isWorking = false; deleteTarget = nil }; do { try await UserManagementService.delete(username: target.username); await load() } catch { errorMessage = error.localizedDescription } }
+    private func field(_ label: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label.uppercased())
+                .font(LozaType.fieldLabel)
+                .tracking(1.2)
+                .foregroundStyle(.white.opacity(0.16))
+            TextField("", text: text)
+                .font(LozaType.fieldInput)
+                .foregroundStyle(.white.opacity(0.88))
+        }
+        .listRowBackground(Color.clear)
+    }
+}
+
+#Preview {
+    UserManagementView()
+        .environmentObject(SessionStore.shared)
 }
