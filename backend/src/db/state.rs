@@ -29,6 +29,8 @@ type WsMessage = axum::extract::ws::Message;
 type WsClientEntry = (Uuid, UnboundedSender<WsMessage>);
 pub type ClientRegistry = Arc<DashMap<String, Vec<WsClientEntry>>>;
 
+type StorageCategoryCache = (u64, Vec<StorageCategory>);
+
 #[derive(Clone, Copy)]
 struct LoginAttempt {
     failures: u32,
@@ -47,7 +49,7 @@ pub struct AppState {
     pub load_history: Arc<RwLock<Vec<f32>>>,
     /// Дневные замеры % занятости диска — источник StorageInfo.history7d.
     pub storage_history: Arc<RwLock<Vec<f32>>>,
-    storage_categories: Arc<Mutex<Option<(u64, Vec<StorageCategory>)>>>,
+    storage_categories: Arc<Mutex<Option<StorageCategoryCache>>>,
     status_ws_connections: Arc<AtomicUsize>,
     app_ws_connections: Arc<AtomicUsize>,
     /// username → list of (connection_id, sender) for broadcasting events.

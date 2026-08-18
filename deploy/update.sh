@@ -3,10 +3,12 @@
 # update.sh — Pull latest, rebuild, and restart the Loza backend containers.
 #
 # Usage:
-#   ./update.sh                 # Pull latest, rebuild, restart
-#   ./update.sh --no-rebuild    # Pull latest only, restart (reuse existing image)
-#   ./update.sh --no-pull       # Skip git pull / docker pull (local edits only)
-#   ./update.sh --force         # Force recreate containers (equivalent to up --force-recreate)
+#   ./update.sh                           # Pull latest (main), rebuild, restart
+#   ./update.sh --branch dev             # Pull from a specific branch
+#   ./update.sh --no-rebuild             # Pull latest only, restart (reuse existing image)
+#   ./update.sh --no-pull                # Skip git pull / docker pull (local edits only)
+#   ./update.sh --force                  # Force recreate containers (equivalent to up --force-recreate)
+#   ./update.sh --app-dir /path          # Use a custom app directory
 #
 set -Eeuo pipefail
 umask 077
@@ -79,6 +81,8 @@ while [[ $# -gt 0 ]]; do
     --no-pull)     DO_PULL=0;    shift ;;
     --no-rebuild)  DO_REBUILD=0; shift ;;
     --force)       FORCE_RECREATE=1; shift ;;
+    --branch)
+      BRANCH="$2"; shift 2 ;;
     --app-dir)
       APP_DIR="$2"; shift 2 ;;
     --)

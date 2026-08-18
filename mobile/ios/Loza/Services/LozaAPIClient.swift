@@ -58,18 +58,18 @@ enum APIError: LocalizedError {
     }
 }
 
-private struct ServerErrorBody: Decodable {
+private struct ServerErrorBody: Decodable, Sendable {
     let error: String
     let code: String
 }
 
 /// Human-readable client description, mirrored from auth.rs's `device_label()`
 /// (there: `"{os} · Loza Desktop"`).
-func deviceLabel() -> String {
+public nonisolated func deviceLabel() -> String {
     "\(UIDeviceModelName()) · Loza Mobile"
 }
 
-private func UIDeviceModelName() -> String {
+private nonisolated func UIDeviceModelName() -> String {
     #if canImport(UIKit)
     return "iOS"
     #else
@@ -77,7 +77,7 @@ private func UIDeviceModelName() -> String {
     #endif
 }
 
-actor LozaAPIClient {
+final class LozaAPIClient {
     static let shared = LozaAPIClient()
 
     private let session: URLSession = {
@@ -247,18 +247,18 @@ actor LozaAPIClient {
 
 // ─── Wire types (mirror backend/src/handlers + backend/src/models) ─────────
 
-private struct HealthResponse: Decodable {
+private struct HealthResponse: Decodable, Sendable {
     let status: String
 }
 
-private struct LoginRequestBody: Encodable {
+private struct LoginRequestBody: Encodable, Sendable {
     let username: String
     let password: String
     let device: String
 }
 
 /// Mirrors backend/src/handlers/auth.rs::LoginResponse.
-struct ServerLoginResponse: Decodable {
+struct ServerLoginResponse: Decodable, Sendable {
     let token: String
     let username: String
     let displayName: String
@@ -272,7 +272,7 @@ struct ServerLoginResponse: Decodable {
     }
 }
 
-struct ManagedUserDTO: Codable, Identifiable {
+struct ManagedUserDTO: Codable, Identifiable, Equatable, Sendable {
     let username: String
     let displayName: String
     let role: String
@@ -286,7 +286,7 @@ struct ManagedUserDTO: Codable, Identifiable {
     }
 }
 
-struct CreateUserBody: Encodable {
+struct CreateUserBody: Encodable, Sendable {
     let username: String
     let password: String
     let displayName: String?
@@ -299,13 +299,13 @@ struct CreateUserBody: Encodable {
     }
 }
 
-struct ChangePasswordBody: Encodable {
+struct ChangePasswordBody: Encodable, Sendable {
     let currentPassword: String?
     let newPassword: String
     enum CodingKeys: String, CodingKey { case currentPassword = "current_password", newPassword = "new_password" }
 }
 
-struct UpdateQuotaBody: Encodable {
+struct UpdateQuotaBody: Encodable, Sendable {
     let quotaBytes: UInt64?
     enum CodingKeys: String, CodingKey { case quotaBytes = "quota_bytes" }
 }

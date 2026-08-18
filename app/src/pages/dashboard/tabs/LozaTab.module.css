@@ -780,3 +780,16 @@
   transform: translateY(0);
   pointer-events: auto;
 }
+
+/* Drag & drop overlay */
+.dragOver {
+  outline: 2px dashed var(--color-accent);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--color-accent) 4%, transparent);
+}
+
+/* Spinner keyframes */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}

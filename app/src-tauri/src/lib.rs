@@ -13,6 +13,7 @@ use window_vibrancy::apply_mica;
 
 mod auth;
 mod calendar;
+mod files;
 mod server_config;
 mod session_store;
 mod status;
@@ -87,7 +88,16 @@ pub fn run() {
             calendar::get_calendar_events,
             calendar::create_calendar_event,
             calendar::update_calendar_event,
-            calendar::delete_calendar_event
+            calendar::delete_calendar_event,
+            files::list_files,
+            files::get_file_info,
+            files::upload_file,
+            files::download_file,
+            files::delete_file,
+            files::rename_file,
+            files::move_file,
+            files::copy_file,
+            files::create_dir,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

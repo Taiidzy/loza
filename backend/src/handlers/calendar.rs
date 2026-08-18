@@ -84,6 +84,7 @@ pub async fn require_username(
         .map(|(claims, _)| claims.sub)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn validate_event(
     title: &str,
     start_date: &str,

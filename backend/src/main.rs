@@ -6,7 +6,7 @@ mod models;
 use axum::{
     Router,
     extract::DefaultBodyLimit,
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
 };
 use std::net::SocketAddr;
 use tower_http::trace::TraceLayer;
@@ -90,6 +90,23 @@ async fn main() {
         .route(
             "/calendar/events/:id",
             put(handlers::calendar::update_event).delete(handlers::calendar::delete_event),
+        )
+        // File API — HTTP (не WebSocket) с поддержкой потоковой передачи.
+        // 50 MB лимит тела для файловых операций (загрузка файлов).
+        .nest(
+            "/files",
+            Router::new()
+                .route("/list", get(handlers::files::list_files))
+                .route("/info", get(handlers::files::file_info))
+                .route("/upload", post(handlers::files::upload_file))
+                .route("/download", get(handlers::files::download_file))
+                .route("/view", get(handlers::files::view_file))
+                .route("/delete", delete(handlers::files::delete_file))
+                .route("/rename", post(handlers::files::rename_file))
+                .route("/move", post(handlers::files::move_file))
+                .route("/copy", post(handlers::files::copy_file))
+                .route("/mkdir", post(handlers::files::create_dir))
+                .layer(DefaultBodyLimit::max(50 * 1024 * 1024)),
         )
         .layer(DefaultBodyLimit::max(16 * 1024))
         .layer(TraceLayer::new_for_http())

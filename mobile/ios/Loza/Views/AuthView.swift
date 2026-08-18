@@ -258,6 +258,7 @@ struct AuthView: View {
                     username: resp.username,
                     displayName: resp.displayName,
                     role: resp.role,
+                    device: deviceLabel(),
                     expiresAt: TimeInterval(resp.expiresAt)
                 ))
                 withAnimation { loginState = .success }

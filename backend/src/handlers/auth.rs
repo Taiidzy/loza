@@ -312,15 +312,14 @@ pub async fn login(
 }
 
 fn client_ip(state: &AppState, headers: &axum::http::HeaderMap, remote_addr: SocketAddr) -> IpAddr {
-    if state.config.trust_proxy_headers {
-        if let Some(ip) = headers
+    if state.config.trust_proxy_headers
+        && let Some(ip) = headers
             .get("x-forwarded-for")
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.split(',').next())
             .and_then(|value| value.trim().parse().ok())
-        {
-            return ip;
-        }
+    {
+        return ip;
     }
     remote_addr.ip()
 }

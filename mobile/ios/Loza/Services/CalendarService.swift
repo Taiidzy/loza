@@ -36,10 +36,10 @@ enum CalendarPalette {
 
 enum CalendarService {
     private static func credentials() async throws -> (URL, String) {
-        guard let baseURL = await ServerConfig.shared.baseURL else {
+        guard let baseURL = ServerConfig.shared.baseURL else {
             throw AuthError.noServerConfigured
         }
-        guard let token = await SessionStore.shared.session?.token else {
+        guard let token = SessionStore.shared.session?.token else {
             throw AuthError.invalidCredentials
         }
         return (baseURL, token)

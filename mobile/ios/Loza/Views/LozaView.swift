@@ -106,22 +106,28 @@ struct LozaView: View {
     @StateObject private var model = LozaViewModel()
 
     var body: some View {
-        NavigationStack {
-            HStack(alignment: .top, spacing: 0) {
-                sidebar
+        GeometryReader { proxy in
+            NavigationStack {
+                HStack(alignment: .top, spacing: 0) {
+                    sidebar
 
-                Divider()
-                    .frame(width: 1)
-                    .overlay(Color.white.opacity(0.04))
+                    Divider()
+                        .frame(width: 1)
+                        .overlay(Color.white.opacity(0.04))
 
-                mainContent
+                    mainContent
+                }
+                .background { LozaBackgroundView() }
+                .navigationBarTitleDisplayMode(.inline)
             }
-            .background { LozaBackgroundView() }
-            .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                model.isCollapsed = proxy.frame(in: .global).width < 800
+            }
+            .onChange(of: proxy.frame(in: .global).width) { _, newWidth in
+                model.isCollapsed = newWidth < 800
+            }
         }
-        .onAppear {
-            model.isCollapsed = UIScreen.main.bounds.width < 800
-        }
+        .preferredColorScheme(.dark)
     }
 
     // ─── Sidebar ────────────────────────────────────────────────────────────────

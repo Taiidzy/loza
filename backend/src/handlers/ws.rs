@@ -152,7 +152,7 @@ async fn handle_request(
         "calendar.get" => {
             let events = repository::list_events(&state.pool, username)
                 .await
-                .map_err(|e| CalendarError::from(e))?;
+                .map_err(CalendarError::from)?;
             Ok(serde_json::to_value(events).unwrap_or_default())
         }
 

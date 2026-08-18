@@ -142,7 +142,7 @@ struct CalendarView: View {
     // ─── Actions ────────────────────────────────────────────────────────────
 
     private func handleCreate(_ draft: CalendarEventDraft) async {
-        try? await store.createEvent(draft)
+        _ = try? await store.createEvent(draft)
         sheet = nil
     }
 
@@ -153,7 +153,7 @@ struct CalendarView: View {
             startTime: draft.startTime, endTime: draft.endTime, color: draft.color,
             recurrence: draft.recurrence, isMultiDay: draft.isMultiDay, isAllDay: draft.isAllDay
         )
-        try? await store.updateEvent(updated)
+        _ = try? await store.updateEvent(updated)
         sheet = nil
     }
 

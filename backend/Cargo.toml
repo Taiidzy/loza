@@ -8,8 +8,9 @@ name = "loza-server"
 path = "src/main.rs"
 
 [dependencies]
-axum = { version = "0.7", features = ["ws"] }
+axum = { version = "0.7", features = ["ws", "multipart"] }
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
@@ -19,7 +20,7 @@ jsonwebtoken = "9"
 dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tower-http = { version = "0.5", features = ["trace"] }
+tower-http = { version = "0.5", features = ["trace", "limit"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "migrate", "macros"] }
 argon2 = "0.5"
 password-hash = { version = "0.5", features = ["rand_core"] }
@@ -27,3 +28,5 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 sha2 = "0.10"
 dashmap = "6"
 futures-util = "0.3"
+bytes = "1"
+mime = "0.3"
