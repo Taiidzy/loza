@@ -114,7 +114,7 @@ export default function LozaTab() {
   const [contextMenu, setContextMenu] = useState<{ item: FileInfo; x: number; y: number } | null>(null);
   const [previewFile, setPreviewFile] = useState<FileInfo | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const newMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const newMenuButtonRef = useRef<HTMLDivElement>(null);
   const [newMenuPos, setNewMenuPos] = useState<{ top: number; left: number } | null>(null);
 
   const navHistoryRef = useRef<string[]>([""]);
@@ -151,6 +151,27 @@ export default function LozaTab() {
   };
 
   const { operations, uploadFile, downloadFile, cancelOperation, removeOperation, retry } = useOperationQueue();
+
+  // Global keyboard shortcuts
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (showNewMenu) { setShowNewMenu(false); return; }
+        if (contextMenu) { setContextMenu(null); return; }
+        if (renameTarget) { setRenameTarget(null); setRenameValue(""); return; }
+        if (previewFile) { setPreviewFile(null); return; }
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showNewMenu, contextMenu, renameTarget, previewFile]);
+
+  // Close new menu on window resize
+  useEffect(() => {
+    const onResize = () => { if (showNewMenu) setShowNewMenu(false); };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [showNewMenu]);
 
   const loadFiles = useCallback(async (path: string) => {
     setLoading(true);
@@ -341,7 +362,7 @@ export default function LozaTab() {
   };
 
   return (
-    <div className={`${styles.root} ${previewFile ? styles.withPreview : ""}`}>
+    <div className={styles.root}>
       <aside className={styles.sidebar}>
         <FolderTreeSidebar currentPath={currentPath} onNavigate={handleNavigate} refreshKey={currentPath} />
       </aside>
@@ -422,17 +443,18 @@ export default function LozaTab() {
           </div>
 
           <div className={styles.toolbarRight}>
-            <div style={{ position: "relative" }}>
-              <motion.button
-                ref={newMenuButtonRef}
-                whileHover={{ background: "var(--color-popup-hover-strong)" }}
-                whileTap={{ scale: 0.94 }}
-                onClick={() => setShowNewMenu(!showNewMenu)}
-                className={styles.navBtn}
-                title="Создать"
-              >
-                <FolderPlus size={15} />
-              </motion.button>
+            <div style={{ position: "relative", display: "inline-block" }}>
+              <div ref={newMenuButtonRef} style={{ display: "inline-block" }}>
+                <motion.button
+                  whileHover={{ background: "var(--color-popup-hover-strong)" }}
+                  whileTap={{ scale: 0.94 }}
+                  onClick={() => setShowNewMenu(!showNewMenu)}
+                  className={styles.navBtn}
+                  title="Создать"
+                >
+                  <FolderPlus size={15} />
+                </motion.button>
+              </div>
               {showNewMenu && newMenuPos && (
                 <>
                   <motion.div
@@ -513,7 +535,7 @@ export default function LozaTab() {
           </div>
         </motion.div>
 
-         <div className={styles.body} onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave}>
+        <div className={styles.body} onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave}>
           <AnimatePresence>
             {error && (
               <motion.div
@@ -604,13 +626,43 @@ export default function LozaTab() {
       </main>
 
       {previewFile && (
-        <div style={{
-          width: 480, borderLeft: "1px solid var(--color-surface-border)",
-          display: "flex", flexDirection: "column",
-          background: "var(--color-popup-surface)",
-        }}>
-          <FileViewer file={previewFile} onClose={() => setPreviewFile(null)} onEdited={() => loadFiles(currentPath)} />
-        </div>
+        <>
+          <div style={{
+            position: "fixed", inset: 0,
+            backgroundColor: "rgba(0,0,0,0.5)",
+            zIndex: 5000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "24px",
+          }} onClick={() => setPreviewFile(null)} />
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            transition={{ duration: 0.15, ease: "easeOut" }}
+            style={{
+              position: "fixed",
+              top: "50%", left: "50%",
+              transform: "translate(-50%, -50%)",
+              width: "min(90vw, 800px)",
+              height: "min(90vh, 600px)",
+              maxWidth: "90vw",
+              maxHeight: "90vh",
+              background: "var(--color-popup-surface)",
+              border: "1px solid var(--color-popup-border)",
+              borderRadius: "var(--radius-lg)",
+              boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
+              zIndex: 5001,
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <FileViewer file={previewFile} onClose={() => setPreviewFile(null)} onEdited={() => loadFiles(currentPath)} />
+          </motion.div>
+        </>
       )}
 
       {contextMenu && (
@@ -666,23 +718,7 @@ export default function LozaTab() {
         </>
       )}
 
-       <OperationQueueList operations={operations} onCancel={cancelOperation} onClose={removeOperation} onRetry={retry} />
-
-      {/* ── Status bar ── */}
-      <motion.div
-        className={styles.statusBar}
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.2, delay: 0.1 }}
-      >
-        <span style={{ color: MUTED, fontSize: 11 }}>
-          {breadcrumbs[breadcrumbs.length - 1]?.name || "Мой диск"}
-        </span>
-        <span style={{ marginLeft: "auto", color: MUTED, fontSize: 11 }}>
-          {sorted.length} элементов ·{" "}
-          {formatBytes(sorted.filter(f => !f.isDir).reduce((sum, f) => sum + (f.sizeBytes || 0), 0))}
-        </span>
-      </motion.div>
+      <OperationQueueList operations={operations} onCancel={cancelOperation} onClose={removeOperation} onRetry={retry} />
     </div>
   );
 }
