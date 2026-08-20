@@ -294,12 +294,13 @@ pub async fn upload_file(
             .map(|(_, n)| n.to_string())
             .unwrap_or_else(|| fname.clone());
 
+        let file_id = Uuid::new_v4();
         let now = Utc::now().timestamp();
         sqlx::query(
             r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, created_at, updated_at)
                VALUES ($1, $2, $3, $4, false, $5, $6, $7, $8)"#,
         )
-        .bind(Uuid::new_v4().to_string())
+        .bind(file_id)
         .bind(&username)
         .bind(&clean_path)
         .bind(&dir_name)
@@ -313,7 +314,7 @@ pub async fn upload_file(
         .map_err(file_error)?;
 
         result = Some(FileInfo {
-            id: Uuid::new_v4().to_string(),
+            id: file_id.to_string(),
             path: clean_path.clone(),
             name: dir_name,
             is_dir: false,
@@ -565,8 +566,8 @@ pub async fn rename_file(
     let from = sanitize_path(&req.from).map_err(from_file_error)?;
     let to = sanitize_path(&req.to).map_err(from_file_error)?;
 
-    let row: Option<(String, bool, i64, Option<String>)> = sqlx::query_as(
-        r#"SELECT name, is_dir, size_bytes, mime_type FROM user_files
+    let row: Option<(String, String, bool, i64, Option<String>)> = sqlx::query_as(
+        r#"SELECT id, name, is_dir, size_bytes, mime_type FROM user_files
            WHERE username = $1 AND path = $2"#,
     )
     .bind(&username)
@@ -576,7 +577,7 @@ pub async fn rename_file(
     .map_err(FileError::from)
     .map_err(file_error)?;
 
-    let (_name, is_dir, size, mime) =
+    let (id, _name, is_dir, size, mime) =
         row.ok_or_else(|| file_error(FileError::not_found(&from)))?;
 
     // Conflict check
@@ -635,7 +636,7 @@ pub async fn rename_file(
         .unwrap_or_else(|| to.clone());
 
     Ok(Json(FileInfo {
-        id: Uuid::new_v4().to_string(),
+        id,
         path: to.clone(),
         name: new_name,
         is_dir,
@@ -718,6 +719,43 @@ pub async fn copy_file(
     }
 
     let now = Utc::now().timestamp();
+
+    // INSERT new DB record(s) for the copied file/directory.
+    if is_dir {
+        // Copy the directory row + all children rows with fresh UUIDs and new paths.
+        sqlx::query(
+            r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, created_at, updated_at)
+               SELECT gen_random_uuid(), $1,
+                      REPLACE(path, $2, $3), name, is_dir, size_bytes, mime_type, $4, $4
+               FROM user_files
+               WHERE username = $1 AND path LIKE $5"#,
+        )
+        .bind(&username)
+        .bind(&from)
+        .bind(&to)
+        .bind(now)
+        .bind(format!("{from}%"))
+        .execute(&state.pool)
+        .await
+        .map_err(FileError::from)
+        .map_err(file_error)?;
+    } else {
+        sqlx::query(
+            r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, created_at, updated_at)
+               VALUES (gen_random_uuid(), $1, $2, $3, false, $4, $5, $6, $6)"#,
+        )
+        .bind(&username)
+        .bind(&to)
+        .bind(&name)
+        .bind(size)
+        .bind(mime.clone())
+        .bind(now)
+        .execute(&state.pool)
+        .await
+        .map_err(FileError::from)
+        .map_err(file_error)?;
+    }
+
     let now_str = fmt_ts(now);
     Ok(Json(FileInfo {
         id: Uuid::new_v4().to_string(),
@@ -781,12 +819,13 @@ pub async fn create_dir(
         .map_err(FileError::from)
         .map_err(file_error)?;
 
+    let dir_id = Uuid::new_v4();
     let now = Utc::now().timestamp();
     sqlx::query(
         r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, created_at, updated_at)
            VALUES ($1, $2, $3, $4, true, 0, $5, $6, $7)"#,
     )
-    .bind(Uuid::new_v4().to_string())
+    .bind(dir_id)
     .bind(&username)
     .bind(&path)
     .bind(&dir_name)
@@ -800,7 +839,7 @@ pub async fn create_dir(
 
     let ts = fmt_ts(now);
     Ok(Json(FileInfo {
-        id: Uuid::new_v4().to_string(),
+        id: dir_id.to_string(),
         path: path.clone(),
         name: dir_name,
         is_dir: true,
