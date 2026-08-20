@@ -154,7 +154,7 @@ pub async fn list_files(
 
     let rows: Vec<FileRow> = if dir_prefix.is_empty() {
         sqlx::query_as(
-            r#"SELECT id, path, name, is_dir, size_bytes, mime_type, created_at, updated_at
+            r#"SELECT id::text, path, name, is_dir, size_bytes, mime_type, created_at, updated_at
                FROM user_files
                WHERE username = $1
                  AND path NOT LIKE $2
@@ -168,7 +168,7 @@ pub async fn list_files(
         .map_err(file_error)?
     } else {
         sqlx::query_as(
-            r#"SELECT id, path, name, is_dir, size_bytes, mime_type, created_at, updated_at
+            r#"SELECT id::text, path, name, is_dir, size_bytes, mime_type, created_at, updated_at
                FROM user_files
                WHERE username = $1
                  AND path LIKE $2
@@ -198,7 +198,7 @@ pub async fn file_info(
     let path = sanitize_path(&query.path).map_err(from_file_error)?;
 
     let row = sqlx::query_as::<_, FileRow>(
-        r#"SELECT id, path, name, is_dir, size_bytes, mime_type, created_at, updated_at
+        r#"SELECT id::text, path, name, is_dir, size_bytes, mime_type, created_at, updated_at
            FROM user_files WHERE username = $1 AND path = $2"#,
     )
     .bind(&username)
@@ -567,7 +567,7 @@ pub async fn rename_file(
     let to = sanitize_path(&req.to).map_err(from_file_error)?;
 
     let row: Option<(String, String, bool, i64, Option<String>)> = sqlx::query_as(
-        r#"SELECT id, name, is_dir, size_bytes, mime_type FROM user_files
+        r#"SELECT id::text, name, is_dir, size_bytes, mime_type FROM user_files
            WHERE username = $1 AND path = $2"#,
     )
     .bind(&username)
