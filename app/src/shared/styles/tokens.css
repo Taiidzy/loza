@@ -34,11 +34,13 @@
   --color-surface-border: rgba(255, 255, 255, 0.08);
   --color-surface-hover: rgba(255, 255, 255, 0.06);
 
-  /* ── Попапы / контекст-меню / диалоги (Finder-like, solid) ── */
-  --color-popup-surface: rgba(20, 20, 28, 0.92);
-  --color-popup-border: rgba(255, 255, 255, 0.12);
-  --color-popup-hover: rgba(255, 255, 255, 0.08);
-  --color-popup-hover-strong: rgba(255, 255, 255, 0.12);
+  /* ── Matte Glass / Frosted Glass ── */
+  --color-glass-surface: rgba(20, 20, 28, 0.72);
+  --color-glass-border: rgba(255, 255, 255, 0.1);
+  --color-glass-hover: rgba(255, 255, 255, 0.06);
+  --color-glass-hover-strong: rgba(255, 255, 255, 0.1);
+  --glass-blur: blur(20px);
+  --glass-blur-strong: blur(30px);
 
   /* ── Радиусы ── */
   --radius-sm: 8px;

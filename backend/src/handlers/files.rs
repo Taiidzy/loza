@@ -214,6 +214,42 @@ pub async fn file_info(
     }
 }
 
+/// Определяет категорию хранения по MIME-типу.
+/// Возвращает имя подпапки в storage/<username>/
+fn categorize_by_mime(mime: Option<&str>) -> &'static str {
+    let mime = mime.unwrap_or("");
+    if mime.starts_with("image/") {
+        "photos"
+    } else if mime.starts_with("video/") {
+        "video"
+    } else if mime.starts_with("audio/") {
+        "video" // audio вместе с видео, либо можно отдельную "audio"
+    } else if mime.starts_with("text/") ||
+              mime == "application/pdf" ||
+              mime == "application/json" ||
+              mime == "application/xml" ||
+              mime == "application/zip" ||
+              mime == "application/x-tar" ||
+              mime == "application/gzip" ||
+              mime == "application/x-7z-compressed" ||
+              mime == "application/x-rar-compressed" ||
+              mime == "application/msword" ||
+              mime == "application/vnd.openxmlformats-officedocument" ||
+              mime == "application/vnd.ms-excel" ||
+              mime == "application/vnd.ms-powerpoint" {
+        "docs"
+    } else if mime == "application/zip" ||
+              mime == "application/x-tar" ||
+              mime == "application/gzip" ||
+              mime == "application/x-7z-compressed" ||
+              mime == "application/x-rar-compressed" ||
+              mime == "application/octet-stream" {
+        "backups"
+    } else {
+        "other"
+    }
+}
+
 /// POST /files/upload
 /// Multipart: поле `file` (файл), поле `path` (директория назначения, опционально).
 /// Для больших файлов использует потоковую запись на диск.
@@ -249,8 +285,13 @@ pub async fn upload_file(
             .unwrap_or_else(|| Uuid::new_v4().to_string());
         let ct = field.content_type().map(|c| c.to_string());
 
+        // Определяем MIME для категоризации
+        let mime_for_category = ct.as_deref().or_else(|| guess_mime(&fname));
+
+        // Если dest_dir пустой — авто-категория по MIME
         let final_path = if dest_dir.is_empty() {
-            fname.clone()
+            let category = categorize_by_mime(mime_for_category);
+            format!("{category}/{fname}")
         } else {
             format!("{dest_dir}/{fname}")
         };

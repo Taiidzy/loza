@@ -79,8 +79,8 @@ function SkeletonGrid({ count = 6 }: { count?: number }) {
           <div className={styles.gridThumb} style={{ "--thumb-color": "#64748b" } as any}>
             <div style={{ width: 24, height: 24, opacity: 0.3 }} />
           </div>
-          <div style={{ height: 12, background: "var(--color-popup-surface)", borderRadius: 4, width: "80%", margin: "4px auto" }} />
-          <div style={{ height: 10, background: "var(--color-popup-surface)", borderRadius: 4, width: "50%", margin: "2px auto" }} />
+          <div style={{ height: 12, background: "var(--color-glass-surface)", borderRadius: 4, width: "80%", margin: "4px auto" }} />
+          <div style={{ height: 10, background: "var(--color-glass-surface)", borderRadius: 4, width: "50%", margin: "2px auto" }} />
         </div>
       ))}
     </div>
@@ -117,6 +117,14 @@ export default function LozaTab() {
   const newMenuButtonRef = useRef<HTMLDivElement>(null);
   const [newMenuPos, setNewMenuPos] = useState<{ top: number; left: number } | null>(null);
 
+  const [inputModal, setInputModal] = useState<{
+    type: "folder" | "file";
+    title: string;
+    placeholder: string;
+    onConfirm: (name: string) => void;
+  } | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
   const navHistoryRef = useRef<string[]>([""]);
   const navIndexRef = useRef(0);
 
@@ -152,19 +160,19 @@ export default function LozaTab() {
 
   const { operations, uploadFile, downloadFile, cancelOperation, removeOperation, retry } = useOperationQueue();
 
-  // Global keyboard shortcuts
+  // Global keyboard shortcuts (capture phase — before inputs)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        if (showNewMenu) { setShowNewMenu(false); return; }
-        if (contextMenu) { setContextMenu(null); return; }
-        if (renameTarget) { setRenameTarget(null); setRenameValue(""); return; }
-        if (previewFile) { setPreviewFile(null); return; }
-      }
+      if (e.key !== "Escape") return;
+      if (inputModal) { setInputModal(null); return; }
+      if (showNewMenu) { setShowNewMenu(false); return; }
+      if (contextMenu) { setContextMenu(null); return; }
+      if (renameTarget) { setRenameTarget(null); setRenameValue(""); return; }
+      if (previewFile) { setPreviewFile(null); return; }
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [showNewMenu, contextMenu, renameTarget, previewFile]);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [inputModal, showNewMenu, contextMenu, renameTarget, previewFile]);
 
   // Close new menu on window resize
   useEffect(() => {
@@ -345,19 +353,21 @@ export default function LozaTab() {
   const handleNewFile = async (type: "folder" | "file") => {
     setShowNewMenu(false);
     if (type === "folder") {
-      const name = prompt("Имя папки:");
-      if (name) await handleMkdir(name);
+      setInputModal({ type: "folder", title: "Создать папку", placeholder: "Имя папки", onConfirm: handleMkdir });
     } else {
-      const name = prompt("Имя файла:");
-      if (!name || !name.trim()) return;
-      const trimmedName = name.trim();
-      try {
-        const emptyFile = new File([], trimmedName, { type: "text/plain" });
-        await uploadFile({ path: currentPath, filename: trimmedName, file: emptyFile });
-        loadFiles(currentPath);
-      } catch (e: any) {
-        setError(e.message || "Failed to create file");
-      }
+      setInputModal({ type: "file", title: "Создать файл", placeholder: "Имя файла", onConfirm: createEmptyFile });
+    }
+  };
+
+  const createEmptyFile = async (name: string) => {
+    const trimmedName = name.trim();
+    if (!trimmedName) return;
+    try {
+      const emptyFile = new File([], trimmedName, { type: "text/plain" });
+      await uploadFile({ path: currentPath, filename: trimmedName, file: emptyFile });
+      loadFiles(currentPath);
+    } catch (e: any) {
+      setError(e.message || "Failed to create file");
     }
   };
 
@@ -377,7 +387,7 @@ export default function LozaTab() {
         >
           <div className={styles.navGroup}>
             <motion.button
-              whileHover={{ background: "var(--color-popup-hover-strong)" }}
+              whileHover={{ background: "var(--color-glass-hover-strong)" }}
               whileTap={{ scale: 0.94 }}
               onClick={goBack}
               disabled={!canGoBack}
@@ -387,7 +397,7 @@ export default function LozaTab() {
               <ArrowLeft size={15} />
             </motion.button>
             <motion.button
-              whileHover={{ background: "var(--color-popup-hover-strong)" }}
+              whileHover={{ background: "var(--color-glass-hover-strong)" }}
               whileTap={{ scale: 0.94 }}
               onClick={goForward}
               disabled={!canGoForward}
@@ -397,7 +407,7 @@ export default function LozaTab() {
               <ArrowRight size={15} />
             </motion.button>
             <motion.button
-              whileHover={{ background: "var(--color-popup-hover-strong)" }}
+              whileHover={{ background: "var(--color-glass-hover-strong)" }}
               whileTap={{ scale: 0.94 }}
               onClick={goUp}
               disabled={!currentPath}
@@ -407,7 +417,7 @@ export default function LozaTab() {
               <ArrowUp size={15} />
             </motion.button>
             <motion.button
-              whileHover={{ background: "var(--color-popup-hover-strong)" }}
+              whileHover={{ background: "var(--color-glass-hover-strong)" }}
               whileTap={{ scale: 0.94 }}
               onClick={() => loadFiles(currentPath)}
               className={styles.navBtn}
@@ -446,7 +456,7 @@ export default function LozaTab() {
             <div style={{ position: "relative", display: "inline-block" }}>
               <div ref={newMenuButtonRef} style={{ display: "inline-block" }}>
                 <motion.button
-                  whileHover={{ background: "var(--color-popup-hover-strong)" }}
+                  whileHover={{ background: "var(--color-glass-hover-strong)" }}
                   whileTap={{ scale: 0.94 }}
                   onClick={() => setShowNewMenu(!showNewMenu)}
                   className={styles.navBtn}
@@ -466,21 +476,29 @@ export default function LozaTab() {
                       position: "fixed",
                       top: newMenuPos.top,
                       left: newMenuPos.left,
-                      background: "var(--color-popup-surface)", border: "1px solid var(--color-popup-border)",
-                      borderRadius: "var(--radius-sm)", padding: "6px", minWidth: 150,
-                      display: "flex", flexDirection: "column", gap: 2,
-                      boxShadow: "0 8px 24px rgba(0,0,0,0.45)", zIndex: 100,
+                      background: "var(--color-glass-surface)",
+                      border: "1px solid var(--color-glass-border)",
+                      borderRadius: "var(--radius-sm)",
+                      padding: "6px",
+                      minWidth: 150,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 2,
+                      boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+                      zIndex: 100,
+                      backdropFilter: "var(--glass-blur)",
+                      WebkitBackdropFilter: "var(--glass-blur)",
                     }}
                   >
                     <motion.button
-                      whileHover={{ background: "var(--color-popup-hover)" }}
+                      whileHover={{ background: "var(--color-glass-hover)" }}
                       onClick={() => handleNewFile("folder")}
                       style={{ padding: "6px 10px", textAlign: "left", fontSize: 12, background: "transparent", border: "none", color: PRIMARY, cursor: "pointer", borderRadius: "var(--radius-sm)" }}
                     >
                       <FolderPlus size={12} style={{ marginRight: 6 }} /> Папка
                     </motion.button>
                     <motion.button
-                      whileHover={{ background: "var(--color-popup-hover)" }}
+                      whileHover={{ background: "var(--color-glass-hover)" }}
                       onClick={() => handleNewFile("file")}
                       style={{ padding: "6px 10px", textAlign: "left", fontSize: 12, background: "transparent", border: "none", color: PRIMARY, cursor: "pointer", borderRadius: "var(--radius-sm)" }}
                     >
@@ -493,7 +511,7 @@ export default function LozaTab() {
             </div>
 
             <motion.button
-              whileHover={{ background: "var(--color-popup-hover-strong)" }}
+              whileHover={{ background: "var(--color-glass-hover-strong)" }}
               whileTap={{ scale: 0.94 }}
               onClick={() => fileInputRef.current?.click()}
               className={styles.navBtn}
@@ -504,7 +522,7 @@ export default function LozaTab() {
 
             <div className={styles.viewToggle}>
               <motion.button
-                whileHover={{ background: viewMode === "grid" ? "var(--color-accent)" : "var(--color-popup-hover-strong)" }}
+                whileHover={{ background: viewMode === "grid" ? "var(--color-accent)" : "var(--color-glass-hover-strong)" }}
                 whileTap={{ scale: 0.92 }}
                 className={`${styles.viewBtn} ${viewMode === "grid" ? styles.viewBtnActive : ""}`}
                 onClick={() => setViewMode("grid")}
@@ -513,7 +531,7 @@ export default function LozaTab() {
                 <Grid3x3 size={15} />
               </motion.button>
               <motion.button
-                whileHover={{ background: viewMode === "list" ? "var(--color-accent)" : "var(--color-popup-hover-strong)" }}
+                whileHover={{ background: viewMode === "list" ? "var(--color-accent)" : "var(--color-glass-hover-strong)" }}
                 whileTap={{ scale: 0.92 }}
                 className={`${styles.viewBtn} ${viewMode === "list" ? styles.viewBtnActive : ""}`}
                 onClick={() => setViewMode("list")}
@@ -648,8 +666,8 @@ export default function LozaTab() {
               height: "min(90vh, 600px)",
               maxWidth: "90vw",
               maxHeight: "90vh",
-              background: "var(--color-popup-surface)",
-              border: "1px solid var(--color-popup-border)",
+              background: "var(--color-glass-surface)",
+              border: "1px solid var(--color-glass-border)",
               borderRadius: "var(--radius-lg)",
               boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
               display: "flex",
@@ -687,7 +705,7 @@ export default function LozaTab() {
             transition={{ duration: 0.15 }}
             style={{
               position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
-              background: "var(--color-popup-surface)", border: "1px solid var(--color-popup-border)",
+              background: "var(--color-glass-surface)", border: "1px solid var(--color-glass-border)",
               borderRadius: "var(--radius-md)", padding: "18px 22px", minWidth: 320,
               boxShadow: "0 20px 50px rgba(0,0,0,0.5)", zIndex: 2000,
             }}
@@ -697,16 +715,55 @@ export default function LozaTab() {
               onKeyDown={(e) => { if (e.key === "Enter") doRename(); if (e.key === "Escape") setRenameTarget(null); }}
               style={{
                 width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)",
-                background: "rgba(0,0,0,0.3)", border: "1px solid var(--color-popup-border)",
+                background: "rgba(0,0,0,0.3)", border: "1px solid var(--color-glass-border)",
                 color: PRIMARY, fontSize: 13, marginBottom: 14, outline: "none",
               }} autoFocus />
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button onClick={() => setRenameTarget(null)} style={{
                 padding: "6px 14px", borderRadius: "var(--radius-sm)",
-                background: "var(--color-popup-surface)", border: "1px solid var(--color-popup-border)",
+                background: "var(--color-glass-surface)", border: "1px solid var(--color-glass-border)",
                 color: SECONDARY, fontSize: 12, cursor: "pointer", transition: "all 0.15s",
               }}>Отмена</button>
               <button onClick={doRename} style={{
+                padding: "6px 14px", borderRadius: "var(--radius-sm)",
+                background: "var(--color-accent)", border: "1px solid var(--color-accent-border)",
+                color: "#fff", fontSize: 12, cursor: "pointer", fontWeight: 500,
+              }}>Готово</button>
+            </div>
+          </motion.div>
+        </>
+      )}
+
+      {inputModal && (
+        <>
+          <div style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.5)", zIndex: 1999 }} onClick={() => setInputModal(null)} />
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            transition={{ duration: 0.15 }}
+            style={{
+              position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
+              background: "var(--color-glass-surface)", border: "1px solid var(--color-glass-border)",
+              borderRadius: "var(--radius-md)", padding: "18px 22px", minWidth: 320,
+              boxShadow: "0 20px 50px rgba(0,0,0,0.5)", zIndex: 2000,
+            }}
+          >
+            <h3 style={{ fontSize: 13, fontWeight: 600, color: PRIMARY, marginBottom: 12 }}>{inputModal.title}</h3>
+            <input ref={inputRef} type="text" placeholder={inputModal.placeholder}
+              onKeyDown={(e) => { if (e.key === "Enter") { inputModal.onConfirm(inputRef.current?.value || ""); setInputModal(null); } if (e.key === "Escape") setInputModal(null); }}
+              style={{
+                width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)",
+                background: "rgba(0,0,0,0.3)", border: "1px solid var(--color-glass-border)",
+                color: PRIMARY, fontSize: 13, marginBottom: 14, outline: "none",
+              }} autoFocus />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setInputModal(null)} style={{
+                padding: "6px 14px", borderRadius: "var(--radius-sm)",
+                background: "var(--color-glass-surface)", border: "1px solid var(--color-glass-border)",
+                color: SECONDARY, fontSize: 12, cursor: "pointer", transition: "all 0.15s",
+              }}>Отмена</button>
+              <button onClick={() => { inputModal.onConfirm(inputRef.current?.value || ""); setInputModal(null); }} style={{
                 padding: "6px 14px", borderRadius: "var(--radius-sm)",
                 background: "var(--color-accent)", border: "1px solid var(--color-accent-border)",
                 color: "#fff", fontSize: 12, cursor: "pointer", fontWeight: 500,
@@ -754,8 +811,8 @@ function ContextMenu({
     position: "fixed",
     top: Math.min(y, window.innerHeight - 320),
     left: Math.min(x, window.innerWidth - 240),
-    background: "var(--color-popup-surface)",
-    border: "1px solid var(--color-popup-border)",
+    background: "var(--color-glass-surface)",
+    border: "1px solid var(--color-glass-border)",
     borderRadius: "var(--radius-sm)",
     padding: "4px",
     minWidth: 200,
@@ -796,7 +853,7 @@ function ContextMenu({
     <motion.button
       key={label}
       whileHover={!opts?.disabled ? {
-        background: opts?.danger ? "rgba(255,100,100,0.12)" : "var(--color-popup-hover)",
+        background: opts?.danger ? "rgba(255,100,100,0.12)" : "var(--color-glass-hover)",
         x: 3,
       } : {}}
       onClick={() => { onClick(); if (!opts?.submenu) onClose(); }}
@@ -935,7 +992,7 @@ const FolderTreeSidebar: React.FC<{
               cursor: "pointer", fontSize: 12, width: "100%", textAlign: "left",
               transition: "background 0.15s, color 0.15s",
             }}
-            onMouseEnter={(e) => { if (!isActive) { e.currentTarget.style.background = "var(--color-popup-hover)"; e.currentTarget.style.color = "var(--color-text-primary)"; } }}
+            onMouseEnter={(e) => { if (!isActive) { e.currentTarget.style.background = "var(--color-glass-hover)"; e.currentTarget.style.color = "var(--color-text-primary)"; } }}
             onMouseLeave={(e) => { if (!isActive) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--color-text-secondary)"; } }}
           >
             {isDir && (
@@ -1115,7 +1172,7 @@ function ListItem({
               color: "var(--color-text-secondary)", cursor: "pointer",
               display: "grid", placeItems: "center",
             }}
-            whileHover={{ background: "var(--color-popup-hover)", color: PRIMARY }}
+            whileHover={{ background: "var(--color-glass-hover)", color: PRIMARY }}
             title="Просмотр"
           >
             <FileText size={11} />
