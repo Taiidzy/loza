@@ -330,7 +330,7 @@ function OperationCard({
         gap: 10,
         padding: "10px 12px",
         borderRadius: "var(--radius-md)",
-        background: "var(--color-surface)",
+         background: "var(--color-popup-surface)",
         border: "1px solid var(--color-surface-border)",
         boxShadow: "0 4px 20px rgba(0, 0, 0, 0.2)",
         minWidth: 300,

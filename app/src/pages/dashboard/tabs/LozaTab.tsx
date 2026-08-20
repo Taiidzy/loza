@@ -6,7 +6,7 @@ import { fileApi } from "../../../api/filesService";
 import { logger } from "../../../shared/utils/logger";
 import { formatBytes } from "../../../shared/utils/serverStorage";
 import {
-  Folder, File, FileText, Image as ImageIcon, Film, Music, Archive, Code2,
+  Folder, File as FileIcon, FileText, Image as ImageIcon, Film, Music, Archive, Code2,
   Search, ChevronRight, Home, Grid3x3, List, Upload, Download,
   MoreVertical, FolderPlus, Edit3, Copy, Trash2,
   ArrowLeft, ArrowRight, ArrowUp, RefreshCw,
@@ -29,7 +29,7 @@ const iconFor = (file: FileInfo): any => {
   if (["zip","tar","gz","7z","rar"].includes(ext)) return Archive;
   if (["txt","md","json","yaml","yml","toml","ini","csv","xml","html","css","js","ts","jsx","tsx","py","rs","go","c","cpp","h","hpp","sh","log"].includes(ext)) return Code2;
   if (["pdf","doc","docx","xls","xlsx","ppt","pptx"].includes(ext)) return FileText;
-  return File;
+  return FileIcon;
 };
 
 const colorFor = (file: FileInfo): string => {
@@ -79,8 +79,8 @@ function SkeletonGrid({ count = 6 }: { count?: number }) {
           <div className={styles.gridThumb} style={{ "--thumb-color": "#64748b" } as any}>
             <div style={{ width: 24, height: 24, opacity: 0.3 }} />
           </div>
-          <div style={{ height: 12, background: "var(--color-surface)", borderRadius: 4, width: "80%", margin: "4px auto" }} />
-          <div style={{ height: 10, background: "var(--color-surface)", borderRadius: 4, width: "50%", margin: "2px auto" }} />
+          <div style={{ height: 12, background: "var(--color-popup-surface)", borderRadius: 4, width: "80%", margin: "4px auto" }} />
+          <div style={{ height: 10, background: "var(--color-popup-surface)", borderRadius: 4, width: "50%", margin: "2px auto" }} />
         </div>
       ))}
     </div>
@@ -327,12 +327,21 @@ export default function LozaTab() {
       const name = prompt("Имя папки:");
       if (name) await handleMkdir(name);
     } else {
-      fileInputRef.current?.click();
+      const name = prompt("Имя файла:");
+      if (!name || !name.trim()) return;
+      const trimmedName = name.trim();
+      try {
+        const emptyFile = new File([], trimmedName, { type: "text/plain" });
+        await uploadFile({ path: currentPath, filename: trimmedName, file: emptyFile });
+        loadFiles(currentPath);
+      } catch (e: any) {
+        setError(e.message || "Failed to create file");
+      }
     }
   };
 
   return (
-    <div className={styles.root}>
+    <div className={`${styles.root} ${previewFile ? styles.withPreview : ""}`}>
       <aside className={styles.sidebar}>
         <FolderTreeSidebar currentPath={currentPath} onNavigate={handleNavigate} refreshKey={currentPath} />
       </aside>
@@ -666,35 +675,13 @@ export default function LozaTab() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.2, delay: 0.1 }}
       >
-        <div className={styles.statusItem}>
-          <Folder size={12} style={{ color: "#60a5fa" }} />
-          <span>
-            {breadcrumbs[breadcrumbs.length - 1]?.name || "Мой диск"}
-          </span>
-        </div>
-        <div className={styles.statusItem}>
-          <span className={styles.statusAccent}>{sorted.filter(f => f.isDir).length}</span> папок,{" "}
-          <span className={styles.statusAccent}>{sorted.filter(f => !f.isDir).length}</span> файлов
-        </div>
-        {selectedId && (
-          <motion.div
-            className={styles.statusItem}
-            initial={{ opacity: 0, x: -8 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: 8 }}
-            transition={{ duration: 0.15 }}
-          >
-            <span className={styles.statusAccent}>1</span> выбран
-          </motion.div>
-        )}
-        <div style={{ marginLeft: "auto", color: MUTED, fontSize: 11 }}>
-          {sorted.length > 0 && !search && (
-            <span>
-              Общий размер:{" "}
-              {formatBytes(sorted.filter(f => !f.isDir).reduce((sum, f) => sum + (f.sizeBytes || 0), 0))}
-            </span>
-          )}
-        </div>
+        <span style={{ color: MUTED, fontSize: 11 }}>
+          {breadcrumbs[breadcrumbs.length - 1]?.name || "Мой диск"}
+        </span>
+        <span style={{ marginLeft: "auto", color: MUTED, fontSize: 11 }}>
+          {sorted.length} элементов ·{" "}
+          {formatBytes(sorted.filter(f => !f.isDir).reduce((sum, f) => sum + (f.sizeBytes || 0), 0))}
+        </span>
       </motion.div>
     </div>
   );

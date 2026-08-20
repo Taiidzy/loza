@@ -124,7 +124,8 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
     setSaving(true);
     try {
       const data = new TextEncoder().encode(editorContent).buffer;
-      const parentPath = file.path.substring(0, file.path.lastIndexOf("/"));
+      const lastSlash = file.path.lastIndexOf("/");
+      const parentPath = lastSlash >= 0 ? file.path.substring(0, lastSlash) : "";
       // Backend rejects overwrites — delete first, then upload
       try { await fileApi.deleteFile(file.path); } catch { /* ignore — file may not exist */ }
       await fileApi.uploadFile(parentPath, file.name, data);
@@ -152,14 +153,14 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
       minHeight: 0,
     }}>
       {/* Header */}
-      <div style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        padding: "14px 20px",
-        borderBottom: "1px solid var(--color-surface-border)",
-        gap: 12,
-      }}>
+       <div style={{
+         display: "flex",
+         alignItems: "center",
+         justifyContent: "space-between",
+         padding: "14px 20px",
+         borderBottom: "1px solid var(--color-popup-border)",
+         gap: 12,
+       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
           <FileText size={18} style={{ color: "var(--color-text-secondary)" }} />
           <span style={{ fontSize: 14, fontWeight: 500, color: "var(--color-text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={name}>
@@ -173,16 +174,16 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
           {editable && !isEditing && (
             <button
               onClick={() => setIsEditing(true)}
-              style={{
-                padding: "6px 12px",
-                borderRadius: "var(--radius-sm)",
-                background: "var(--color-surface)",
-                border: "1px solid var(--color-surface-border)",
-                color: "var(--color-text-primary)",
-                fontSize: 12,
-                cursor: "pointer",
-              }}
-              title="Редактировать"
+               style={{
+                 padding: "6px 12px",
+                 borderRadius: "var(--radius-sm)",
+                 background: "var(--color-popup-surface)",
+                 border: "1px solid var(--color-popup-border)",
+                 color: "var(--color-text-primary)",
+                 fontSize: 12,
+                 cursor: "pointer",
+               }}
+               title="Редактировать"
             >
               <Code size={14} style={{ marginRight: 6 }} />
               Редактировать
@@ -190,16 +191,16 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
           )}
           <button
             onClick={onClose}
-            style={{
-              padding: "6px 12px",
-              borderRadius: "var(--radius-sm)",
-              background: "var(--color-surface)",
-              border: "1px solid var(--color-surface-border)",
-              color: "var(--color-text-secondary)",
-              fontSize: 12,
-              cursor: "pointer",
-            }}
-            title="Закрыть"
+             style={{
+               padding: "6px 14px",
+               borderRadius: "var(--radius-sm)",
+               background: "var(--color-popup-surface)",
+               border: "1px solid var(--color-popup-border)",
+               color: "var(--color-text-secondary)",
+               fontSize: 12,
+               cursor: "pointer",
+             }}
+             title="Закрыть"
           >
             ✕
           </button>
@@ -226,39 +227,39 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
         ) : isEditing && editable ? (
           /* Editor mode */
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <textarea
-              value={editorContent}
-              onChange={(e) => setEditorContent(e.target.value)}
-              style={{
-                flex: 1,
-                minHeight: "calc(100vh - 200px)",
-                background: "var(--color-surface)",
-                border: "1px solid var(--color-surface-border)",
-                borderRadius: "var(--radius-sm)",
-                color: "var(--color-text-primary)",
-                fontSize: 13,
-                fontFamily: "ui-monospace, 'Fira Code', 'Fira Mono', Consolas, 'Courier New', monospace",
-                padding: 14,
-                outline: "none",
-                resize: "vertical",
-              }}
-            />
+           <textarea
+               value={editorContent}
+               onChange={(e) => setEditorContent(e.target.value)}
+               style={{
+                 flex: 1,
+                 minHeight: "calc(100vh - 200px)",
+                 background: "var(--color-popup-surface)",
+                 border: "1px solid var(--color-popup-border)",
+                 borderRadius: "var(--radius-sm)",
+                 color: "var(--color-text-primary)",
+                 fontSize: 13,
+                 fontFamily: "ui-monospace, 'Fira Code', 'Fira Mono', Consolas, 'Courier New', monospace",
+                 padding: 14,
+                 outline: "none",
+                 resize: "vertical",
+               }}
+             />
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
               <button
                 onClick={() => { setEditorContent(textContent || ""); setIsEditing(false); }}
                 disabled={saving}
-                style={{
-                  padding: "6px 14px",
-                  borderRadius: "var(--radius-sm)",
-                  background: "var(--color-surface)",
-                  border: "1px solid var(--color-surface-border)",
-                  color: "var(--color-text-secondary)",
-                  fontSize: 12,
-                  cursor: "pointer",
-                }}
-              >
-                Отмена
-              </button>
+               style={{
+                 padding: "6px 14px",
+                 borderRadius: "var(--radius-sm)",
+                 background: "var(--color-popup-surface)",
+                 border: "1px solid var(--color-popup-border)",
+                 color: "var(--color-text-secondary)",
+                 fontSize: 12,
+                 cursor: "pointer",
+               }}
+             >
+               Отмена
+             </button>
               <button
                 onClick={handleSave}
                 disabled={saving}
@@ -357,9 +358,9 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
             padding: 12px;
             overflow: auto;
           }
-          .markdown-body code {
-            background: var(--color-surface);
-            border: 1px solid var(--color-surface-border);
+           .markdown-body code {
+            background: var(--color-popup-surface);
+            border: 1px solid var(--color-popup-border);
             border-radius: 4px;
             padding: 2px 6px;
             font-size: 13px;

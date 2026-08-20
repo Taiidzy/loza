@@ -12,6 +12,10 @@
   background: transparent;
 }
 
+.root.withPreview {
+  grid-template-columns: 260px 1fr 480px;
+}
+
 .page {
   flex: 1;
   display: flex;
