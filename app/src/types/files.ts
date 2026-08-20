@@ -43,4 +43,5 @@ export interface Operation {
   status: "pending" | "active" | "paused" | "completed" | "error" | "cancelled";
   error?: string;
   progress: number;
+  file?: File;
 }

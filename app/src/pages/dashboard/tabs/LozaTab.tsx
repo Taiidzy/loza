@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, useLayoutEffect } from "react";
+import { motion, AnimatePresence } from "motion/react";
 import styles from "./LozaTab.module.css";
 import { FileInfo } from "../../../types/files";
 import { fileApi } from "../../../api/filesService";
@@ -111,8 +112,10 @@ export default function LozaTab() {
   const [contextMenu, setContextMenu] = useState<{ item: FileInfo; x: number; y: number } | null>(null);
   const [previewFile, setPreviewFile] = useState<FileInfo | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const newMenuButtonRef = useRef<HTMLButtonElement>(null);
+  const [newMenuPos, setNewMenuPos] = useState<{ top: number; left: number } | null>(null);
 
-  const { operations, uploadFile, downloadFile, cancelOperation, removeOperation } = useOperationQueue();
+  const { operations, uploadFile, downloadFile, cancelOperation, removeOperation, retry } = useOperationQueue();
 
   const loadFiles = useCallback(async (path: string) => {
     setLoading(true);
@@ -134,6 +137,15 @@ export default function LozaTab() {
   }, [loadFiles, currentPath]);
 
   const breadcrumbs = buildBreadcrumbs(currentPath);
+
+  useLayoutEffect(() => {
+    if (showNewMenu && newMenuButtonRef.current) {
+      const rect = newMenuButtonRef.current.getBoundingClientRect();
+      setNewMenuPos({ top: rect.bottom + 8, left: rect.left });
+    } else {
+      setNewMenuPos(null);
+    }
+  }, [showNewMenu]);
 
   const filtered = useMemo(() => {
     if (!search.trim()) return files;
@@ -276,25 +288,41 @@ export default function LozaTab() {
 
           <div className={styles.toolbarRight}>
             <div style={{ position: "relative" }}>
-              <button className={styles.viewBtn} onClick={() => setShowNewMenu(!showNewMenu)} title="Создать">
+              <button ref={newMenuButtonRef} className={styles.viewBtn} onClick={() => setShowNewMenu(!showNewMenu)} title="Создать">
                 +
               </button>
-              {showNewMenu && (
+              {showNewMenu && newMenuPos && (
                 <>
-                  <div style={{
-                    position: "absolute", bottom: "100%", left: 0,
-                    background: "var(--color-surface)", border: "1px solid var(--color-surface-border)",
-                    borderRadius: "var(--radius-sm)", padding: "4px", minWidth: 140,
-                    display: "flex", flexDirection: "column", gap: 2,
-                    boxShadow: "0 4px 16px rgba(0,0,0,0.3)", zIndex: 100,
-                  }}>
-                    <button onClick={() => handleNewFile("folder")} style={{ padding: "6px 10px", textAlign: "left", fontSize: 12, background: "transparent", border: "none", color: PRIMARY, cursor: "pointer", borderRadius: "var(--radius-sm)" }}>
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.9, y: -4 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.9, y: -4 }}
+                    transition={{ duration: 0.15 }}
+                    style={{
+                      position: "fixed",
+                      top: newMenuPos.top,
+                      left: newMenuPos.left,
+                      background: "var(--color-surface)", border: "1px solid var(--color-surface-border)",
+                      borderRadius: "var(--radius-sm)", padding: "4px", minWidth: 140,
+                      display: "flex", flexDirection: "column", gap: 2,
+                      boxShadow: "0 4px 16px rgba(0,0,0,0.3)", zIndex: 100,
+                    }}
+                  >
+                    <motion.button
+                      whileHover={{ background: "var(--color-surface-hover)" }}
+                      onClick={() => handleNewFile("folder")}
+                      style={{ padding: "6px 10px", textAlign: "left", fontSize: 12, background: "transparent", border: "none", color: PRIMARY, cursor: "pointer", borderRadius: "var(--radius-sm)" }}
+                    >
                       <FolderPlus size={12} style={{ marginRight: 6 }} /> Папка
-                    </button>
-                    <button onClick={() => handleNewFile("file")} style={{ padding: "6px 10px", textAlign: "left", fontSize: 12, background: "transparent", border: "none", color: PRIMARY, cursor: "pointer", borderRadius: "var(--radius-sm)" }}>
+                    </motion.button>
+                    <motion.button
+                      whileHover={{ background: "var(--color-surface-hover)" }}
+                      onClick={() => handleNewFile("file")}
+                      style={{ padding: "6px 10px", textAlign: "left", fontSize: 12, background: "transparent", border: "none", color: PRIMARY, cursor: "pointer", borderRadius: "var(--radius-sm)" }}
+                    >
                       <FileText size={12} style={{ marginRight: 6 }} /> Файл
-                    </button>
-                  </div>
+                    </motion.button>
+                  </motion.div>
                   <div style={{ position: "fixed", inset: 0, zIndex: 1 }} onClick={() => setShowNewMenu(false)} />
                 </>
               )}
@@ -320,34 +348,57 @@ export default function LozaTab() {
           </div>
         </div>
 
-        <div className={styles.body} onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave}>
-          {error && (
-            <div className={styles.errorBanner}>
-              <span>{error}</span>
-              <button className={styles.errorRetryButton} onClick={() => loadFiles(currentPath)}>Повторить</button>
-            </div>
-          )}
+         <div className={styles.body} onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave}>
+          <AnimatePresence>
+            {error && (
+              <motion.div
+                className={styles.errorBanner}
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18 }}
+              >
+                <span>{error}</span>
+                <button className={styles.errorRetryButton} onClick={() => loadFiles(currentPath)}>Повторить</button>
+              </motion.div>
+            )}
+          </AnimatePresence>
 
-          <div className={styles.cardLabel}>
+          <motion.div
+            className={styles.cardLabel}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.2, delay: 0.05 }}
+          >
             {breadcrumbs[breadcrumbs.length - 1]?.name || "Мой диск"} · {sorted.length} {plural(sorted.length, "элемент", "элемента", "элементов")}
-          </div>
+          </motion.div>
 
           {loading ? (
             <SkeletonGrid count={6} />
           ) : sorted.length === 0 ? (
-            <EmptyState title={search ? "Ничего не найдено" : "Папка пуста"} sub={search ? `По запросу «${search}» ничего нет` : "Здесь пока нет файлов"} />
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2 }}>
+              <EmptyState title={search ? "Ничего не найдено" : "Папка пуста"} sub={search ? `По запросу «${search}» ничего нет` : "Здесь пока нет файлов"} />
+            </motion.div>
           ) : viewMode === "grid" ? (
-            <div className={styles.grid}>
-              {sorted.map((item) => (
-                <GridItem key={item.id} item={item} selected={selectedId === item.id}
-                  onClick={() => setSelectedId(item.id)}
-                  onDoubleClick={() => handleDoubleClick(item)}
-                  onContextMenu={(e) => handleContextMenu(e, item)}
-                  onView={() => setPreviewFile(item)} />
+            <motion.div className={styles.grid} initial="hide" animate="show">
+              {sorted.map((item, i) => (
+                <motion.div
+                  key={item.id}
+                  initial={{ opacity: 0, y: 8, scale: 0.96 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.96 }}
+                  transition={{ duration: 0.15, delay: i * 0.02 }}
+                >
+                  <GridItem item={item} selected={selectedId === item.id}
+                    onClick={() => setSelectedId(item.id)}
+                    onDoubleClick={() => handleDoubleClick(item)}
+                    onContextMenu={(e) => handleContextMenu(e, item)}
+                    onView={() => setPreviewFile(item)} />
+                </motion.div>
               ))}
-            </div>
+            </motion.div>
           ) : (
-            <div className={styles.list}>
+            <motion.div className={styles.list} initial="hide" animate="show">
               <div className={styles.listHead}>
                 <div>Имя</div>
                 <div>Изменён</div>
@@ -356,14 +407,22 @@ export default function LozaTab() {
                   <MoreVertical size={14} style={{ color: MUTED }} />
                 </div>
               </div>
-              {sorted.map((item) => (
-                <ListItem key={item.id} item={item} selected={selectedId === item.id}
-                  onClick={() => setSelectedId(item.id)}
-                  onDoubleClick={() => handleDoubleClick(item)}
-                  onContextMenu={(e) => handleContextMenu(e, item)}
-                  onView={() => setPreviewFile(item)} />
+              {sorted.map((item, i) => (
+                <motion.div
+                  key={item.id}
+                  initial={{ opacity: 0, x: -8 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 8 }}
+                  transition={{ duration: 0.12, delay: i * 0.015 }}
+                >
+                  <ListItem item={item} selected={selectedId === item.id}
+                    onClick={() => setSelectedId(item.id)}
+                    onDoubleClick={() => handleDoubleClick(item)}
+                    onContextMenu={(e) => handleContextMenu(e, item)}
+                    onView={() => setPreviewFile(item)} />
+                </motion.div>
               ))}
-            </div>
+            </motion.div>
           )}
 
           <input ref={fileInputRef} type="file" multiple style={{ display: "none" }}
@@ -398,31 +457,59 @@ export default function LozaTab() {
         />
       )}
 
-      {renameTarget && (
-        <div style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)", background: "var(--color-surface)", border: "1px solid var(--color-surface-border)", borderRadius: "var(--radius-md)", padding: "18px 22px", minWidth: 320, boxShadow: "0 20px 50px rgba(0,0,0,0.4)", zIndex: 2000 }}>
-          <h3 style={{ fontSize: 13, fontWeight: 600, color: PRIMARY, marginBottom: 12 }}>Переименовать</h3>
-          <input type="text" value={renameValue} onChange={(e) => setRenameValue(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") doRename(); if (e.key === "Escape") setRenameTarget(null); }}
-            style={{ width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)", background: "rgba(0,0,0,0.2)", border: "1px solid var(--color-surface-border)", color: PRIMARY, fontSize: 13, marginBottom: 14 }} autoFocus />
-          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-            <button onClick={() => setRenameTarget(null)} style={{ padding: "6px 14px", borderRadius: "var(--radius-sm)", background: "var(--color-surface)", border: "1px solid var(--color-surface-border)", color: SECONDARY, fontSize: 12, cursor: "pointer" }}>Отмена</button>
-            <button onClick={doRename} style={{ padding: "6px 14px", borderRadius: "var(--radius-sm)", background: "var(--color-accent)", border: "1px solid var(--color-accent-border)", color: "#fff", fontSize: 12, cursor: "pointer" }}>Готово</button>
-          </div>
-        </div>
+      {contextMenu && (
+        <ContextMenu
+          item={contextMenu.item} x={contextMenu.x} y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onRename={() => { setRenameTarget(contextMenu.item); setRenameValue(contextMenu.item.name); setContextMenu(null); }}
+          onDownload={() => handleDownload(contextMenu.item)}
+          onDelete={() => handleDelete(contextMenu.item)}
+        />
       )}
 
-      <OperationQueueList operations={operations} onCancel={cancelOperation} onClose={removeOperation} />
+      {renameTarget && (
+        <>
+          <div style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.4)", zIndex: 1999 }} onClick={() => setRenameTarget(null)} />
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            transition={{ duration: 0.15 }}
+            style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)", background: "var(--color-surface)", border: "1px solid var(--color-surface-border)", borderRadius: "var(--radius-md)", padding: "18px 22px", minWidth: 320, boxShadow: "0 20px 50px rgba(0,0,0,0.4)", zIndex: 2000 }}
+          >
+            <h3 style={{ fontSize: 13, fontWeight: 600, color: PRIMARY, marginBottom: 12 }}>Переименовать</h3>
+            <input type="text" value={renameValue} onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") doRename(); if (e.key === "Escape") setRenameTarget(null); }}
+              style={{ width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)", background: "rgba(0,0,0,0.2)", border: "1px solid var(--color-surface-border)", color: PRIMARY, fontSize: 13, marginBottom: 14 }} autoFocus />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setRenameTarget(null)} style={{ padding: "6px 14px", borderRadius: "var(--radius-sm)", background: "var(--color-surface)", border: "1px solid var(--color-surface-border)", color: SECONDARY, fontSize: 12, cursor: "pointer" }}>Отмена</button>
+              <button onClick={doRename} style={{ padding: "6px 14px", borderRadius: "var(--radius-sm)", background: "var(--color-accent)", border: "1px solid var(--color-accent-border)", color: "#fff", fontSize: 12, cursor: "pointer" }}>Готово</button>
+            </div>
+          </motion.div>
+        </>
+      )}
+
+       <OperationQueueList operations={operations} onCancel={cancelOperation} onClose={removeOperation} onRetry={retry} />
     </div>
   );
 }
 
 function EmptyState({ title, sub }: { title: string; sub: string }) {
   return (
-    <div className={styles.panel} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "44px 20px" }}>
-      <Folder size={42} strokeWidth={1.1} style={{ color: MUTED }} />
-      <div style={{ fontSize: 13, fontWeight: 600, color: SECONDARY, marginTop: 6 }}>{title}</div>
-      <div style={{ fontSize: 12, color: MUTED }}>{sub}</div>
-    </div>
+    <motion.div
+      className={styles.panel}
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
+      transition={{ duration: 0.2 }}
+      style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "44px 20px" }}
+    >
+      <motion.div initial={{ scale: 0.9 }} animate={{ scale: 1 }} transition={{ duration: 0.2, delay: 0.05 }}>
+        <Folder size={42} strokeWidth={1.1} style={{ color: MUTED }} />
+      </motion.div>
+      <motion.div style={{ fontSize: 13, fontWeight: 600, color: SECONDARY, marginTop: 6 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2, delay: 0.07 }}>{title}</motion.div>
+      <motion.div style={{ fontSize: 12, color: MUTED }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2, delay: 0.09 }}>{sub}</motion.div>
+    </motion.div>
   );
 }
 
@@ -441,7 +528,13 @@ function ContextMenu({
   };
   return (
     <>
-      <div style={menuStyle}>
+      <motion.div
+        style={menuStyle}
+        initial={{ opacity: 0, scale: 0.9, y: -4 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.9, y: -4 }}
+        transition={{ duration: 0.15, ease: "easeOut" }}
+      >
         <button style={{ display: "block", width: "100%", padding: "6px 10px", textAlign: "left", fontSize: 12, background: "transparent", border: "none", color: PRIMARY, cursor: "pointer", borderRadius: "var(--radius-sm)" }} onClick={() => { if (!item.isDir) onDownload(); else onClose(); }}>
           <Download size={12} style={{ marginRight: 6 }} /> Скачать
         </button>
@@ -455,7 +548,7 @@ function ContextMenu({
         <button style={{ display: "block", width: "100%", padding: "6px 10px", textAlign: "left", fontSize: 12, background: "transparent", border: "none", color: "var(--color-error)", cursor: "pointer", borderRadius: "var(--radius-sm)" }} onClick={() => { onDelete(); onClose(); }}>
           <Trash2 size={12} style={{ marginRight: 6 }} /> Удалить
         </button>
-      </div>
+      </motion.div>
       <div style={{ position: "fixed", inset: 0, zIndex: 100 }} onClick={onClose} />
     </>
   );

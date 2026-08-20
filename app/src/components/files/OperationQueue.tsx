@@ -1,10 +1,12 @@
 import { useState, useRef, useCallback } from "react";
+import { motion, AnimatePresence } from "motion/react";
 import { Operation } from "../../types/files";
 import { fileApi } from "../../api/filesService";
 import { formatBytes } from "../../shared/utils/serverStorage";
 import { logger } from "../../shared/utils/logger";
 import {
   Upload, Download, X, CheckCircle, AlertCircle, Loader,
+  RefreshCw,
 } from "lucide-react";
 
 const CHUNK_SIZE = 512 * 1024; // 512KB chunks for progressive upload
@@ -26,6 +28,7 @@ export function useOperationQueue() {
       eta: 0,
       status: "pending",
       progress: 0,
+      file: op.file,
     };
     setOperations((prev) => [...prev, newOp]);
     return id;
@@ -61,6 +64,7 @@ export function useOperationQueue() {
       filename: params.filename,
       path: params.path,
       sizeBytes,
+      file: params.file,
     });
 
     const startTime = Date.now();
@@ -145,6 +149,21 @@ export function useOperationQueue() {
     }
   }, [addOperation, updateOperation]);
 
+  const retry = useCallback(async (operation: Operation) => {
+    removeOperation(operation.id);
+    if (operation.type === "upload" && operation.file) {
+      try {
+        await uploadFile({
+          path: operation.path,
+          filename: operation.filename,
+          file: operation.file,
+        });
+      } catch {
+        // uploadFile already sets status to "error" internally
+      }
+    }
+  }, [uploadFile, removeOperation]);
+
   const downloadFile = useCallback(async (params: {
     path: string;
     filename: string;
@@ -214,6 +233,7 @@ export function useOperationQueue() {
     downloadFile,
     cancelOperation,
     removeOperation,
+    retry,
   };
 }
 
@@ -232,10 +252,12 @@ export default function OperationQueue({
   operations,
   onCancel,
   onClose,
+  onRetry,
 }: {
   operations: Operation[];
   onCancel: (id: string) => void;
   onClose: (id: string) => void;
+  onRetry: (operation: Operation) => void;
 }) {
   if (operations.length === 0) return null;
 
@@ -250,14 +272,17 @@ export default function OperationQueue({
       zIndex: 1000,
       maxWidth: 360,
     }}>
-      {operations.map((op) => (
-        <OperationCard
-          key={op.id}
-          operation={op}
-          onCancel={onCancel}
-          onClose={onClose}
-        />
-      ))}
+      <AnimatePresence>
+        {operations.map((op) => (
+          <OperationCard
+            key={op.id}
+            operation={op}
+            onCancel={onCancel}
+            onClose={onClose}
+            onRetry={onRetry}
+          />
+        ))}
+      </AnimatePresence>
     </div>
   );
 }
@@ -266,10 +291,12 @@ function OperationCard({
   operation,
   onCancel,
   onClose,
+  onRetry,
 }: {
   operation: Operation;
   onCancel: (id: string) => void;
   onClose: (id: string) => void;
+  onRetry: (operation: Operation) => void;
 }) {
   const icon = operation.type === "upload" ? <Upload size={14} /> : <Download size={14} />;
   const statusColor = {
@@ -291,17 +318,24 @@ function OperationCard({
   }[operation.status];
 
   return (
-    <div style={{
-      display: "flex",
-      alignItems: "center",
-      gap: 10,
-      padding: "10px 12px",
-      borderRadius: "var(--radius-md)",
-      background: "var(--color-surface)",
-      border: "1px solid var(--color-surface-border)",
-      boxShadow: "0 4px 20px rgba(0, 0, 0, 0.2)",
-      minWidth: 300,
-    }}>
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 10, scale: 0.95 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: -10, scale: 0.95 }}
+      transition={{ duration: 0.18 }}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "10px 12px",
+        borderRadius: "var(--radius-md)",
+        background: "var(--color-surface)",
+        border: "1px solid var(--color-surface-border)",
+        boxShadow: "0 4px 20px rgba(0, 0, 0, 0.2)",
+        minWidth: 300,
+      }}
+    >
       <div style={{
         width: 32,
         height: 32,
@@ -337,24 +371,45 @@ function OperationCard({
           borderRadius: 999,
           overflow: "hidden",
         }}>
-          <div style={{
-            height: "100%",
-            width: `${operation.progress}%`,
-            background: "linear-gradient(90deg, var(--color-accent), var(--color-violet))",
-            borderRadius: 999,
-            transition: "width 0.2s",
-          }} />
+          <motion.div
+            style={{
+              height: "100%",
+              background: "linear-gradient(90deg, var(--color-accent), var(--color-violet))",
+              borderRadius: 999,
+            }}
+            initial={{ width: 0 }}
+            animate={{ width: `${operation.progress}%` }}
+            transition={{ duration: 0.2 }}
+          />
         </div>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
         {operation.status === "error" && (
-          <span style={{ fontSize: 11, color: "var(--color-error)", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={operation.error}>
-            {operation.error}
-          </span>
+          <motion.button
+            whileHover={{ scale: 1.1 }}
+            whileTap={{ scale: 0.95 }}
+            onClick={() => onRetry(operation)}
+            style={{
+              width: 24,
+              height: 24,
+              borderRadius: "var(--radius-sm)",
+              background: "transparent",
+              border: "1px solid var(--color-surface-border)",
+              color: "var(--color-text-secondary)",
+              cursor: "pointer",
+              display: "grid",
+              placeItems: "center",
+            }}
+            title="Повторить"
+          >
+            <RefreshCw size={10} />
+          </motion.button>
         )}
-        {operation.status !== "completed" && operation.status !== "cancelled" && (
-          <button
+        {operation.status !== "completed" && operation.status !== "cancelled" && operation.status !== "error" && (
+          <motion.button
+            whileHover={{ scale: 1.1 }}
+            whileTap={{ scale: 0.95 }}
             onClick={() => onCancel(operation.id)}
             style={{
               width: 24,
@@ -370,9 +425,11 @@ function OperationCard({
             title="Отменить"
           >
             <X size={10} />
-          </button>
+          </motion.button>
         )}
-        <button
+        <motion.button
+          whileHover={{ scale: 1.1 }}
+          whileTap={{ scale: 0.95 }}
           onClick={() => onClose(operation.id)}
           style={{
             width: 20,
@@ -389,8 +446,8 @@ function OperationCard({
           title="Закрыть"
         >
           ×
-        </button>
+        </motion.button>
       </div>
-    </div>
+    </motion.div>
   );
 }
