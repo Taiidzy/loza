@@ -9,6 +9,8 @@ import {
   Folder, File, FileText, Image as ImageIcon, Film, Music, Archive, Code2,
   Search, ChevronRight, Home, Grid3x3, List, Upload, Download,
   MoreVertical, FolderPlus, Edit3, Copy, Trash2,
+  ArrowLeft, ArrowRight, ArrowUp, RefreshCw,
+  Eye, Share2, FolderOpen, Scissors,
 } from "lucide-react";
 import { useOperationQueue } from "../../../components/files/OperationQueue";
 import OperationQueueList from "../../../components/files/OperationQueue";
@@ -115,6 +117,39 @@ export default function LozaTab() {
   const newMenuButtonRef = useRef<HTMLButtonElement>(null);
   const [newMenuPos, setNewMenuPos] = useState<{ top: number; left: number } | null>(null);
 
+  const navHistoryRef = useRef<string[]>([""]);
+  const navIndexRef = useRef(0);
+
+  const pushHistory = useCallback((path: string) => {
+    navHistoryRef.current = navHistoryRef.current.slice(0, navIndexRef.current + 1);
+    navHistoryRef.current.push(path);
+    navIndexRef.current = navHistoryRef.current.length - 1;
+  }, []);
+
+  const canGoBack = navIndexRef.current > 0;
+  const canGoForward = navIndexRef.current < navHistoryRef.current.length - 1;
+
+  const goBack = () => {
+    if (navIndexRef.current > 0) {
+      navIndexRef.current -= 1;
+      handleNavigate(navHistoryRef.current[navIndexRef.current]);
+    }
+  };
+
+  const goForward = () => {
+    if (navIndexRef.current < navHistoryRef.current.length - 1) {
+      navIndexRef.current += 1;
+      handleNavigate(navHistoryRef.current[navIndexRef.current]);
+    }
+  };
+
+  const goUp = () => {
+    if (currentPath) {
+      const parent = currentPath.substring(0, currentPath.lastIndexOf("/"));
+      handleNavigate(parent);
+    }
+  };
+
   const { operations, uploadFile, downloadFile, cancelOperation, removeOperation, retry } = useOperationQueue();
 
   const loadFiles = useCallback(async (path: string) => {
@@ -160,11 +195,16 @@ export default function LozaTab() {
     });
   }, [filtered]);
 
-  const handleNavigate = (path: string) => {
+  const handleNavigate = useCallback((path: string) => {
+    if (path === currentPath) return;
+    pushHistory(path);
     setCurrentPath(path);
     setSearch("");
     setShowNewMenu(false);
-  };
+    setContextMenu(null);
+    setRenameTarget(null);
+    setPreviewFile(null);
+  }, [currentPath, pushHistory]);
 
   const handleDoubleClick = (file: FileInfo) => {
     if (file.isDir) {
@@ -234,8 +274,10 @@ export default function LozaTab() {
 
   const handleMkdir = async (name: string) => {
     if (!name.trim()) return;
+    const trimmedName = name.trim();
+    const fullPath = currentPath ? `${currentPath}/${trimmedName}` : trimmedName;
     try {
-      await fileApi.createDir(name);
+      await fileApi.createDir(fullPath);
       loadFiles(currentPath);
       setShowNewMenu(false);
     } catch (e: any) {
@@ -246,6 +288,32 @@ export default function LozaTab() {
   const handleDownload = (file: FileInfo) => {
     if (file.isDir) return;
     downloadFile({ path: file.path, filename: file.name, sizeBytes: file.sizeBytes });
+  };
+
+  const handleOpen = (file: FileInfo) => {
+    if (file.isDir) {
+      handleNavigate(file.path);
+    } else {
+      setPreviewFile(file);
+    }
+  };
+
+  const handlePreviewFile = (file: FileInfo) => {
+    setPreviewFile(file);
+  };
+
+  const handleMoveFile = (file: FileInfo) => {
+    navigator.clipboard.writeText(file.path).then(() => {
+      logger.info("files", "Path copied for move", { path: file.path });
+      setContextMenu(null);
+    });
+  };
+
+  const handleCopyFile = (file: FileInfo) => {
+    navigator.clipboard.writeText(file.path).then(() => {
+      logger.info("files", "Path copied", { path: file.path });
+      setContextMenu(null);
+    });
   };
 
   const handleContextMenu = (e: React.MouseEvent, item: FileInfo) => {
@@ -270,53 +338,118 @@ export default function LozaTab() {
       </aside>
 
       <main className={styles.main}>
-        <div className={styles.toolbar}>
+        {/* ── Finder-like toolbar ────────────────────────── */}
+        <motion.div
+          className={styles.toolbarFinder}
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.2, delay: 0.05 }}
+        >
+          <div className={styles.navGroup}>
+            <motion.button
+              whileHover={{ background: "var(--color-popup-hover-strong)" }}
+              whileTap={{ scale: 0.94 }}
+              onClick={goBack}
+              disabled={!canGoBack}
+              className={styles.navBtn}
+              title="Назад"
+            >
+              <ArrowLeft size={15} />
+            </motion.button>
+            <motion.button
+              whileHover={{ background: "var(--color-popup-hover-strong)" }}
+              whileTap={{ scale: 0.94 }}
+              onClick={goForward}
+              disabled={!canGoForward}
+              className={styles.navBtn}
+              title="Вперёд"
+            >
+              <ArrowRight size={15} />
+            </motion.button>
+            <motion.button
+              whileHover={{ background: "var(--color-popup-hover-strong)" }}
+              whileTap={{ scale: 0.94 }}
+              onClick={goUp}
+              disabled={!currentPath}
+              className={styles.navBtn}
+              title="Вверх"
+            >
+              <ArrowUp size={15} />
+            </motion.button>
+            <motion.button
+              whileHover={{ background: "var(--color-popup-hover-strong)" }}
+              whileTap={{ scale: 0.94 }}
+              onClick={() => loadFiles(currentPath)}
+              className={styles.navBtn}
+              title="Обновить"
+            >
+              <RefreshCw size={15} />
+            </motion.button>
+          </div>
+
           <div className={styles.breadcrumbs}>
-            {breadcrumbs.map((crumb, idx) => (
-              <div key={idx} className={styles.crumb}>
-                {idx > 0 && <ChevronRight size={14} className={styles.crumbSep} />}
-                <button
-                  onClick={() => handleNavigate(crumb.path)}
-                  className={`${styles.crumbBtn} ${idx === breadcrumbs.length - 1 ? styles.crumbActive : ""}`}
+            <AnimatePresence mode="wait">
+              {breadcrumbs.map((crumb, idx) => (
+                <motion.div
+                  key={idx}
+                  className={styles.crumb}
+                  initial={{ opacity: 0, x: -6 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 6 }}
+                  transition={{ duration: 0.15, delay: idx * 0.03 }}
                 >
-                  {idx === 0 && <Home size={14} />}
-                  {crumb.name}
-                </button>
-              </div>
-            ))}
+                  {idx > 0 && <ChevronRight size={14} className={styles.crumbSep} />}
+                  <button
+                    onClick={() => handleNavigate(crumb.path)}
+                    className={`${styles.crumbBtn} ${idx === breadcrumbs.length - 1 ? styles.crumbActive : ""}`}
+                    title={crumb.path || "Мой диск"}
+                  >
+                    {idx === 0 && <Home size={14} />}
+                    {crumb.name}
+                  </button>
+                </motion.div>
+              ))}
+            </AnimatePresence>
           </div>
 
           <div className={styles.toolbarRight}>
             <div style={{ position: "relative" }}>
-              <button ref={newMenuButtonRef} className={styles.viewBtn} onClick={() => setShowNewMenu(!showNewMenu)} title="Создать">
-                +
-              </button>
+              <motion.button
+                ref={newMenuButtonRef}
+                whileHover={{ background: "var(--color-popup-hover-strong)" }}
+                whileTap={{ scale: 0.94 }}
+                onClick={() => setShowNewMenu(!showNewMenu)}
+                className={styles.navBtn}
+                title="Создать"
+              >
+                <FolderPlus size={15} />
+              </motion.button>
               {showNewMenu && newMenuPos && (
                 <>
                   <motion.div
                     initial={{ opacity: 0, scale: 0.9, y: -4 }}
                     animate={{ opacity: 1, scale: 1, y: 0 }}
                     exit={{ opacity: 0, scale: 0.9, y: -4 }}
-                    transition={{ duration: 0.15 }}
+                    transition={{ duration: 0.15, ease: "easeOut" }}
                     style={{
                       position: "fixed",
                       top: newMenuPos.top,
                       left: newMenuPos.left,
-                      background: "var(--color-surface)", border: "1px solid var(--color-surface-border)",
-                      borderRadius: "var(--radius-sm)", padding: "4px", minWidth: 140,
+                      background: "var(--color-popup-surface)", border: "1px solid var(--color-popup-border)",
+                      borderRadius: "var(--radius-sm)", padding: "6px", minWidth: 150,
                       display: "flex", flexDirection: "column", gap: 2,
-                      boxShadow: "0 4px 16px rgba(0,0,0,0.3)", zIndex: 100,
+                      boxShadow: "0 8px 24px rgba(0,0,0,0.45)", zIndex: 100,
                     }}
                   >
                     <motion.button
-                      whileHover={{ background: "var(--color-surface-hover)" }}
+                      whileHover={{ background: "var(--color-popup-hover)" }}
                       onClick={() => handleNewFile("folder")}
                       style={{ padding: "6px 10px", textAlign: "left", fontSize: 12, background: "transparent", border: "none", color: PRIMARY, cursor: "pointer", borderRadius: "var(--radius-sm)" }}
                     >
                       <FolderPlus size={12} style={{ marginRight: 6 }} /> Папка
                     </motion.button>
                     <motion.button
-                      whileHover={{ background: "var(--color-surface-hover)" }}
+                      whileHover={{ background: "var(--color-popup-hover)" }}
                       onClick={() => handleNewFile("file")}
                       style={{ padding: "6px 10px", textAlign: "left", fontSize: 12, background: "transparent", border: "none", color: PRIMARY, cursor: "pointer", borderRadius: "var(--radius-sm)" }}
                     >
@@ -328,25 +461,48 @@ export default function LozaTab() {
               )}
             </div>
 
-            <button className={styles.viewBtn} onClick={() => fileInputRef.current?.click()} title="Загрузить">
+            <motion.button
+              whileHover={{ background: "var(--color-popup-hover-strong)" }}
+              whileTap={{ scale: 0.94 }}
+              onClick={() => fileInputRef.current?.click()}
+              className={styles.navBtn}
+              title="Загрузить файлы"
+            >
               <Upload size={15} />
-            </button>
+            </motion.button>
 
             <div className={styles.viewToggle}>
-              <button className={`${styles.viewBtn} ${viewMode === "grid" ? styles.viewBtnActive : ""}`} onClick={() => setViewMode("grid")} title="Сетка">
+              <motion.button
+                whileHover={{ background: viewMode === "grid" ? "var(--color-accent)" : "var(--color-popup-hover-strong)" }}
+                whileTap={{ scale: 0.92 }}
+                className={`${styles.viewBtn} ${viewMode === "grid" ? styles.viewBtnActive : ""}`}
+                onClick={() => setViewMode("grid")}
+                title="Сетка"
+              >
                 <Grid3x3 size={15} />
-              </button>
-              <button className={`${styles.viewBtn} ${viewMode === "list" ? styles.viewBtnActive : ""}`} onClick={() => setViewMode("list")} title="Список">
+              </motion.button>
+              <motion.button
+                whileHover={{ background: viewMode === "list" ? "var(--color-accent)" : "var(--color-popup-hover-strong)" }}
+                whileTap={{ scale: 0.92 }}
+                className={`${styles.viewBtn} ${viewMode === "list" ? styles.viewBtnActive : ""}`}
+                onClick={() => setViewMode("list")}
+                title="Список"
+              >
                 <List size={15} />
-              </button>
+              </motion.button>
             </div>
 
             <div className={styles.search}>
               <Search size={14} className={styles.searchIcon} />
-              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Поиск…" className={styles.searchInput} />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Поиск…"
+                className={styles.searchInput}
+              />
             </div>
           </div>
-        </div>
+        </motion.div>
 
          <div className={styles.body} onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave}>
           <AnimatePresence>
@@ -441,7 +597,8 @@ export default function LozaTab() {
       {previewFile && (
         <div style={{
           width: 480, borderLeft: "1px solid var(--color-surface-border)",
-          display: "flex", flexDirection: "column", background: "var(--color-surface)",
+          display: "flex", flexDirection: "column",
+          background: "var(--color-popup-surface)",
         }}>
           <FileViewer file={previewFile} onClose={() => setPreviewFile(null)} onEdited={() => loadFiles(currentPath)} />
         </div>
@@ -454,42 +611,91 @@ export default function LozaTab() {
           onRename={() => { setRenameTarget(contextMenu.item); setRenameValue(contextMenu.item.name); setContextMenu(null); }}
           onDownload={() => handleDownload(contextMenu.item)}
           onDelete={() => handleDelete(contextMenu.item)}
-        />
-      )}
-
-      {contextMenu && (
-        <ContextMenu
-          item={contextMenu.item} x={contextMenu.x} y={contextMenu.y}
-          onClose={() => setContextMenu(null)}
-          onRename={() => { setRenameTarget(contextMenu.item); setRenameValue(contextMenu.item.name); setContextMenu(null); }}
-          onDownload={() => handleDownload(contextMenu.item)}
-          onDelete={() => handleDelete(contextMenu.item)}
+          onOpen={() => handleOpen(contextMenu.item)}
+          onPreview={() => handlePreviewFile(contextMenu.item)}
+          onMove={() => handleMoveFile(contextMenu.item)}
+          onCopy={() => handleCopyFile(contextMenu.item)}
         />
       )}
 
       {renameTarget && (
         <>
-          <div style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.4)", zIndex: 1999 }} onClick={() => setRenameTarget(null)} />
+          <div style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.5)", zIndex: 1999 }} onClick={() => setRenameTarget(null)} />
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
             transition={{ duration: 0.15 }}
-            style={{ position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)", background: "var(--color-surface)", border: "1px solid var(--color-surface-border)", borderRadius: "var(--radius-md)", padding: "18px 22px", minWidth: 320, boxShadow: "0 20px 50px rgba(0,0,0,0.4)", zIndex: 2000 }}
+            style={{
+              position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
+              background: "var(--color-popup-surface)", border: "1px solid var(--color-popup-border)",
+              borderRadius: "var(--radius-md)", padding: "18px 22px", minWidth: 320,
+              boxShadow: "0 20px 50px rgba(0,0,0,0.5)", zIndex: 2000,
+            }}
           >
             <h3 style={{ fontSize: 13, fontWeight: 600, color: PRIMARY, marginBottom: 12 }}>Переименовать</h3>
             <input type="text" value={renameValue} onChange={(e) => setRenameValue(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") doRename(); if (e.key === "Escape") setRenameTarget(null); }}
-              style={{ width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)", background: "rgba(0,0,0,0.2)", border: "1px solid var(--color-surface-border)", color: PRIMARY, fontSize: 13, marginBottom: 14 }} autoFocus />
+              style={{
+                width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)",
+                background: "rgba(0,0,0,0.3)", border: "1px solid var(--color-popup-border)",
+                color: PRIMARY, fontSize: 13, marginBottom: 14, outline: "none",
+              }} autoFocus />
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button onClick={() => setRenameTarget(null)} style={{ padding: "6px 14px", borderRadius: "var(--radius-sm)", background: "var(--color-surface)", border: "1px solid var(--color-surface-border)", color: SECONDARY, fontSize: 12, cursor: "pointer" }}>Отмена</button>
-              <button onClick={doRename} style={{ padding: "6px 14px", borderRadius: "var(--radius-sm)", background: "var(--color-accent)", border: "1px solid var(--color-accent-border)", color: "#fff", fontSize: 12, cursor: "pointer" }}>Готово</button>
+              <button onClick={() => setRenameTarget(null)} style={{
+                padding: "6px 14px", borderRadius: "var(--radius-sm)",
+                background: "var(--color-popup-surface)", border: "1px solid var(--color-popup-border)",
+                color: SECONDARY, fontSize: 12, cursor: "pointer", transition: "all 0.15s",
+              }}>Отмена</button>
+              <button onClick={doRename} style={{
+                padding: "6px 14px", borderRadius: "var(--radius-sm)",
+                background: "var(--color-accent)", border: "1px solid var(--color-accent-border)",
+                color: "#fff", fontSize: 12, cursor: "pointer", fontWeight: 500,
+              }}>Готово</button>
             </div>
           </motion.div>
         </>
       )}
 
        <OperationQueueList operations={operations} onCancel={cancelOperation} onClose={removeOperation} onRetry={retry} />
+
+      {/* ── Status bar ── */}
+      <motion.div
+        className={styles.statusBar}
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.2, delay: 0.1 }}
+      >
+        <div className={styles.statusItem}>
+          <Folder size={12} style={{ color: "#60a5fa" }} />
+          <span>
+            {breadcrumbs[breadcrumbs.length - 1]?.name || "Мой диск"}
+          </span>
+        </div>
+        <div className={styles.statusItem}>
+          <span className={styles.statusAccent}>{sorted.filter(f => f.isDir).length}</span> папок,{" "}
+          <span className={styles.statusAccent}>{sorted.filter(f => !f.isDir).length}</span> файлов
+        </div>
+        {selectedId && (
+          <motion.div
+            className={styles.statusItem}
+            initial={{ opacity: 0, x: -8 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 8 }}
+            transition={{ duration: 0.15 }}
+          >
+            <span className={styles.statusAccent}>1</span> выбран
+          </motion.div>
+        )}
+        <div style={{ marginLeft: "auto", color: MUTED, fontSize: 11 }}>
+          {sorted.length > 0 && !search && (
+            <span>
+              Общий размер:{" "}
+              {formatBytes(sorted.filter(f => !f.isDir).reduce((sum, f) => sum + (f.sizeBytes || 0), 0))}
+            </span>
+          )}
+        </div>
+      </motion.div>
     </div>
   );
 }
@@ -515,39 +721,119 @@ function EmptyState({ title, sub }: { title: string; sub: string }) {
 
 function ContextMenu({
   item, x, y, onClose, onRename, onDownload, onDelete,
+  onOpen, onPreview, onMove, onCopy,
 }: {
   item: FileInfo; x: number; y: number;
   onClose: () => void; onRename: () => void;
   onDownload: () => void; onDelete: () => void;
+  onOpen: () => void; onPreview: () => void;
+  onMove: () => void; onCopy: () => void;
 }) {
-  const menuStyle: React.CSSProperties = {
-    position: "fixed", top: y, left: x,
-    background: "var(--color-surface)", border: "1px solid var(--color-surface-border)",
-    borderRadius: "var(--radius-sm)", padding: "4px", minWidth: 180,
-    boxShadow: "0 8px 24px rgba(0,0,0,0.4)", zIndex: 200,
+  const popupStyle: React.CSSProperties = {
+    position: "fixed",
+    top: Math.min(y, window.innerHeight - 320),
+    left: Math.min(x, window.innerWidth - 240),
+    background: "var(--color-popup-surface)",
+    border: "1px solid var(--color-popup-border)",
+    borderRadius: "var(--radius-sm)",
+    padding: "4px",
+    minWidth: 200,
+    maxWidth: 260,
+    maxHeight: 480,
+    overflow: "hidden",
+    boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+    zIndex: 2000,
+    backdropFilter: "blur(12px)",
+    WebkitBackdropFilter: "blur(12px)",
   };
+
+  const itemStyle = (opts?: { danger?: boolean; shortcut?: string }): React.CSSProperties => ({
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    width: "100%",
+    padding: "6px 10px",
+    textAlign: "left",
+    fontSize: 12,
+    background: "transparent",
+    border: "none",
+    color: opts?.danger ? "var(--color-error)" : "var(--color-text-primary)",
+    cursor: "pointer",
+    borderRadius: "4px",
+    transition: "all 0.12s",
+  });
+
+  const IconWrapper = ({ icon: Icon, color }: { icon: any; color?: string }) =>
+    <div style={{ width: 16, height: 16, display: "grid", placeItems: "center", flexShrink: 0, color: color || "var(--color-text-secondary)" }}>
+      <Icon size={11} strokeWidth={1.6} />
+    </div>;
+
+  const renderItem = (
+    icon: any, label: string, onClick: () => void,
+    opts?: { danger?: boolean; disabled?: boolean; shortcut?: string; submenu?: string },
+  ) => (
+    <motion.button
+      key={label}
+      whileHover={!opts?.disabled ? {
+        background: opts?.danger ? "rgba(255,100,100,0.12)" : "var(--color-popup-hover)",
+        x: 3,
+      } : {}}
+      onClick={() => { onClick(); if (!opts?.submenu) onClose(); }}
+      disabled={opts?.disabled}
+      style={itemStyle({ danger: opts?.danger })}
+    >
+      <IconWrapper icon={icon} color={opts?.danger ? "var(--color-error)" : undefined} />
+      <span>{label}</span>
+      {opts?.shortcut && (
+        <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--color-text-muted)", fontFamily: "ui-monospace, monospace" }}>
+          {opts.shortcut}
+        </span>
+      )}
+      {opts?.submenu && <ChevronRight size={10} style={{ marginLeft: "auto", color: "var(--color-text-muted)" }} />}
+    </motion.button>
+  );
+
+  const renderSeparator = (key: string) => (
+    <div key={key} style={{ height: 1, background: "var(--color-surface-border)", margin: "4px 0" }} />
+  );
+
+  const renderLabel = (text: string) => (
+    <div style={{ padding: "4px 10px", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--color-text-muted)", fontWeight: 600 }}>
+      {text}
+    </div>
+  );
+
   return (
     <>
       <motion.div
-        style={menuStyle}
-        initial={{ opacity: 0, scale: 0.9, y: -4 }}
+        style={popupStyle}
+        initial={{ opacity: 0, scale: 0.92, y: -4 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.9, y: -4 }}
-        transition={{ duration: 0.15, ease: "easeOut" }}
+        exit={{ opacity: 0, scale: 0.92, y: -4 }}
+        transition={{ duration: 0.12, ease: "easeOut" }}
       >
-        <button style={{ display: "block", width: "100%", padding: "6px 10px", textAlign: "left", fontSize: 12, background: "transparent", border: "none", color: PRIMARY, cursor: "pointer", borderRadius: "var(--radius-sm)" }} onClick={() => { if (!item.isDir) onDownload(); else onClose(); }}>
-          <Download size={12} style={{ marginRight: 6 }} /> Скачать
-        </button>
-        <button style={{ display: "block", width: "100%", padding: "6px 10px", textAlign: "left", fontSize: 12, background: "transparent", border: "none", color: PRIMARY, cursor: "pointer", borderRadius: "var(--radius-sm)" }} onClick={() => { navigator.clipboard.writeText(item.name); onClose(); }}>
-          <Copy size={12} style={{ marginRight: 6 }} /> Копировать путь
-        </button>
-        <hr style={{ border: 0, height: 1, background: "var(--color-surface-border)", margin: "4px 0" }} />
-        <button style={{ display: "block", width: "100%", padding: "6px 10px", textAlign: "left", fontSize: 12, background: "transparent", border: "none", color: PRIMARY, cursor: "pointer", borderRadius: "var(--radius-sm)" }} onClick={() => { onRename(); onClose(); }}>
-          <Edit3 size={12} style={{ marginRight: 6 }} /> Переименовать
-        </button>
-        <button style={{ display: "block", width: "100%", padding: "6px 10px", textAlign: "left", fontSize: 12, background: "transparent", border: "none", color: "var(--color-error)", cursor: "pointer", borderRadius: "var(--radius-sm)" }} onClick={() => { onDelete(); onClose(); }}>
-          <Trash2 size={12} style={{ marginRight: 6 }} /> Удалить
-        </button>
+        {renderLabel("Действия")}
+        {renderItem(FolderOpen, "Открыть", () => { if (item.isDir) onOpen(); else onClose(); })}
+        {!item.isDir && renderItem(Eye, "Просмотр", () => { onPreview(); onClose(); }, { shortcut: "Пробел" })}
+        {!item.isDir && renderItem(Download, "Скачать", () => { onDownload(); onClose(); }, { shortcut: "⌘+S" })}
+
+        {renderSeparator("sep1")}
+
+        {renderLabel("Правка")}
+        {renderItem(Edit3, "Переименовать", () => { onRename(); onClose(); }, { shortcut: "⌘+R" })}
+        {renderItem(Copy, "Копировать", () => { onCopy(); onClose(); }, { shortcut: "⌘+C" })}
+        {renderItem(Scissors, "Переместить", () => { onMove(); onClose(); }, { shortcut: "⌘+X" })}
+
+        {!item.isDir && (
+          <>
+            {renderSeparator("sep2")}
+            {renderLabel("Поделиться")}
+            {renderItem(Share2, "Поделиться ссылкой", () => { navigator.clipboard.writeText(item.name); onClose(); })}
+          </>
+        )}
+
+        {renderSeparator("sep3")}
+        {renderItem(Trash2, "Удалить", () => { onDelete(); onClose(); }, { danger: true, shortcut: "⌫" })}
       </motion.div>
       <div style={{ position: "fixed", inset: 0, zIndex: 100 }} onClick={onClose} />
     </>
@@ -628,7 +914,7 @@ const FolderTreeSidebar: React.FC<{
               cursor: "pointer", fontSize: 12, width: "100%", textAlign: "left",
               transition: "background 0.15s, color 0.15s",
             }}
-            onMouseEnter={(e) => { if (!isActive) { e.currentTarget.style.background = "var(--color-surface-hover)"; e.currentTarget.style.color = "var(--color-text-primary)"; } }}
+            onMouseEnter={(e) => { if (!isActive) { e.currentTarget.style.background = "var(--color-popup-hover)"; e.currentTarget.style.color = "var(--color-text-primary)"; } }}
             onMouseLeave={(e) => { if (!isActive) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--color-text-secondary)"; } }}
           >
             {isDir && (
@@ -683,38 +969,70 @@ function GridItem({
   );
 
   return (
-    <div
+    <motion.div
       className={`${styles.gridItem} ${selected ? styles.gridItemSelected : ""}`}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
       onContextMenu={onContextMenu}
+      layoutId={item.id}
     >
-      <div className={styles.gridThumb} style={{ "--thumb-color": color } as React.CSSProperties}>
-        <Icon size={30} strokeWidth={1.4} />
-      </div>
-      <div className={styles.gridName} title={item.name}>{item.name}</div>
-      <div className={styles.gridMeta}>
+      <motion.div
+        className={styles.gridThumb}
+        style={{
+          width: 72, height: 72, borderRadius: "var(--radius-md)",
+          "--thumb-color": color,
+        } as React.CSSProperties}
+        whileHover={{ scale: 1.03, boxShadow: "0 4px 14px rgba(0,0,0,0.25)" }}
+        transition={{ duration: 0.15 }}
+      >
+        <Icon size={34} strokeWidth={1.3} />
+        {item.isDir && item.sizeBytes && item.sizeBytes > 0 && (
+          <motion.span
+            className={styles.typeBadge}
+            style={{ background: "rgba(96,165,250,0.18)", color: "#60a5fa" }}
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: 0.15, delay: 0.05 }}
+          >
+            {item.sizeBytes}
+          </motion.span>
+        )}
+      </motion.div>
+      <motion.div
+        className={styles.gridName}
+        title={item.name}
+        style={{ fontSize: 13 }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.15, delay: 0.05 }}
+      >
+        {item.name}
+      </motion.div>
+      <motion.div
+        className={styles.gridMeta}
+        style={{ fontSize: 11 }}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.15, delay: 0.07 }}
+      >
         {item.isDir ? `${item.sizeBytes || 0} эл.` : formatBytes(item.sizeBytes)}
-      </div>
+      </motion.div>
       {!item.isDir && isPreviewable && (
-        <button
+        <motion.button
           onClick={(e) => { e.stopPropagation(); onView(); }}
-          style={{
-            position: "absolute", top: 8, right: 8,
-            width: 20, height: 20, borderRadius: "var(--radius-sm)",
-            background: "rgba(0,0,0,0.3)", border: "1px solid var(--color-surface-border)",
-            color: "var(--color-text-secondary)", cursor: "pointer",
-            display: "grid", placeItems: "center", opacity: 0,
-            transition: "opacity 0.15s",
-          }}
+          className={styles.gridPreviewBtn}
           title="Просмотр"
-          onMouseEnter={(e) => { e.currentTarget.style.opacity = "1"; }}
-          onMouseLeave={(e) => { e.currentTarget.style.opacity = "0"; }}
+          initial={{ opacity: 0, scale: 0.85 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0, scale: 0.85 }}
+          transition={{ duration: 0.15, delay: 0.08 }}
+          whileHover={{ background: "rgba(255,255,255,0.12)", scale: 1.08 }}
+          whileTap={{ scale: 0.9 }}
         >
           <FileText size={11} />
-        </button>
+        </motion.button>
       )}
-    </div>
+    </motion.div>
   );
 }
 
@@ -731,29 +1049,44 @@ function ListItem({
   const color = colorFor(item);
 
   return (
-    <div
+    <motion.div
       className={`${styles.listRow} ${selected ? styles.listRowSelected : ""}`}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
       onContextMenu={onContextMenu}
+      layoutId={item.id}
+      whileHover={{ backgroundColor: selected ? "rgba(255,182,210,0.08)" : undefined }}
+      transition={{ duration: 0.12 }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-        <div style={{
-          width: 28, height: 28, borderRadius: 8, flexShrink: 0,
-          display: "grid", placeItems: "center", color,
-          background: `color-mix(in srgb, ${color} 14%, transparent)`,
-        }}>
+        <motion.div
+          style={{
+            width: 28, height: 28, borderRadius: 8, flexShrink: 0,
+            display: "grid", placeItems: "center", color,
+            background: `color-mix(in srgb, ${color} 14%, transparent)`,
+          }}
+          whileHover={{ scale: 1.08 }}
+          transition={{ duration: 0.12 }}
+        >
           <Icon size={15} strokeWidth={1.6} />
-        </div>
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={item.name}>
+        </motion.div>
+        <span
+          style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: PRIMARY }}
+          title={item.name}
+        >
           {item.name}
         </span>
+        {item.isDir && (
+          <span style={{ fontSize: 11, color: MUTED, marginLeft: 6 }}>(директория)</span>
+        )}
       </div>
       <div style={{ color: SECONDARY, fontSize: 12 }}>{formatTimeAgo(item.updatedAt)}</div>
-      <div style={{ color: SECONDARY, fontSize: 12 }}>{item.isDir ? "—" : formatBytes(item.sizeBytes)}</div>
+      <div style={{ color: SECONDARY, fontSize: 12 }}>
+        {item.isDir ? "—" : formatBytes(item.sizeBytes)}
+      </div>
       <div style={{ display: "flex", justifyContent: "flex-end" }}>
         {!item.isDir && (
-          <button
+          <motion.button
             onClick={(e) => { e.stopPropagation(); onView(); }}
             style={{
               width: 24, height: 22, borderRadius: "var(--radius-sm)",
@@ -761,12 +1094,13 @@ function ListItem({
               color: "var(--color-text-secondary)", cursor: "pointer",
               display: "grid", placeItems: "center",
             }}
+            whileHover={{ background: "var(--color-popup-hover)", color: PRIMARY }}
             title="Просмотр"
           >
             <FileText size={11} />
-          </button>
+          </motion.button>
         )}
       </div>
-    </div>
+    </motion.div>
   );
 }
