@@ -626,8 +626,8 @@ export default function LozaTab() {
       </main>
 
       {previewFile && (
-        <>
-          <div style={{
+        <div
+          style={{
             position: "fixed", inset: 0,
             backgroundColor: "rgba(0,0,0,0.5)",
             zIndex: 5000,
@@ -635,16 +635,15 @@ export default function LozaTab() {
             alignItems: "center",
             justifyContent: "center",
             padding: "24px",
-          }} onClick={() => setPreviewFile(null)} />
+          }}
+          onClick={() => setPreviewFile(null)}
+        >
           <motion.div
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             exit={{ opacity: 0, scale: 0.95 }}
             transition={{ duration: 0.15, ease: "easeOut" }}
             style={{
-              position: "fixed",
-              top: "50%", left: "50%",
-              transform: "translate(-50%, -50%)",
               width: "min(90vw, 800px)",
               height: "min(90vh, 600px)",
               maxWidth: "90vw",
@@ -653,7 +652,6 @@ export default function LozaTab() {
               border: "1px solid var(--color-popup-border)",
               borderRadius: "var(--radius-lg)",
               boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
-              zIndex: 5001,
               display: "flex",
               flexDirection: "column",
               overflow: "hidden",
@@ -662,7 +660,7 @@ export default function LozaTab() {
           >
             <FileViewer file={previewFile} onClose={() => setPreviewFile(null)} onEdited={() => loadFiles(currentPath)} />
           </motion.div>
-        </>
+        </div>
       )}
 
       {contextMenu && (
