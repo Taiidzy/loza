@@ -77,10 +77,18 @@ struct ServerErrorResponse {
     code: String,
 }
 
-fn describe_error(body: Option<ServerErrorResponse>, fallback: &str) -> String {
-    match body {
-        Some(e) => format!("{}: {}", e.code, e.error),
-        None => fallback.to_string(),
+/// Reads a non-success HTTP response body and produces a descriptive error.
+/// Tries to parse as `ServerErrorResponse`; if that fails, includes the
+/// HTTP status code and raw body text so diagnostics are never lost.
+async fn describe_http_error(resp: reqwest::Response, operation: &str) -> String {
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    match serde_json::from_str::<ServerErrorResponse>(&body) {
+        Ok(e) => format!("{}: {}", e.code, e.error),
+        Err(_) => {
+            let reason = status.canonical_reason().unwrap_or("Unknown");
+            format!("HTTP {} {} ({}) — body: {}", status.as_u16(), reason, operation, body)
+        }
     }
 }
 
@@ -108,8 +116,7 @@ async fn http_get_events(
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
 
     if !resp.status().is_success() {
-        let err = resp.json::<ServerErrorResponse>().await.ok();
-        return Err(describe_error(err, "UNKNOWN: Failed to load events"));
+        return Err(describe_http_error(resp, "load events").await);
     }
 
     resp.json::<Vec<CalendarEvent>>()
@@ -133,8 +140,7 @@ async fn http_create_event(
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
 
     if !resp.status().is_success() {
-        let err = resp.json::<ServerErrorResponse>().await.ok();
-        return Err(describe_error(err, "UNKNOWN: Failed to create event"));
+        return Err(describe_http_error(resp, "create event").await);
     }
 
     resp.json::<CalendarEvent>()
@@ -158,8 +164,7 @@ async fn http_update_event(
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
 
     if !resp.status().is_success() {
-        let err = resp.json::<ServerErrorResponse>().await.ok();
-        return Err(describe_error(err, "UNKNOWN: Failed to update event"));
+        return Err(describe_http_error(resp, "update event").await);
     }
 
     resp.json::<CalendarEvent>()
@@ -182,8 +187,7 @@ async fn http_delete_event(
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
 
     if !resp.status().is_success() {
-        let err = resp.json::<ServerErrorResponse>().await.ok();
-        return Err(describe_error(err, "UNKNOWN: Failed to delete event"));
+        return Err(describe_http_error(resp, "delete event").await);
     }
 
     Ok(())

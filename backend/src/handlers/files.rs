@@ -138,7 +138,11 @@ pub async fn list_files(
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<FileInfo>>, ApiError> {
     let username = require_username(&state, &headers).await?;
-    let dir_path = sanitize_path(&query.path).unwrap_or_else(|_| ".".to_string());
+    let dir_path = if query.path.is_empty() {
+        ".".to_string()
+    } else {
+        sanitize_path(&query.path).map_err(from_file_error)?
+    };
 
     let dir_prefix = if dir_path == "." {
         String::new()

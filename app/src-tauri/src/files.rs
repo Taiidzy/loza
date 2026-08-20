@@ -57,10 +57,18 @@ struct ServerErrorResponse {
     code: String,
 }
 
-fn describe_error(body: Option<ServerErrorResponse>, fallback: &str) -> String {
-    match body {
-        Some(e) => format!("{}: {}", e.code, e.error),
-        None => fallback.to_string(),
+/// Reads a non-success HTTP response body and produces a descriptive error.
+/// Tries to parse as `ServerErrorResponse`; if that fails, includes the
+/// HTTP status code and raw body text so diagnostics are never lost.
+async fn describe_http_error(resp: reqwest::Response, operation: &str) -> String {
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    match serde_json::from_str::<ServerErrorResponse>(&body) {
+        Ok(e) => format!("{}: {}", e.code, e.error),
+        Err(_) => {
+            let reason = status.canonical_reason().unwrap_or("Unknown");
+            format!("HTTP {} {} ({}) — body: {}", status.as_u16(), reason, operation, body)
+        }
     }
 }
 
@@ -96,8 +104,7 @@ pub async fn list_files(
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
 
     if !resp.status().is_success() {
-        let err = resp.json::<ServerErrorResponse>().await.ok();
-        return Err(describe_error(err, "UNKNOWN: Failed to list files"));
+        return Err(describe_http_error(resp, "list files").await);
     }
 
     resp.json::<Vec<FileInfo>>()
@@ -127,8 +134,7 @@ pub async fn get_file_info(
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
 
     if !resp.status().is_success() {
-        let err = resp.json::<ServerErrorResponse>().await.ok();
-        return Err(describe_error(err, "UNKNOWN: Failed to get file info"));
+        return Err(describe_http_error(resp, "get file info").await);
     }
 
     resp.json::<FileInfo>()
@@ -166,8 +172,7 @@ pub async fn upload_file(
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
 
     if !resp.status().is_success() {
-        let err = resp.json::<ServerErrorResponse>().await.ok();
-        return Err(describe_error(err, "UNKNOWN: Failed to upload file"));
+        return Err(describe_http_error(resp, "upload file").await);
     }
 
     resp.json::<FileInfo>()
@@ -198,8 +203,7 @@ pub async fn download_file(
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
 
     if !resp.status().is_success() {
-        let err = resp.json::<ServerErrorResponse>().await.ok();
-        return Err(describe_error(err, "UNKNOWN: Failed to download file"));
+        return Err(describe_http_error(resp, "download file").await);
     }
 
     resp.bytes()
@@ -230,8 +234,7 @@ pub async fn delete_file(
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
 
     if !resp.status().is_success() {
-        let err = resp.json::<ServerErrorResponse>().await.ok();
-        return Err(describe_error(err, "UNKNOWN: Failed to delete file"));
+        return Err(describe_http_error(resp, "delete file").await);
     }
 
     Ok(())
@@ -256,8 +259,7 @@ pub async fn rename_file(
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
 
     if !resp.status().is_success() {
-        let err = resp.json::<ServerErrorResponse>().await.ok();
-        return Err(describe_error(err, "UNKNOWN: Failed to rename file"));
+        return Err(describe_http_error(resp, "rename file").await);
     }
 
     resp.json::<FileInfo>()
@@ -284,8 +286,7 @@ pub async fn move_file(
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
 
     if !resp.status().is_success() {
-        let err = resp.json::<ServerErrorResponse>().await.ok();
-        return Err(describe_error(err, "UNKNOWN: Failed to move file"));
+        return Err(describe_http_error(resp, "move file").await);
     }
 
     resp.json::<FileInfo>()
@@ -312,8 +313,7 @@ pub async fn copy_file(
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
 
     if !resp.status().is_success() {
-        let err = resp.json::<ServerErrorResponse>().await.ok();
-        return Err(describe_error(err, "UNKNOWN: Failed to copy file"));
+        return Err(describe_http_error(resp, "copy file").await);
     }
 
     resp.json::<FileInfo>()
@@ -340,8 +340,7 @@ pub async fn create_dir(
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
 
     if !resp.status().is_success() {
-        let err = resp.json::<ServerErrorResponse>().await.ok();
-        return Err(describe_error(err, "UNKNOWN: Failed to create directory"));
+        return Err(describe_http_error(resp, "create directory").await);
     }
 
     resp.json::<FileInfo>()
