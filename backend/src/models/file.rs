@@ -112,20 +112,25 @@ impl From<sqlx::Error> for FileError {
 ///         "../etc/passwd"     → Err
 ///         "/absolute"         → Err (ведущий / не нужен)
 pub fn sanitize_path(raw: &str) -> Result<String, FileError> {
-    let trimmed = raw.trim().trim_matches('/').to_string();
-    if trimmed.is_empty() {
+    if raw.is_empty() || raw.starts_with('/') || raw.starts_with('\\') || raw.contains('\\') || raw.contains('\0') {
+        return Err(FileError::invalid_path(raw));
+    }
+    if std::path::Path::new(raw).is_absolute() {
+        return Err(FileError::invalid_path(raw));
+    }
+    if raw.ends_with('/') {
+        return Err(FileError::invalid_path(raw));
+    }
+    if raw.is_empty() {
         return Err(FileError::new("INVALID_PATH", "Path must not be empty"));
     }
-    // Отклоняем любые сегменты .. — даже в середине пути.
-    for segment in trimmed.split('/') {
-        if segment == ".." {
-            return Err(FileError::invalid_path(raw));
-        }
-        if segment.is_empty() {
+    // Reject traversal and ambiguous paths. Keep valid Unicode names intact.
+    for segment in raw.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." {
             return Err(FileError::invalid_path(raw));
         }
     }
-    Ok(trimmed)
+    Ok(raw.to_string())
 }
 
 /// Нормализует путь директории: гарантированно заканчивается на `/`.
@@ -216,5 +221,22 @@ pub fn guess_mime(name: &str) -> Option<&'static str> {
         Some("ppt") => Some("application/vnd.ms-powerpoint"),
         Some("pptx") => Some("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_path;
+
+    #[test]
+    fn accepts_normal_relative_unicode_paths() {
+        assert_eq!(sanitize_path("Документы/отчёт 2026.pdf").unwrap(), "Документы/отчёт 2026.pdf");
+    }
+
+    #[test]
+    fn rejects_traversal_absolute_and_ambiguous_paths() {
+        for path in ["../secret", "docs/../secret", "/etc/passwd", "C:\\temp", "docs//file", "./file", "docs/"] {
+            assert!(sanitize_path(path).is_err(), "{path} must be rejected");
+        }
     }
 }

@@ -384,6 +384,7 @@
   padding: 10px 16px;
   border-bottom: 1px solid var(--color-surface-border);
   background: var(--color-glass-surface);
+  min-width: 0;
 }
 
 .navGroup {
@@ -430,6 +431,8 @@
   align-items: center;
   gap: 10px;
   margin-left: auto;
+  min-width: 0;
+  flex-shrink: 0;
 }
 
 .breadcrumbsContainer {
@@ -470,6 +473,11 @@
   border: none;
   cursor: pointer;
   transition: background 0.15s, color 0.15s;
+  min-width: 0;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .crumbBtn:hover {
@@ -889,6 +897,8 @@
   font-size: 12px;
   color: var(--color-text-secondary);
   flex-shrink: 0;
+  min-width: 0;
+  justify-content: space-between;
 }
 
 .statusItem {
@@ -900,6 +910,35 @@
 .statusAccent {
   color: var(--color-accent);
   font-weight: 500;
+}
+
+.statusPath {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .toolbarFinder { gap: 8px; padding: 8px 10px; }
+  .breadcrumbsContainer { order: 3; flex-basis: 100%; }
+  .toolbarFinder { flex-wrap: wrap; }
+  .toolbarRight { margin-left: 0; flex: 1 1 auto; justify-content: flex-end; }
+  .searchInput { width: min(180px, 30vw); }
+}
+
+@media (max-width: 620px) {
+  .root { grid-template-columns: 1fr; }
+  .sidebar { display: none; }
+  .navGroup { gap: 0; }
+  .toolbarRight { gap: 5px; }
+  .viewToggle { display: none; }
+  .search { flex: 1 1 120px; }
+  .searchInput { width: 100%; }
+  .crumbBtn { max-width: 120px; }
+  .listHead, .listRow { grid-template-columns: minmax(0, 1fr) 82px 32px; }
+  .listHead > :nth-child(3), .listRow > :nth-child(3) { display: none; }
 }
 
 /* Spinner keyframes */

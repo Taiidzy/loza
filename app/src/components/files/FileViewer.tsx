@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { FileInfo } from "../../types/files";
-import { fileApi } from "../../api/filesService";
+import { blobFromBytes, fileApi } from "../../api/filesService";
 import { logger } from "../../shared/utils/logger";
 import {
   Download, FileText, Code, File, AlertCircle, Loader,
@@ -22,6 +22,7 @@ const IMAGE_MIMES = ["image/jpeg", "image/png", "image/gif", "image/webp", "imag
 const VIDEO_MIMES = ["video/mp4", "video/webm", "video/quicktime", "video/x-msvideo", "video/x-matroska"];
 const AUDIO_MIMES = ["audio/mpeg", "audio/wav", "audio/ogg", "audio/flac", "audio/mp4"];
 const EDITABLE_EXTENSIONS = ["txt", "md", "json", "yaml", "yml", "toml", "ini", "csv", "xml", "html", "css", "js", "ts", "jsx", "tsx", "py", "rs", "go", "c", "cpp", "h", "hpp", "sh", "log"];
+const MAX_IN_MEMORY_PREVIEW_BYTES = 50 * 1024 * 1024;
 
 function getExtension(name: string): string {
   const parts = name.split(".");
@@ -126,9 +127,21 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
   const [rotation, setRotation] = useState(0);
   const imageRef = useRef<HTMLImageElement>(null);
   const pdfRef = useRef<HTMLIFrameElement>(null);
+  const objectUrlRef = useRef<string | null>(null);
+  const loadSequenceRef = useRef(0);
 
   const loadContent = useCallback(async () => {
     if (file.isDir) return;
+
+    const sequence = ++loadSequenceRef.current;
+    setLoading(true);
+    setError(null);
+    setTextContent(null);
+    setBlobUrl(null);
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
 
     const name = file.name;
     const mt = file.mimeType;
@@ -138,31 +151,44 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
 
     try {
       if (previewable || textable) {
+        if (file.sizeBytes > MAX_IN_MEMORY_PREVIEW_BYTES) {
+          throw new Error("Файл слишком большой для встроенного просмотра. Скачайте его, чтобы открыть локально.");
+        }
         const bytes = await fileApi.downloadFile(file.path);
-        const blob = new Blob([bytes.buffer as ArrayBuffer]);
+        const blob = blobFromBytes(bytes, mt || "application/octet-stream");
         if (textable) {
           const text = await blob.text();
+          if (sequence !== loadSequenceRef.current) return;
           setTextContent(text);
           setEditorContent(text);
         } else {
           const url = URL.createObjectURL(blob);
+          if (sequence !== loadSequenceRef.current) {
+            URL.revokeObjectURL(url);
+            return;
+          }
+          objectUrlRef.current = url;
           setBlobUrl(url);
         }
       }
     } catch (e: any) {
+      if (sequence !== loadSequenceRef.current) return;
       setError(e.message || "Failed to load file");
       logger.error("files", "FileViewer load error", e);
     } finally {
-      setLoading(false);
+      if (sequence === loadSequenceRef.current) setLoading(false);
     }
   }, [file]);
 
   useEffect(() => {
     loadContent();
     return () => {
-      if (blobUrl) URL.revokeObjectURL(blobUrl);
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = null;
+      }
     };
-  }, [loadContent, blobUrl]);
+  }, [loadContent]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -184,7 +210,7 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
   const handleDownload = async () => {
     try {
       const bytes = await fileApi.downloadFile(file.path);
-      const blob = new Blob([bytes]);
+      const blob = blobFromBytes(bytes, mt || "application/octet-stream");
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;

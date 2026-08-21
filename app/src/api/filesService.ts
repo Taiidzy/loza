@@ -2,6 +2,25 @@ import { invoke } from "@tauri-apps/api/core";
 import { FileInfo, MoveRequest, CopyRequest } from "../types/files";
 import { logger } from "../shared/utils/logger";
 
+/**
+ * Tauri deserializes binary command results as a typed-array view. Copy exactly
+ * that view into a fresh ArrayBuffer before creating a Blob: its backing store
+ * may otherwise be a SharedArrayBuffer or include bytes outside the view.
+ */
+export function blobFromBytes(bytes: Uint8Array, type = "application/octet-stream"): Blob {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return new Blob([buffer], { type });
+}
+
+function toUint8Array(payload: unknown): Uint8Array {
+  if (payload instanceof Uint8Array) return payload;
+  if (Array.isArray(payload) && payload.every((value) => Number.isInteger(value) && value >= 0 && value <= 255)) {
+    return Uint8Array.from(payload);
+  }
+  throw new Error("PARSE_ERROR: the file response did not contain binary data");
+}
+
 export class FileApiService {
   // ── List & Info ──────────────────────────────────────────────────────
 
@@ -43,14 +62,16 @@ export class FileApiService {
 
   async downloadFile(path: string, progressId?: string): Promise<Uint8Array> {
     logger.info("files", "invoke(download_file)", { path });
-    return await invoke<Uint8Array>("download_file", { path, progressId });
+    // Tauri may deserialize Rust Vec<u8> as either a Uint8Array or a JSON
+    // number array depending on the WebView bridge. Normalize both forms.
+    return toUint8Array(await invoke<unknown>("download_file", { path, progressId }));
   }
 
   // ── View (in-memory for preview) ─────────────────────────────────────
 
   async viewFile(path: string): Promise<Blob> {
     const bytes = await this.downloadFile(path);
-    return new Blob([bytes]);
+    return blobFromBytes(bytes);
   }
 
   // ── Delete ────────────────────────────────────────────────────────────

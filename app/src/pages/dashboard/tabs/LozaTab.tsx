@@ -139,6 +139,10 @@ export default function LozaTab() {
 
   const navHistoryRef = useRef<string[]>([""]);
   const navIndexRef = useRef(0);
+  const loadRequestRef = useRef(0);
+  const searchRequestRef = useRef(0);
+  const currentPathRef = useRef(currentPath);
+  currentPathRef.current = currentPath;
 
   const { operations, uploadFile, downloadFile, cancelOperation, removeOperation, retry } = useOperationQueue();
 
@@ -159,14 +163,14 @@ export default function LozaTab() {
   const goBack = () => {
     if (navIndexRef.current > 0) {
       navIndexRef.current -= 1;
-      handleNavigate(navHistoryRef.current[navIndexRef.current]);
+      handleNavigate(navHistoryRef.current[navIndexRef.current], false);
     }
   };
 
   const goForward = () => {
     if (navIndexRef.current < navHistoryRef.current.length - 1) {
       navIndexRef.current += 1;
-      handleNavigate(navHistoryRef.current[navIndexRef.current]);
+      handleNavigate(navHistoryRef.current[navIndexRef.current], false);
     }
   };
 
@@ -176,42 +180,6 @@ export default function LozaTab() {
       handleNavigate(parent);
     }
   };
-
-  // ── WebSocket push listener ──────────────────────────────────────────
-
-  useEffect(() => {
-    const unlisten = listen(FILE_CHANGE_EVENT, (event) => {
-      const data = event.payload as { method: string; params: any };
-      if (!data?.method) return;
-
-      // Determine if the changed file is in the current directory or a parent
-      const payload = data.params || {};
-      const changedPath: string | undefined = payload.path;
-
-      // If the change is in the current directory or a subdirectory, refresh
-      if (changedPath) {
-        const shouldRefresh = !currentPath
-          || changedPath === currentPath
-          || changedPath.startsWith(currentPath + "/");
-
-        if (shouldRefresh) {
-          logger.info("files", "WS file change detected, refreshing", {
-            method: data.method,
-            changedPath,
-            currentPath,
-          });
-          loadFiles(currentPath);
-        }
-      } else {
-        // For safety, refresh if we can't determine the path
-        loadFiles(currentPath);
-      }
-    });
-
-    return () => {
-      unlisten.then((f) => f());
-    };
-  }, [currentPath]);
 
   // ── Global keyboard shortcuts ─�───────────────────────────────────────
 
@@ -238,20 +206,40 @@ export default function LozaTab() {
   // ── Load files ────────────────────────────────────────────────────────
 
   const loadFiles = useCallback(async (path: string) => {
+    const requestId = ++loadRequestRef.current;
     setLoading(true);
     setError(null);
-    setSelectedIds(new Set());
     try {
       const result = await fileApi.listFiles(path);
+      if (requestId !== loadRequestRef.current || currentPathRef.current !== path) return;
       setFiles(result);
+      setSelectedIds((previous) => new Set(
+        [...previous].filter((id) => result.some((file) => file.id === id)),
+      ));
     } catch (e: any) {
+      if (requestId !== loadRequestRef.current || currentPathRef.current !== path) return;
       const msg = e?.message || "Failed to load files";
       setError(msg);
       logger.error("files", "loadFiles error", e);
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestRef.current) setLoading(false);
     }
   }, []);
+
+  // File operations are HTTP-authoritative; WebSocket pushes are only an
+  // invalidation signal. Reloading from the server avoids duplicate local
+  // optimistic state and handles messages without a single `path` (rename).
+  useEffect(() => {
+    let refreshTimer: number | undefined;
+    const unlisten = listen(FILE_CHANGE_EVENT, () => {
+      window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => loadFiles(currentPath), 100);
+    });
+    return () => {
+      window.clearTimeout(refreshTimer);
+      void unlisten.then((stop) => stop());
+    };
+  }, [currentPath, loadFiles]);
 
   useEffect(() => {
     loadFiles(currentPath);
@@ -261,15 +249,20 @@ export default function LozaTab() {
 
   useEffect(() => {
     if (!search.trim()) {
+      searchRequestRef.current += 1;
       setSearchResults(null);
       return;
     }
 
     const timer = setTimeout(async () => {
+      const requestId = ++searchRequestRef.current;
+      setSearchResults(null);
       try {
         const results = await fileApi.searchFiles(search, currentPath);
+        if (requestId !== searchRequestRef.current) return;
         setSearchResults(results);
       } catch (e: any) {
+        if (requestId !== searchRequestRef.current) return;
         logger.error("files", "Search failed", e);
         setSearchResults([]);
       }
@@ -328,9 +321,9 @@ export default function LozaTab() {
 
   // ── Navigation ───────────────────────────────────────────────────────
 
-  const handleNavigate = useCallback((path: string) => {
+  const handleNavigate = useCallback((path: string, addToHistory = true) => {
     if (path === currentPath) return;
-    pushHistory(path);
+    if (addToHistory) pushHistory(path);
     setCurrentPath(path);
     setSearch("");
     setSearchResults(null);
@@ -348,6 +341,7 @@ export default function LozaTab() {
 
   const handleContextMenu = (e: React.MouseEvent, item: FileInfo) => {
     e.preventDefault();
+    if (!selectedIds.has(item.id)) setSelectedIds(new Set([item.id]));
     setContextMenu({ item, x: e.clientX, y: e.clientY });
   };
 
@@ -496,27 +490,19 @@ export default function LozaTab() {
 
   // ── Move / Copy ───────────────────────────────────────────────────────
 
-  const handleCut = () => {
-    if (selectedIds.size === 0) return;
-    const selected = sorted.filter((f) => selectedIds.has(f.id));
+  const putInClipboard = (operation: ClipboardEntry["operation"], selected: FileInfo[]) => {
+    if (selected.length === 0) return;
     clipboard.current = {
-      operation: "move",
+      operation,
       paths: selected.map((f) => f.path),
     };
     setContextMenu(null);
     clearSelection();
   };
 
-  const handleCopy = () => {
-    if (selectedIds.size === 0) return;
-    const selected = sorted.filter((f) => selectedIds.has(f.id));
-    clipboard.current = {
-      operation: "copy",
-      paths: selected.map((f) => f.path),
-    };
-    setContextMenu(null);
-    clearSelection();
-  };
+  const handleCut = () => putInClipboard("move", sorted.filter((f) => selectedIds.has(f.id)));
+
+  const handleCopy = () => putInClipboard("copy", sorted.filter((f) => selectedIds.has(f.id)));
 
   const handlePaste = async () => {
     if (!clipboard.current) return;
@@ -917,6 +903,16 @@ export default function LozaTab() {
               e.target.value = "";
             }} />
         </div>
+        <div className={styles.statusBar}>
+          <span className={styles.statusPath} title={currentPath || "Мой диск"}>
+            {currentPath || "Мой диск"}
+          </span>
+          <span className={styles.statusItem}>
+            {selectedIds.size > 0
+              ? <><span className={styles.statusAccent}>{selectedIds.size}</span> выбрано</>
+              : <><span className={styles.statusAccent}>{files.length}</span> {plural(files.length, "элемент", "элемента", "элементов")}</>}
+          </span>
+        </div>
       </main>
 
       {previewFile && (
@@ -966,8 +962,8 @@ export default function LozaTab() {
           onDelete={() => handleDelete(contextMenu.item)}
           onOpen={() => handleOpen(contextMenu.item)}
           onPreview={() => handlePreviewFile(contextMenu.item)}
-          onMove={handleCut}
-          onCopy={handleCopy}
+          onMove={() => putInClipboard("move", [contextMenu.item])}
+          onCopy={() => putInClipboard("copy", [contextMenu.item])}
         />
       )}
 
@@ -1256,9 +1252,13 @@ const FolderTreeSidebar: React.FC<{
     });
     if (!node.loaded) {
       const children = await loadDir(fullPath);
-      node.children = children;
-      node.loaded = true;
-      setRootNodes((prev) => [...prev]);
+      const updateNodes = (nodes: TreeNode[]): TreeNode[] => nodes.map((candidate) => {
+        if (candidate.id === fullPath) return { ...candidate, children, loaded: true };
+        return candidate.children.length > 0
+          ? { ...candidate, children: updateNodes(candidate.children) }
+          : candidate;
+      });
+      setRootNodes(updateNodes);
     }
   }, [loadDir]);
 
@@ -1271,7 +1271,12 @@ const FolderTreeSidebar: React.FC<{
       return (
         <div key={fullPath}>
           <button
-            onClick={() => isDir ? toggleExpand(node, fullPath) : onNavigate(fullPath)}
+            onClick={() => {
+              if (isDir) {
+                onNavigate(fullPath);
+                void toggleExpand(node, fullPath);
+              }
+            }}
             style={{
               display: "flex", alignItems: "center", gap: 8,
               paddingLeft: `${10 + depth * 14}px`, paddingRight: 10,

@@ -79,6 +79,65 @@ fn user_root(username: &str) -> PathBuf {
     storage_fs::storage_root().join(safe)
 }
 
+/// Builds a user-storage path only from a previously validated relative path.
+/// Symlinks are not supported in Loza storage: following one could escape the
+/// user's root even when the textual path itself is valid.
+async fn storage_path(username: &str, path: &str) -> Result<PathBuf, ApiError> {
+    let root = user_root(username);
+    let candidate = root.join(path);
+    if !candidate.starts_with(&root) {
+        return Err(file_error(FileError::invalid_path(path)));
+    }
+
+    let mut current = root.clone();
+    for component in std::path::Path::new(path).components() {
+        current.push(component);
+        match tokio::fs::symlink_metadata(&current).await {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(file_error(FileError::invalid_path(path)));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(file_error(FileError::from(error))),
+        }
+    }
+    Ok(candidate)
+}
+
+/// Materializes metadata for all parent directories. This keeps the database
+/// tree authoritative even when a first operation is an upload into a category
+/// that has not yet been listed by the client.
+async fn ensure_parent_directories(
+    state: &AppState,
+    username: &str,
+    path: &str,
+) -> Result<(), ApiError> {
+    let Some((parent, _)) = split_parent(path) else { return Ok(()); };
+    if parent.is_empty() { return Ok(()); }
+
+    let now = Utc::now().timestamp();
+    let mut prefix = String::new();
+    for segment in parent.split('/') {
+        prefix = if prefix.is_empty() { segment.to_string() } else { format!("{prefix}/{segment}") };
+        sqlx::query(
+            r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, true, 0, $5, $6, $6)
+               ON CONFLICT (username, path) DO NOTHING"#,
+        )
+        .bind(Uuid::new_v4())
+        .bind(username)
+        .bind(&prefix)
+        .bind(segment)
+        .bind(Some("inode/directory".to_string()))
+        .bind(now)
+        .execute(&state.pool)
+        .await
+        .map_err(FileError::from)
+        .map_err(file_error)?;
+    }
+    Ok(())
+}
+
 /// Внутренняя модель для SQLx.
 #[derive(Debug, FromRow)]
 struct FileRow {
@@ -204,9 +263,10 @@ pub async fn list_files(
             if exists == 0 {
                 let cat_id = Uuid::new_v4();
                 let now = Utc::now().timestamp();
-                sqlx::query(
+                let inserted = sqlx::query(
                     r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, created_at, updated_at)
-                       VALUES ($1, $2, $3, $4, true, 0, $5, $6, $6)"#,
+                       VALUES ($1, $2, $3, $4, true, 0, $5, $6, $6)
+                       ON CONFLICT (username, path) DO NOTHING"#,
                 )
                 .bind(cat_id)
                 .bind(&username)
@@ -219,16 +279,18 @@ pub async fn list_files(
                 .map_err(FileError::from)
                 .map_err(file_error)?;
 
-                files.push(FileInfo {
-                    id: cat_id.to_string(),
-                    path: cat_path.to_string(),
-                    name: cat_name.to_string(),
-                    is_dir: true,
-                    size_bytes: 0,
-                    mime_type: Some("inode/directory".to_string()),
-                    created_at: fmt_ts(now),
-                    updated_at: fmt_ts(now),
-                });
+                if inserted.rows_affected() == 1 {
+                    files.push(FileInfo {
+                        id: cat_id.to_string(),
+                        path: cat_path.to_string(),
+                        name: cat_name.to_string(),
+                        is_dir: true,
+                        size_bytes: 0,
+                        mime_type: Some("inode/directory".to_string()),
+                        created_at: fmt_ts(now),
+                        updated_at: fmt_ts(now),
+                    });
+                }
             }
             // If the category already exists, it was already returned by the
             // initial SELECT query above — don't push a duplicate.
@@ -427,7 +489,9 @@ pub async fn upload_file(
             format!("{dest_dir}/{fname}")
         };
         let clean_path = sanitize_path(&final_path).map_err(from_file_error)?;
-        let disk_path = user_root(&username).join(&clean_path);
+        let disk_path = storage_path(&username, &clean_path).await?;
+
+        ensure_parent_directories(&state, &username, &clean_path).await?;
 
         if let Some(parent) = disk_path.parent() {
             tokio::fs::create_dir_all(parent)
@@ -554,7 +618,7 @@ pub async fn download_file(
         .or_else(|| guess_mime(&name).map(|s| s.to_string()))
         .unwrap_or_else(|| "application/octet-stream".to_string());
 
-    let disk_path = user_root(&username).join(&path);
+    let disk_path = storage_path(&username, &path).await?;
     let file = tokio::fs::File::open(&disk_path)
         .await
         .map_err(FileError::from)
@@ -614,7 +678,7 @@ pub async fn view_file(
         .or_else(|| guess_mime(&name).map(|s| s.to_string()))
         .unwrap_or_else(|| "application/octet-stream".to_string());
 
-    let disk_path = user_root(&username).join(&path);
+    let disk_path = storage_path(&username, &path).await?;
     let mut file = tokio::fs::File::open(&disk_path)
         .await
         .map_err(FileError::from)
@@ -664,7 +728,7 @@ pub async fn view_file(
 }
 
 fn parse_range(range_header: &str, total_size: i64) -> Option<(u64, u64)> {
-    if !range_header.starts_with("bytes=") {
+    if total_size <= 0 || !range_header.starts_with("bytes=") {
         return None;
     }
     let range_str = &range_header[6..];
@@ -675,7 +739,8 @@ fn parse_range(range_header: &str, total_size: i64) -> Option<(u64, u64)> {
     } else {
         end_str.parse().ok()?
     };
-    Some((start, end.min(total_size as u64 - 1)))
+    let end = end.min(total_size as u64 - 1);
+    (start <= end && start < total_size as u64).then_some((start, end))
 }
 
 fn percent_encode(input: &str) -> String {
@@ -689,6 +754,23 @@ fn percent_encode(input: &str) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_range;
+
+    #[test]
+    fn rejects_invalid_or_empty_ranges() {
+        assert_eq!(parse_range("bytes=0-", 0), None);
+        assert_eq!(parse_range("bytes=100-", 100), None);
+        assert_eq!(parse_range("bytes=9-2", 10), None);
+    }
+
+    #[test]
+    fn clamps_open_ended_ranges() {
+        assert_eq!(parse_range("bytes=5-", 10), Some((5, 9)));
+    }
 }
 
 /// DELETE /files/delete?path=<path>
@@ -714,34 +796,32 @@ pub async fn delete_file(
         return Err(file_error(FileError::not_found(&path)));
     }
 
-    let root = user_root(&username);
-    let disk_path = root.join(&path);
+    let disk_path = storage_path(&username, &path).await?;
 
-    // Delete from DB: the row + any children (for directories)
-    let pattern = format!("{path}%");
+    // Remove the filesystem object first. If a previous interrupted operation
+    // left only stale metadata, removing that metadata is still a successful
+    // delete from the user's perspective.
+    match tokio::fs::symlink_metadata(&disk_path).await {
+        Ok(metadata) if metadata.is_dir() => tokio::fs::remove_dir_all(&disk_path).await,
+        Ok(_) => tokio::fs::remove_file(&disk_path).await,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+    .map_err(FileError::from)
+    .map_err(file_error)?;
+
+    // Delete the node and only its descendants. `path%` would also delete
+    // unrelated siblings such as `photos` and `photoshop`.
     sqlx::query(
         r#"DELETE FROM user_files WHERE username = $1 AND (path = $2 OR path LIKE $3)"#,
     )
     .bind(&username)
     .bind(&path)
-    .bind(&pattern)
+    .bind(format!("{path}/%"))
     .execute(&state.pool)
     .await
     .map_err(FileError::from)
     .map_err(file_error)?;
-
-    // Delete from disk
-    if disk_path.is_dir() {
-        tokio::fs::remove_dir_all(&disk_path)
-            .await
-            .map_err(FileError::from)
-            .map_err(file_error)?;
-    } else {
-        tokio::fs::remove_file(&disk_path)
-            .await
-            .map_err(FileError::from)
-            .map_err(file_error)?;
-    }
 
     // Broadcast file change via WebSocket
     state.broadcast_push(&username, serde_json::json!(WsPush::file_deleted(&path)));
@@ -758,6 +838,9 @@ pub async fn rename_file(
     let username = require_username(&state, &headers).await?;
     let from = sanitize_path(&req.from).map_err(from_file_error)?;
     let to = sanitize_path(&req.to).map_err(from_file_error)?;
+    if from == to || to.starts_with(&(from.clone() + "/")) {
+        return Err(file_error(FileError::invalid_path(&to)));
+    }
 
     let row: Option<(String, String, bool, i64, Option<String>)> = sqlx::query_as(
         r#"SELECT id::text, name, is_dir, size_bytes, mime_type FROM user_files
@@ -788,9 +871,8 @@ pub async fn rename_file(
         return Err(file_error(FileError::conflict(&to)));
     }
 
-    let root = user_root(&username);
-    let disk_from = root.join(&from);
-    let disk_to = root.join(&to);
+    let disk_from = storage_path(&username, &from).await?;
+    let disk_to = storage_path(&username, &to).await?;
 
     if let Some(parent) = disk_to.parent() {
         tokio::fs::create_dir_all(parent)
@@ -804,29 +886,36 @@ pub async fn rename_file(
         .map_err(FileError::from)
         .map_err(file_error)?;
 
-    // Update DB: update the row AND children (directory rename)
+    ensure_parent_directories(&state, &username, &to).await?;
+
+    // Update the node and its descendants. The old version updated only
+    // descendants, leaving the renamed directory missing from listings.
     let now = Utc::now().timestamp();
-    let old_prefix = if is_dir { format!("{from}/") } else { from.clone() };
-    let new_prefix = if is_dir { format!("{to}/") } else { to.clone() };
+    let old_prefix = format!("{from}/");
+    let new_prefix = format!("{to}/");
+    let new_name = split_parent(&to)
+        .map(|(_, n)| n.to_string())
+        .unwrap_or_else(|| to.clone());
 
     sqlx::query(
         r#"UPDATE user_files
-           SET path = REPLACE(path, $1, $2), updated_at = $3
-           WHERE username = $4 AND path LIKE $5"#,
+           SET path = CASE WHEN path = $1 THEN $2 ELSE $3 || SUBSTRING(path FROM CHAR_LENGTH($4) + 1) END,
+               name = CASE WHEN path = $1 THEN $5 ELSE name END,
+               updated_at = $6
+           WHERE username = $7 AND (path = $1 OR path LIKE $8)"#,
     )
-    .bind(&old_prefix)
+    .bind(&from)
+    .bind(&to)
     .bind(&new_prefix)
+    .bind(&old_prefix)
+    .bind(&new_name)
     .bind(now)
     .bind(&username)
-    .bind(format!("{old_prefix}%"))
+    .bind(format!("{from}/%"))
     .execute(&state.pool)
     .await
     .map_err(FileError::from)
     .map_err(file_error)?;
-
-    let new_name = split_parent(&to)
-        .map(|(_, n)| n.to_string())
-        .unwrap_or_else(|| to.clone());
 
     let result = FileInfo {
         id,
@@ -863,6 +952,9 @@ pub async fn copy_file(
     let username = require_username(&state, &headers).await?;
     let from = sanitize_path(&req.from).map_err(from_file_error)?;
     let to = sanitize_path(&req.to).map_err(from_file_error)?;
+    if from == to || to.starts_with(&(from.clone() + "/")) {
+        return Err(file_error(FileError::invalid_path(&to)));
+    }
 
     let row: Option<(String, bool, i64, Option<String>)> = sqlx::query_as(
         r#"SELECT name, is_dir, size_bytes, mime_type FROM user_files
@@ -893,9 +985,8 @@ pub async fn copy_file(
         return Err(file_error(FileError::conflict(&to)));
     }
 
-    let root = user_root(&username);
-    let disk_from = root.join(&from);
-    let disk_to = root.join(&to);
+    let disk_from = storage_path(&username, &from).await?;
+    let disk_to = storage_path(&username, &to).await?;
 
     if let Some(parent) = disk_to.parent() {
         tokio::fs::create_dir_all(parent)
@@ -916,6 +1007,7 @@ pub async fn copy_file(
             .map_err(file_error)?;
     }
 
+    ensure_parent_directories(&state, &username, &to).await?;
     let now = Utc::now().timestamp();
 
     // INSERT new DB record(s) for the copied file/directory.
@@ -924,15 +1016,20 @@ pub async fn copy_file(
         sqlx::query(
             r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, created_at, updated_at)
                SELECT gen_random_uuid(), $1,
-                      REPLACE(path, $2, $3), name, is_dir, size_bytes, mime_type, $4, $4
+                      CASE WHEN path = $2 THEN $3 ELSE $4 || SUBSTRING(path FROM CHAR_LENGTH($5) + 1) END,
+                      CASE WHEN path = $2 THEN $6 ELSE name END,
+                      is_dir, size_bytes, mime_type, $7, $7
                FROM user_files
-               WHERE username = $1 AND path LIKE $5"#,
+               WHERE username = $1 AND (path = $2 OR path LIKE $8)"#,
         )
         .bind(&username)
         .bind(&from)
         .bind(&to)
+        .bind(format!("{to}/"))
+        .bind(format!("{from}/"))
+        .bind(split_parent(&to).map(|(_, n)| n).unwrap_or(&to))
         .bind(now)
-        .bind(format!("{from}%"))
+        .bind(format!("{from}/%"))
         .execute(&state.pool)
         .await
         .map_err(FileError::from)
@@ -954,11 +1051,23 @@ pub async fn copy_file(
         .map_err(file_error)?;
     }
 
+    let destination_name = split_parent(&to)
+        .map(|(_, item_name)| item_name.to_string())
+        .unwrap_or_else(|| to.clone());
+    let result_id: String = sqlx::query_scalar(
+        r#"SELECT id::text FROM user_files WHERE username = $1 AND path = $2"#,
+    )
+    .bind(&username)
+    .bind(&to)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(FileError::from)
+    .map_err(file_error)?;
     let now_str = fmt_ts(now);
     let result = FileInfo {
-        id: Uuid::new_v4().to_string(),
+        id: result_id,
         path: to.clone(),
-        name: name.clone(),
+        name: destination_name,
         is_dir,
         size_bytes: size.max(0) as u64,
         mime_type: mime,
@@ -1016,7 +1125,8 @@ pub async fn create_dir(
         .map(|(_, n)| n.to_string())
         .unwrap_or_else(|| path.clone());
 
-    let disk_path = user_root(&username).join(&path);
+    let disk_path = storage_path(&username, &path).await?;
+    ensure_parent_directories(&state, &username, &path).await?;
     tokio::fs::create_dir_all(&disk_path)
         .await
         .map_err(FileError::from)
