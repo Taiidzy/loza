@@ -139,7 +139,7 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
     try {
       if (previewable || textable) {
         const bytes = await fileApi.downloadFile(file.path);
-        const blob = new Blob([bytes]);
+        const blob = new Blob([bytes.buffer as ArrayBuffer]);
         if (textable) {
           const text = await blob.text();
           setTextContent(text);

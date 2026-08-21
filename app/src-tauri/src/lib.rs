@@ -90,6 +90,7 @@ pub fn run() {
             calendar::update_calendar_event,
             calendar::delete_calendar_event,
             files::list_files,
+            files::search_files,
             files::get_file_info,
             files::upload_file,
             files::download_file,

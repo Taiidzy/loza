@@ -99,6 +99,7 @@ async fn main() {
             "/files",
             Router::new()
                 .route("/list", get(handlers::files::list_files))
+                .route("/search", get(handlers::files::search_files))
                 .route("/info", get(handlers::files::file_info))
                 .route("/upload", post(handlers::files::upload_file))
                 .route("/download", get(handlers::files::download_file))

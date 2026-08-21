@@ -117,6 +117,40 @@ pub async fn list_files(
         .map_err(|e| format!("PARSE_ERROR: {}", e))
 }
 
+/// `invoke("search_files", { query, path })`
+/// Searches recursively within `path` (or root if empty) for files matching the query.
+#[tauri::command]
+pub async fn search_files(
+    app: AppHandle,
+    state: tauri::State<'_, LozaState>,
+    query: String,
+    path: String,
+) -> Result<Vec<FileInfo>, String> {
+    let (token, server_url) = require_session(&app)?;
+
+    let mut url = url::Url::parse(&format!("{}/files/search", server_url))
+        .map_err(|e| format!("URL_ERROR: {}", e))?;
+    url.query_pairs_mut()
+        .append_pair("q", &query)
+        .append_pair("path", &path);
+
+    let resp = state
+        .client
+        .get(url.as_str())
+        .header("x-session-token", token)
+        .send()
+        .await
+        .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(describe_http_error(resp, "search files").await);
+    }
+
+    resp.json::<Vec<FileInfo>>()
+        .await
+        .map_err(|e| format!("PARSE_ERROR: {}", e))
+}
+
 /// `invoke("get_file_info", { path })`
 #[tauri::command]
 pub async fn get_file_info(

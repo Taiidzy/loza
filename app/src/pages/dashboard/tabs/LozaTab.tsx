@@ -115,6 +115,7 @@ export default function LozaTab() {
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [search, setSearch] = useState("");
+  const [searchResults, setSearchResults] = useState<FileInfo[] | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
@@ -123,6 +124,7 @@ export default function LozaTab() {
   const [renameValue, setRenameValue] = useState("");
   const [contextMenu, setContextMenu] = useState<{ item: FileInfo; x: number; y: number } | null>(null);
   const [previewFile, setPreviewFile] = useState<FileInfo | null>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const newMenuButtonRef = useRef<HTMLDivElement>(null);
   const [newMenuPos, setNewMenuPos] = useState<{ top: number; left: number } | null>(null);
@@ -255,6 +257,27 @@ export default function LozaTab() {
     loadFiles(currentPath);
   }, [loadFiles, currentPath]);
 
+  // ── Search with debounce ─────────────────────────────────────────────
+
+  useEffect(() => {
+    if (!search.trim()) {
+      setSearchResults(null);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        const results = await fileApi.searchFiles(search, currentPath);
+        setSearchResults(results);
+      } catch (e: any) {
+        logger.error("files", "Search failed", e);
+        setSearchResults([]);
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [search, currentPath]);
+
   useEffect(() => {
     updateNavButtons();
   }, [currentPath, updateNavButtons]);
@@ -296,11 +319,12 @@ export default function LozaTab() {
   }, [files, search]);
 
   const sorted = useMemo(() => {
-    return [...filtered].sort((a, b) => {
+    const source = searchResults !== null ? searchResults : filtered;
+    return [...source].sort((a, b) => {
       if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
       return a.name.localeCompare(b.name);
     });
-  }, [filtered]);
+  }, [filtered, searchResults]);
 
   // ── Navigation ───────────────────────────────────────────────────────
 
@@ -309,12 +333,13 @@ export default function LozaTab() {
     pushHistory(path);
     setCurrentPath(path);
     setSearch("");
+    setSearchResults(null);
     setShowNewMenu(false);
     setContextMenu(null);
     setRenameTarget(null);
     setPreviewFile(null);
     setSelectedIds(new Set());
-    setError(null); // Clear error on navigation
+    setError(null);
   }, [currentPath, pushHistory]);
 
   // ── Selection ──────────────────────────────────────────────────────────
@@ -406,6 +431,7 @@ export default function LozaTab() {
         await fileApi.deleteFile(file.path);
       }
       clearSelection();
+      loadFiles(currentPath);
     } catch (e: any) {
       setError(e.message || "Failed to delete");
     }
@@ -521,6 +547,7 @@ export default function LozaTab() {
     if (!confirm(`Удалить "${file.name}"?`)) return;
     try {
       await fileApi.deleteFile(file.path);
+      loadFiles(currentPath);
       if (previewFile?.id === file.id) setPreviewFile(null);
     } catch (e: any) {
       setError(e.message || "Failed to delete");
@@ -551,8 +578,8 @@ export default function LozaTab() {
   const hasClipboard = clipboard.current !== null;
 
   return (
-    <div className={styles.root}>
-      <aside className={styles.sidebar}>
+    <div className={`${styles.root} ${sidebarCollapsed ? styles.collapsed : ""}`}>
+      <aside className={styles.sidebar} style={{ display: sidebarCollapsed ? "none" : "flex" }}>
         <FolderTreeSidebar currentPath={currentPath} onNavigate={handleNavigate} refreshKey={currentPath} />
       </aside>
 
@@ -565,6 +592,15 @@ export default function LozaTab() {
           transition={{ duration: 0.2, delay: 0.05 }}
         >
           <div className={styles.navGroup}>
+            <motion.button
+              whileHover={{ background: "var(--color-glass-hover-strong)" }}
+              whileTap={{ scale: 0.94 }}
+              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+              className={styles.navBtn}
+              title={sidebarCollapsed ? "Показать боковую панель" : "Скрыть боковую панель"}
+            >
+              {sidebarCollapsed ? <FolderOpen size={15} /> : <ChevronRight size={15} style={{ transform: "rotate(180deg)" }} />}
+            </motion.button>
             <motion.button
               whileHover={{ background: "var(--color-glass-hover-strong)" }}
               whileTap={{ scale: 0.94 }}
@@ -606,29 +642,32 @@ export default function LozaTab() {
             </motion.button>
           </div>
 
-          <div className={styles.breadcrumbs}>
-            <AnimatePresence mode="wait">
-              {breadcrumbs.map((crumb, idx) => (
-                <motion.div
-                  key={idx}
-                  className={styles.crumb}
-                  initial={{ opacity: 0, x: -6 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: 6 }}
-                  transition={{ duration: 0.15, delay: idx * 0.03 }}
-                >
-                  {idx > 0 && <ChevronRight size={14} className={styles.crumbSep} />}
-                  <button
-                    onClick={() => handleNavigate(crumb.path)}
-                    className={`${styles.crumbBtn} ${idx === breadcrumbs.length - 1 ? styles.crumbActive : ""}`}
-                    title={crumb.path || "Мой диск"}
+          {/* Breadcrumbs - scrollable container */}
+          <div className={styles.breadcrumbsContainer}>
+            <div className={styles.breadcrumbs}>
+              <AnimatePresence mode="wait">
+                {breadcrumbs.map((crumb, idx) => (
+                  <motion.div
+                    key={idx}
+                    className={styles.crumb}
+                    initial={{ opacity: 0, x: -6 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 6 }}
+                    transition={{ duration: 0.15, delay: idx * 0.03 }}
                   >
-                    {idx === 0 && <Home size={14} />}
-                    {crumb.name}
-                  </button>
-                </motion.div>
-              ))}
-            </AnimatePresence>
+                    {idx > 0 && <ChevronRight size={14} className={styles.crumbSep} />}
+                    <button
+                      onClick={() => handleNavigate(crumb.path)}
+                      className={`${styles.crumbBtn} ${idx === breadcrumbs.length - 1 ? styles.crumbActive : ""}`}
+                      title={crumb.path || "Мой диск"}
+                    >
+                      {idx === 0 && <Home size={14} />}
+                      {crumb.name}
+                    </button>
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            </div>
           </div>
 
           <div className={styles.toolbarRight}>

@@ -125,6 +125,13 @@ pub struct ListQuery {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct SearchQuery {
+    pub q: String,
+    #[serde(default)]
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct FileQuery {
     pub path: String,
 }
@@ -154,11 +161,17 @@ pub async fn list_files(
 
     let files: Vec<FileInfo> = if dir_prefix.is_empty() {
         let rows: Vec<FileRow> = sqlx::query_as(
-            r#"SELECT id::text, path, name, is_dir, size_bytes, mime_type, created_at, updated_at
-               FROM user_files
-               WHERE username = $1
-                 AND path NOT LIKE $2
-               ORDER BY (CASE WHEN is_dir THEN 0 ELSE 1 END), name"#,
+            r#"SELECT fr.id::text, fr.path, fr.name, fr.is_dir,
+                   CASE WHEN fr.is_dir THEN COUNT(child.path) ELSE fr.size_bytes END AS size_bytes,
+                   fr.mime_type, fr.created_at, fr.updated_at
+               FROM user_files fr
+               LEFT JOIN user_files child ON child.username = fr.username
+                 AND child.path LIKE fr.path || '/%'
+                 AND child.path NOT LIKE fr.path || '/%/%'
+               WHERE fr.username = $1
+                 AND fr.path NOT LIKE $2
+               GROUP BY fr.id, fr.path, fr.name, fr.is_dir, fr.size_bytes, fr.mime_type, fr.created_at, fr.updated_at
+               ORDER BY (CASE WHEN fr.is_dir THEN 0 ELSE 1 END), fr.name"#,
         )
         .bind(&username)
         .bind("%/%")
@@ -232,12 +245,18 @@ pub async fn list_files(
         files
     } else {
         let rows: Vec<FileRow> = sqlx::query_as(
-            r#"SELECT id::text, path, name, is_dir, size_bytes, mime_type, created_at, updated_at
-               FROM user_files
-               WHERE username = $1
-                 AND path LIKE $2
-                 AND path NOT LIKE $3
-               ORDER BY (CASE WHEN is_dir THEN 0 ELSE 1 END), name"#,
+            r#"SELECT fr.id::text, fr.path, fr.name, fr.is_dir,
+                   CASE WHEN fr.is_dir THEN COUNT(child.path) ELSE fr.size_bytes END AS size_bytes,
+                   fr.mime_type, fr.created_at, fr.updated_at
+               FROM user_files fr
+               LEFT JOIN user_files child ON child.username = fr.username
+                 AND child.path LIKE fr.path || '/%'
+                 AND child.path NOT LIKE fr.path || '/%/%'
+               WHERE fr.username = $1
+                 AND fr.path LIKE $2
+                 AND fr.path NOT LIKE $3
+               GROUP BY fr.id, fr.path, fr.name, fr.is_dir, fr.size_bytes, fr.mime_type, fr.created_at, fr.updated_at
+               ORDER BY (CASE WHEN fr.is_dir THEN 0 ELSE 1 END), fr.name"#,
         )
         .bind(&username)
         .bind(format!("{dir_prefix}%"))
@@ -251,6 +270,47 @@ pub async fn list_files(
     };
 
     Ok(Json(files))
+}
+
+/// GET /files/search?q=<query>&path=<optional dir>
+pub async fn search_files(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SearchQuery>,
+) -> Result<Json<Vec<FileInfo>>, ApiError> {
+    let username = require_username(&state, &headers).await?;
+    let q = query.q;
+
+    let dir_prefix = if query.path.is_empty() {
+        String::new()
+    } else {
+        let sanitized = sanitize_path(&query.path).map_err(from_file_error)?;
+        if sanitized.ends_with('/') {
+            sanitized
+        } else {
+            format!("{sanitized}/")
+        }
+    };
+
+    let pattern = format!("{dir_prefix}%");
+
+    let rows: Vec<FileRow> = sqlx::query_as(
+        r#"SELECT id::text, path, name, is_dir, size_bytes, mime_type, created_at, updated_at
+           FROM user_files
+           WHERE username = $1
+             AND path LIKE $2
+             AND name ILIKE $3
+           ORDER BY (CASE WHEN is_dir THEN 0 ELSE 1 END), name"#,
+    )
+    .bind(&username)
+    .bind(&pattern)
+    .bind(format!("%{}%", q))
+    .fetch_all(&state.pool)
+    .await
+    .map_err(FileError::from)
+    .map_err(file_error)?;
+
+    Ok(Json(rows.into_iter().map(FileInfo::from).collect()))
 }
 
 /// GET /files/info?path=<path>

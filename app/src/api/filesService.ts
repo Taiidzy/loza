@@ -10,6 +10,11 @@ export class FileApiService {
     return await invoke<FileInfo[]>("list_files", { path });
   }
 
+  async searchFiles(query: string, path: string = ""): Promise<FileInfo[]> {
+    logger.info("files", "invoke(search_files)", { query, path });
+    return await invoke<FileInfo[]>("search_files", { query, path });
+  }
+
   async getFileInfo(path: string): Promise<FileInfo> {
     logger.info("files", "invoke(get_file_info)", { path });
     return await invoke<FileInfo>("get_file_info", { path });
