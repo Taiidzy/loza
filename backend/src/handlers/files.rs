@@ -177,7 +177,6 @@ pub async fn list_files(
             ("other", "Прочее", ""),
         ];
 
-        let now = Utc::now().timestamp();
         for (cat_path, cat_name, _mime_prefix) in categories {
             let exists = sqlx::query_scalar::<_, i64>(
                 r#"SELECT COUNT(*) FROM user_files WHERE username = $1 AND path = $2 AND is_dir = true"#,
@@ -191,9 +190,10 @@ pub async fn list_files(
 
             if exists == 0 {
                 let cat_id = Uuid::new_v4();
+                let now = Utc::now().timestamp();
                 sqlx::query(
                     r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, created_at, updated_at)
-                       VALUES ($1, $2, $3, $4, true, 0, $5, $6, $7)"#,
+                       VALUES ($1, $2, $3, $4, true, 0, $5, $6, $6)"#,
                 )
                 .bind(cat_id)
                 .bind(&username)
@@ -201,23 +201,24 @@ pub async fn list_files(
                 .bind(cat_name)
                 .bind(Some("inode/directory".to_string()))
                 .bind(now)
-                .bind(now)
                 .execute(&state.pool)
                 .await
                 .map_err(FileError::from)
                 .map_err(file_error)?;
-            }
 
-            files.push(FileInfo {
-                id: Uuid::new_v4().to_string(),
-                path: cat_path.to_string(),
-                name: cat_name.to_string(),
-                is_dir: true,
-                size_bytes: 0,
-                mime_type: Some("inode/directory".to_string()),
-                created_at: fmt_ts(now),
-                updated_at: fmt_ts(now),
-            });
+                files.push(FileInfo {
+                    id: cat_id.to_string(),
+                    path: cat_path.to_string(),
+                    name: cat_name.to_string(),
+                    is_dir: true,
+                    size_bytes: 0,
+                    mime_type: Some("inode/directory".to_string()),
+                    created_at: fmt_ts(now),
+                    updated_at: fmt_ts(now),
+                });
+            }
+            // If the category already exists, it was already returned by the
+            // initial SELECT query above — don't push a duplicate.
         }
 
         use std::cmp::Ordering;

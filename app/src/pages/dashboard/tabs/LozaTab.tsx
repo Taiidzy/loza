@@ -8,7 +8,7 @@ import { formatBytes } from "../../../shared/utils/serverStorage";
 import {
   Folder, File as FileIcon, FileText, Image as ImageIcon, Film, Music, Archive, Code2,
   Search, ChevronRight, Home, Grid3x3, List, Upload, Download,
-  MoreVertical, FolderPlus, Edit3, Copy, Trash2,
+  MoreVertical, FolderPlus, Edit3, Copy, Trash2, Plus,
   ArrowLeft, ArrowRight, ArrowUp, RefreshCw,
   Eye, Share2, FolderOpen, Scissors, ClipboardPaste,
 } from "lucide-react";
@@ -691,7 +691,7 @@ export default function LozaTab() {
                   className={styles.navBtn}
                   title="Создать"
                 >
-                  <FolderPlus size={15} />
+                  <Plus size={15} />
                 </motion.button>
               </div>
               {showNewMenu && newMenuPos && (
@@ -722,16 +722,16 @@ export default function LozaTab() {
                     <motion.button
                       whileHover={{ background: "var(--color-glass-hover)" }}
                       onClick={() => handleNewFile("folder")}
-                      style={{ padding: "6px 10px", textAlign: "left", fontSize: 12, background: "transparent", border: "none", color: PRIMARY, cursor: "pointer", borderRadius: "var(--radius-sm)" }}
+                      style={{ padding: "6px 10px", textAlign: "left", fontSize: 12, background: "transparent", border: "none", color: PRIMARY, cursor: "pointer", borderRadius: "var(--radius-sm)", display: "flex", alignItems: "center", gap: 6 }}
                     >
-                      <FolderPlus size={12} style={{ marginRight: 6 }} /> Папка
+                      <FolderPlus size={12} /> Папка
                     </motion.button>
                     <motion.button
                       whileHover={{ background: "var(--color-glass-hover)" }}
                       onClick={() => handleNewFile("file")}
-                      style={{ padding: "6px 10px", textAlign: "left", fontSize: 12, background: "transparent", border: "none", color: PRIMARY, cursor: "pointer", borderRadius: "var(--radius-sm)" }}
+                      style={{ padding: "6px 10px", textAlign: "left", fontSize: 12, background: "transparent", border: "none", color: PRIMARY, cursor: "pointer", borderRadius: "var(--radius-sm)", display: "flex", alignItems: "center", gap: 6 }}
                     >
-                      <FileText size={12} style={{ marginRight: 6 }} /> Файл
+                      <FileText size={12} /> Файл
                     </motion.button>
                   </motion.div>
                   <div style={{ position: "fixed", inset: 0, zIndex: 1 }} onClick={() => setShowNewMenu(false)} />
@@ -751,8 +751,8 @@ export default function LozaTab() {
 
             <div className={styles.viewToggle}>
               <motion.button
-                whileHover={{ background: viewMode === "grid" ? "var(--color-accent)" : "var(--color-glass-hover-strong)" }}
-                whileTap={{ scale: 0.92 }}
+                whileHover={viewMode === "grid" ? undefined : { background: "var(--color-glass-hover-strong)" }}
+                whileTap={viewMode === "grid" ? undefined : { scale: 0.92 }}
                 className={`${styles.viewBtn} ${viewMode === "grid" ? styles.viewBtnActive : ""}`}
                 onClick={() => setViewMode("grid")}
                 title="Сетка"
@@ -760,8 +760,8 @@ export default function LozaTab() {
                 <Grid3x3 size={15} />
               </motion.button>
               <motion.button
-                whileHover={{ background: viewMode === "list" ? "var(--color-accent)" : "var(--color-glass-hover-strong)" }}
-                whileTap={{ scale: 0.92 }}
+                whileHover={viewMode === "list" ? undefined : { background: "var(--color-glass-hover-strong)" }}
+                whileTap={viewMode === "list" ? undefined : { scale: 0.92 }}
                 className={`${styles.viewBtn} ${viewMode === "list" ? styles.viewBtnActive : ""}`}
                 onClick={() => setViewMode("list")}
                 title="Список"
