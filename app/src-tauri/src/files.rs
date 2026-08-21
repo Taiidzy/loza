@@ -142,8 +142,9 @@ pub async fn get_file_info(
         .map_err(|e| format!("PARSE_ERROR: {}", e))
 }
 
-/// `invoke("upload_file", { path, filename, data })`
+/// `invoke("upload_file", { path, filename, data, overwrite? })`
 /// `data` is a `Vec<u8>` containing the file content.
+/// `overwrite` (optional) - if true, replaces existing file.
 #[tauri::command]
 pub async fn upload_file(
     app: AppHandle,
@@ -151,11 +152,13 @@ pub async fn upload_file(
     path: String,
     filename: String,
     data: Vec<u8>,
+    overwrite: Option<bool>,
 ) -> Result<FileInfo, String> {
     let (token, server_url) = require_session(&app)?;
 
     let form = reqwest::multipart::Form::new()
         .text("path", path)
+        .text("overwrite", overwrite.unwrap_or(false).to_string())
         .part(
             "file",
             reqwest::multipart::Part::bytes(data)

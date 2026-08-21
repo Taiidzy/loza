@@ -205,7 +205,24 @@ export default function LozaTab() {
   useLayoutEffect(() => {
     if (showNewMenu && newMenuButtonRef.current) {
       const rect = newMenuButtonRef.current.getBoundingClientRect();
-      setNewMenuPos({ top: rect.bottom + 8, left: rect.left });
+      const menuWidth = 180;
+      const menuHeight = 80;
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      
+      let left = rect.left;
+      let top = rect.bottom + 8;
+      
+      if (left + menuWidth > viewportWidth - 16) {
+        left = viewportWidth - menuWidth - 16;
+      }
+      if (left < 16) left = 16;
+      if (top + menuHeight > viewportHeight - 16) {
+        top = rect.top - menuHeight - 8;
+      }
+      if (top < 16) top = 16;
+      
+      setNewMenuPos({ top, left });
     } else {
       setNewMenuPos(null);
     }
@@ -585,49 +602,57 @@ export default function LozaTab() {
               <EmptyState title={search ? "Ничего не найдено" : "Папка пуста"} sub={search ? `По запросу «${search}» ничего нет` : "Здесь пока нет файлов"} />
             </motion.div>
           ) : viewMode === "grid" ? (
-            <motion.div className={styles.grid} initial="hide" animate="show">
-              {sorted.map((item, i) => (
-                <motion.div
-                  key={item.id}
-                  initial={{ opacity: 0, y: 8, scale: 0.96 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.96 }}
-                  transition={{ duration: 0.15, delay: i * 0.02 }}
-                >
-                  <GridItem item={item} selected={selectedId === item.id}
-                    onClick={() => setSelectedId(item.id)}
-                    onDoubleClick={() => handleDoubleClick(item)}
-                    onContextMenu={(e) => handleContextMenu(e, item)}
-                    onView={() => setPreviewFile(item)} />
-                </motion.div>
-              ))}
-            </motion.div>
+            <AnimatePresence mode="popLayout">
+              <motion.div className={styles.grid} layout>
+                {sorted.map((item, _i) => (
+                  <motion.div
+                    key={item.id}
+                    layoutId={item.id}
+                    initial={{ opacity: 0, scale: 0.96 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.96 }}
+                    transition={{ duration: 0.18, ease: "easeOut" }}
+                    style={{ willChange: "transform, opacity" }}
+                  >
+                    <GridItem item={item} selected={selectedId === item.id}
+                      onClick={() => setSelectedId(item.id)}
+                      onDoubleClick={() => handleDoubleClick(item)}
+                      onContextMenu={(e) => handleContextMenu(e, item)}
+                      onView={() => setPreviewFile(item)} />
+                  </motion.div>
+                ))}
+              </motion.div>
+            </AnimatePresence>
           ) : (
-            <motion.div className={styles.list} initial="hide" animate="show">
-              <div className={styles.listHead}>
-                <div>Имя</div>
-                <div>Изменён</div>
-                <div>Размер</div>
-                <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                  <MoreVertical size={14} style={{ color: MUTED }} />
+            <AnimatePresence mode="popLayout">
+              <motion.div className={styles.list} layout>
+                <div className={styles.listHead}>
+                  <div>Имя</div>
+                  <div>Изменён</div>
+                  <div>Размер</div>
+                  <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                    <MoreVertical size={14} style={{ color: MUTED }} />
+                  </div>
                 </div>
-              </div>
-              {sorted.map((item, i) => (
-                <motion.div
-                  key={item.id}
-                  initial={{ opacity: 0, x: -8 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: 8 }}
-                  transition={{ duration: 0.12, delay: i * 0.015 }}
-                >
-                  <ListItem item={item} selected={selectedId === item.id}
-                    onClick={() => setSelectedId(item.id)}
-                    onDoubleClick={() => handleDoubleClick(item)}
-                    onContextMenu={(e) => handleContextMenu(e, item)}
-                    onView={() => setPreviewFile(item)} />
-                </motion.div>
-              ))}
-            </motion.div>
+                {sorted.map((item) => (
+                  <motion.div
+                    key={item.id}
+                    layoutId={item.id}
+                    initial={{ opacity: 0, x: -8 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 8 }}
+                    transition={{ duration: 0.15, ease: "easeOut" }}
+                    style={{ willChange: "transform, opacity" }}
+                  >
+                    <ListItem item={item} selected={selectedId === item.id}
+                      onClick={() => setSelectedId(item.id)}
+                      onDoubleClick={() => handleDoubleClick(item)}
+                      onContextMenu={(e) => handleContextMenu(e, item)}
+                      onView={() => setPreviewFile(item)} />
+                  </motion.div>
+                ))}
+              </motion.div>
+            </AnimatePresence>
           )}
 
           <input ref={fileInputRef} type="file" multiple style={{ display: "none" }}
@@ -807,10 +832,23 @@ function ContextMenu({
   onOpen: () => void; onPreview: () => void;
   onMove: () => void; onCopy: () => void;
 }) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menuRect, setMenuRect] = useState<DOMRect | null>(null);
+
+  useLayoutEffect(() => {
+    if (menuRef.current) {
+      setMenuRect(menuRef.current.getBoundingClientRect());
+    }
+  }, []);
+
   const popupStyle: React.CSSProperties = {
     position: "fixed",
-    top: Math.min(y, window.innerHeight - 320),
-    left: Math.min(x, window.innerWidth - 240),
+    top: menuRect
+      ? Math.min(y, window.innerHeight - menuRect.height - 16)
+      : Math.min(y, window.innerHeight - 320),
+    left: menuRect
+      ? Math.min(x, window.innerWidth - menuRect.width - 16)
+      : Math.min(x, window.innerWidth - 240),
     background: "var(--color-glass-surface)",
     border: "1px solid var(--color-glass-border)",
     borderRadius: "var(--radius-sm)",
@@ -884,6 +922,7 @@ function ContextMenu({
   return (
     <>
       <motion.div
+        ref={menuRef}
         style={popupStyle}
         initial={{ opacity: 0, scale: 0.92, y: -4 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -1047,70 +1086,69 @@ function GridItem({
   );
 
   return (
-    <motion.div
+    <div
       className={`${styles.gridItem} ${selected ? styles.gridItemSelected : ""}`}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
       onContextMenu={onContextMenu}
-      layoutId={item.id}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 8,
+        textAlign: "center",
+        position: "relative",
+        overflow: "hidden",
+      }}
     >
-      <motion.div
+      <div
         className={styles.gridThumb}
         style={{
           width: 72, height: 72, borderRadius: "var(--radius-md)",
           "--thumb-color": color,
+          display: "grid",
+          placeItems: "center",
+          position: "relative",
+          transition: "transform 0.15s, box-shadow 0.15s",
         } as React.CSSProperties}
-        whileHover={{ scale: 1.03, boxShadow: "0 4px 14px rgba(0,0,0,0.25)" }}
-        transition={{ duration: 0.15 }}
+        onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.03)"; e.currentTarget.style.boxShadow = "0 4px 14px rgba(0,0,0,0.25)"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.boxShadow = "none"; }}
       >
         <Icon size={34} strokeWidth={1.3} />
         {item.isDir && item.sizeBytes && item.sizeBytes > 0 && (
-          <motion.span
+          <span
             className={styles.typeBadge}
             style={{ background: "rgba(96,165,250,0.18)", color: "#60a5fa" }}
-            initial={{ opacity: 0, scale: 0.8 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ duration: 0.15, delay: 0.05 }}
           >
             {item.sizeBytes}
-          </motion.span>
+          </span>
         )}
-      </motion.div>
-      <motion.div
-        className={styles.gridName}
-        title={item.name}
-        style={{ fontSize: 13 }}
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.15, delay: 0.05 }}
-      >
+      </div>
+      <div className={styles.gridName} title={item.name} style={{ fontSize: 13, width: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
         {item.name}
-      </motion.div>
-      <motion.div
-        className={styles.gridMeta}
-        style={{ fontSize: 11 }}
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.15, delay: 0.07 }}
-      >
+      </div>
+      <div className={styles.gridMeta} style={{ fontSize: 11 }}>
         {item.isDir ? `${item.sizeBytes || 0} эл.` : formatBytes(item.sizeBytes)}
-      </motion.div>
+      </div>
       {!item.isDir && isPreviewable && (
-        <motion.button
+        <button
           onClick={(e) => { e.stopPropagation(); onView(); }}
           className={styles.gridPreviewBtn}
           title="Просмотр"
-          initial={{ opacity: 0, scale: 0.85 }}
-          animate={{ opacity: 1, scale: 1 }}
-          exit={{ opacity: 0, scale: 0.85 }}
-          transition={{ duration: 0.15, delay: 0.08 }}
-          whileHover={{ background: "rgba(255,255,255,0.12)", scale: 1.08 }}
-          whileTap={{ scale: 0.9 }}
+          style={{
+            opacity: 1,
+            transform: "scale(1)",
+            transition: "opacity 0.15s, transform 0.15s",
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.12)"; e.currentTarget.style.transform = "scale(1.08)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(0,0,0,0.3)"; e.currentTarget.style.transform = "scale(1)"; }}
+          onMouseDown={(e) => { e.currentTarget.style.transform = "scale(0.9)"; }}
+          onMouseUp={(e) => { e.currentTarget.style.transform = "scale(1.08)"; }}
         >
           <FileText size={11} />
-        </motion.button>
+        </button>
       )}
-    </motion.div>
+    </div>
   );
 }
 
@@ -1127,14 +1165,24 @@ function ListItem({
   const color = colorFor(item);
 
   return (
-    <motion.div
+    <div
       className={`${styles.listRow} ${selected ? styles.listRowSelected : ""}`}
       onClick={onClick}
       onDoubleClick={onDoubleClick}
       onContextMenu={onContextMenu}
-      layoutId={item.id}
-      whileHover={{ backgroundColor: selected ? "rgba(255,182,210,0.08)" : undefined }}
-      transition={{ duration: 0.12 }}
+      style={{
+        display: "grid",
+        gridTemplateColumns: "1fr 120px 100px 40px",
+        padding: "10px 14px",
+        fontSize: 13,
+        alignItems: "center",
+        cursor: "pointer",
+        borderBottom: "1px solid var(--color-glass-border)",
+        background: selected ? "var(--color-accent-soft)" : "var(--color-glass-surface)",
+        transition: "background 0.15s",
+      }}
+      onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = "var(--color-glass-hover)"; }}
+      onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = "var(--color-glass-surface)"; }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
         <motion.div
@@ -1179,6 +1227,6 @@ function ListItem({
           </motion.button>
         )}
       </div>
-    </motion.div>
+    </div>
   );
 }

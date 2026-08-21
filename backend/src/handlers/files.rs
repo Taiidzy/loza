@@ -152,8 +152,8 @@ pub async fn list_files(
         format!("{dir_path}/")
     };
 
-    let rows: Vec<FileRow> = if dir_prefix.is_empty() {
-        sqlx::query_as(
+    let files: Vec<FileInfo> = if dir_prefix.is_empty() {
+        let rows: Vec<FileRow> = sqlx::query_as(
             r#"SELECT id::text, path, name, is_dir, size_bytes, mime_type, created_at, updated_at
                FROM user_files
                WHERE username = $1
@@ -165,9 +165,72 @@ pub async fn list_files(
         .fetch_all(&state.pool)
         .await
         .map_err(FileError::from)
-        .map_err(file_error)?
+        .map_err(file_error)?;
+
+        let mut files = rows.into_iter().map(FileInfo::from).collect::<Vec<_>>();
+
+        let categories = [
+            ("photos", "Фото", "image/"),
+            ("video", "Видео", "video/"),
+            ("docs", "Документы", "application/"),
+            ("backups", "Бэкапы", "application/"),
+            ("other", "Прочее", ""),
+        ];
+
+        let now = Utc::now().timestamp();
+        for (cat_path, cat_name, _mime_prefix) in categories {
+            let exists = sqlx::query_scalar::<_, i64>(
+                r#"SELECT COUNT(*) FROM user_files WHERE username = $1 AND path = $2 AND is_dir = true"#,
+            )
+            .bind(&username)
+            .bind(cat_path)
+            .fetch_one(&state.pool)
+            .await
+            .map_err(FileError::from)
+            .map_err(file_error)?;
+
+            if exists == 0 {
+                let cat_id = Uuid::new_v4();
+                sqlx::query(
+                    r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, created_at, updated_at)
+                       VALUES ($1, $2, $3, $4, true, 0, $5, $6, $7)"#,
+                )
+                .bind(cat_id)
+                .bind(&username)
+                .bind(cat_path)
+                .bind(cat_name)
+                .bind(Some("inode/directory".to_string()))
+                .bind(now)
+                .bind(now)
+                .execute(&state.pool)
+                .await
+                .map_err(FileError::from)
+                .map_err(file_error)?;
+            }
+
+            files.push(FileInfo {
+                id: Uuid::new_v4().to_string(),
+                path: cat_path.to_string(),
+                name: cat_name.to_string(),
+                is_dir: true,
+                size_bytes: 0,
+                mime_type: Some("inode/directory".to_string()),
+                created_at: fmt_ts(now),
+                updated_at: fmt_ts(now),
+            });
+        }
+
+        use std::cmp::Ordering;
+
+        files.sort_by(|a, b| {
+            if a.is_dir != b.is_dir {
+                return if a.is_dir { Ordering::Less } else { Ordering::Greater };
+            }
+            a.name.cmp(&b.name)
+        });
+        files
     } else {
-        sqlx::query_as(
+        let rows: Vec<FileRow> = sqlx::query_as(
             r#"SELECT id::text, path, name, is_dir, size_bytes, mime_type, created_at, updated_at
                FROM user_files
                WHERE username = $1
@@ -181,10 +244,11 @@ pub async fn list_files(
         .fetch_all(&state.pool)
         .await
         .map_err(FileError::from)
-        .map_err(file_error)?
+        .map_err(file_error)?;
+
+        rows.into_iter().map(FileInfo::from).collect()
     };
 
-    let files: Vec<FileInfo> = rows.into_iter().map(FileInfo::from).collect();
     Ok(Json(files))
 }
 
@@ -251,7 +315,7 @@ fn categorize_by_mime(mime: Option<&str>) -> &'static str {
 }
 
 /// POST /files/upload
-/// Multipart: поле `file` (файл), поле `path` (директория назначения, опционально).
+/// Multipart: поле `file` (файл), поле `path` (директория назначения, опционально), поле `overwrite` (boolean, опционально).
 /// Для больших файлов использует потоковую запись на диск.
 pub async fn upload_file(
     State(state): State<AppState>,
@@ -262,6 +326,7 @@ pub async fn upload_file(
     let _ = sanitize_path(&username).map_err(from_file_error)?;
 
     let mut dest_dir = String::new();
+    let mut overwrite = false;
     let mut total_size: u64 = 0;
     let mut result: Option<FileInfo> = None;
 
@@ -275,6 +340,11 @@ pub async fn upload_file(
 
         if field_name == "path" {
             dest_dir = field.text().await.unwrap_or_default();
+            continue;
+        }
+
+        if field_name == "overwrite" {
+            overwrite = field.text().await.unwrap_or_default() == "true";
             continue;
         }
 
@@ -306,7 +376,23 @@ pub async fn upload_file(
         }
 
         if disk_path.try_exists().unwrap_or(false) {
-            return Err(file_error(FileError::conflict(&clean_path)));
+            if overwrite {
+                tokio::fs::remove_file(&disk_path)
+                    .await
+                    .map_err(FileError::from)
+                    .map_err(file_error)?;
+                sqlx::query(
+                    r#"DELETE FROM user_files WHERE username = $1 AND path = $2 AND is_dir = false"#,
+                )
+                .bind(&username)
+                .bind(&clean_path)
+                .execute(&state.pool)
+                .await
+                .map_err(FileError::from)
+                .map_err(file_error)?;
+            } else {
+                return Err(file_error(FileError::conflict(&clean_path)));
+            }
         }
 
         let mut file = tokio::fs::File::create(&disk_path)

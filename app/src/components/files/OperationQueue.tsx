@@ -264,13 +264,14 @@ export default function OperationQueue({
   return (
     <div style={{
       position: "fixed",
-      bottom: 20,
+      top: 80,
       right: 20,
       display: "flex",
       flexDirection: "column",
       gap: 8,
       zIndex: 1000,
       maxWidth: 360,
+      pointerEvents: "none",
     }}>
       <AnimatePresence>
         {operations.map((op) => (
@@ -330,10 +331,11 @@ function OperationCard({
         gap: 10,
         padding: "10px 12px",
         borderRadius: "var(--radius-md)",
-         background: "var(--color-popup-surface)",
+        background: "var(--color-popup-surface)",
         border: "1px solid var(--color-surface-border)",
         boxShadow: "0 4px 20px rgba(0, 0, 0, 0.2)",
         minWidth: 300,
+        pointerEvents: "auto",
       }}
     >
       <div style={{

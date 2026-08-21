@@ -20,14 +20,16 @@ export class FileApiService {
   async uploadFile(
     path: string,
     filename: string,
-    data: ArrayBuffer
+    data: ArrayBuffer,
+    overwrite = false
   ): Promise<FileInfo> {
     const dataVec = Array.from(new Uint8Array(data));
-    logger.info("files", "invoke(upload_file)", { path, filename, size: data.byteLength });
+    logger.info("files", "invoke(upload_file)", { path, filename, size: data.byteLength, overwrite });
     return await invoke<FileInfo>("upload_file", {
       path,
       filename,
       data: dataVec,
+      overwrite,
     });
   }
 
