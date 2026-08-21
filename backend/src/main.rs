@@ -92,7 +92,9 @@ async fn main() {
             put(handlers::calendar::update_event).delete(handlers::calendar::delete_event),
         )
         // File API — HTTP (не WebSocket) с поддержкой потоковой передачи.
-        // 50 MB лимит тела для файловых операций (загрузка файлов).
+        // 500 MB лимит тела для файловых операций (загрузка файлов).
+        // multipart уже стримится на диск по чанкам, лимит только для
+        // защиты от злоупотреблений.
         .nest(
             "/files",
             Router::new()
@@ -106,7 +108,7 @@ async fn main() {
                 .route("/move", post(handlers::files::move_file))
                 .route("/copy", post(handlers::files::copy_file))
                 .route("/mkdir", post(handlers::files::create_dir))
-                .layer(DefaultBodyLimit::max(50 * 1024 * 1024)),
+                .layer(DefaultBodyLimit::max(500 * 1024 * 1024)),
         )
         .layer(DefaultBodyLimit::max(16 * 1024))
         .layer(TraceLayer::new_for_http())

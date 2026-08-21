@@ -138,7 +138,8 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
 
     try {
       if (previewable || textable) {
-        const blob = await fileApi.downloadFile(file.path);
+        const bytes = await fileApi.downloadFile(file.path);
+        const blob = new Blob([bytes]);
         if (textable) {
           const text = await blob.text();
           setTextContent(text);
@@ -166,7 +167,7 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
   const handleSave = async () => {
     setSaving(true);
     try {
-      const data = new TextEncoder().encode(editorContent).buffer;
+      const data = new TextEncoder().encode(editorContent);
       const lastSlash = file.path.lastIndexOf("/");
       const parentPath = lastSlash >= 0 ? file.path.substring(0, lastSlash) : "";
       await fileApi.uploadFile(parentPath, file.name, data, true);
@@ -182,7 +183,8 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
 
   const handleDownload = async () => {
     try {
-      const blob = await fileApi.downloadFile(file.path);
+      const bytes = await fileApi.downloadFile(file.path);
+      const blob = new Blob([bytes]);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;

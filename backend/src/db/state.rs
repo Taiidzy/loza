@@ -248,6 +248,18 @@ impl AppState {
             }
         }
     }
+
+    /// Broadcast a push message to all connections of a given user.
+    pub fn broadcast_push(&self, username: &str, push: serde_json::Value) {
+        let json = match serde_json::to_string(&push) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to serialize file push message");
+                return;
+            }
+        };
+        self.broadcast_to_user(username, WsMessage::Text(json));
+    }
 }
 
 fn login_attempt_key(ip: IpAddr, username: &str) -> String {

@@ -10,15 +10,18 @@ import {
   Search, ChevronRight, Home, Grid3x3, List, Upload, Download,
   MoreVertical, FolderPlus, Edit3, Copy, Trash2,
   ArrowLeft, ArrowRight, ArrowUp, RefreshCw,
-  Eye, Share2, FolderOpen, Scissors,
+  Eye, Share2, FolderOpen, Scissors, ClipboardPaste,
 } from "lucide-react";
 import { useOperationQueue } from "../../../components/files/OperationQueue";
 import OperationQueueList from "../../../components/files/OperationQueue";
 import FileViewer from "../../../components/files/FileViewer";
+import { listen } from "@tauri-apps/api/event";
 
 const SECONDARY = "var(--color-text-secondary)";
 const PRIMARY = "var(--color-text-primary)";
 const MUTED = "var(--color-text-muted)";
+
+const FILE_CHANGE_EVENT = "file-change";
 
 const iconFor = (file: FileInfo): any => {
   if (file.isDir) return Folder;
@@ -100,6 +103,11 @@ function buildBreadcrumbs(currentPath: string): { name: string; path: string }[]
   return crumbs;
 }
 
+// ── Clipboard manager for move/copy ──────────────────────────────────────
+
+type ClipboardEntry = { operation: "move" | "copy"; paths: string[] };
+const clipboard: { current: ClipboardEntry | null } = { current: null };
+
 export default function LozaTab() {
   const [currentPath, setCurrentPath] = useState("");
   const [files, setFiles] = useState<FileInfo[]>([]);
@@ -107,7 +115,9 @@ export default function LozaTab() {
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [search, setSearch] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [canGoBack, setCanGoBack] = useState(false);
+  const [canGoForward, setCanGoForward] = useState(false);
   const [showNewMenu, setShowNewMenu] = useState(false);
   const [renameTarget, setRenameTarget] = useState<FileInfo | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -128,14 +138,21 @@ export default function LozaTab() {
   const navHistoryRef = useRef<string[]>([""]);
   const navIndexRef = useRef(0);
 
+  const { operations, uploadFile, downloadFile, cancelOperation, removeOperation, retry } = useOperationQueue();
+
+  // ── Navigation history with React state ──────────────────────────────
+
+  const updateNavButtons = useCallback(() => {
+    setCanGoBack(navIndexRef.current > 0);
+    setCanGoForward(navIndexRef.current < navHistoryRef.current.length - 1);
+  }, []);
+
   const pushHistory = useCallback((path: string) => {
     navHistoryRef.current = navHistoryRef.current.slice(0, navIndexRef.current + 1);
     navHistoryRef.current.push(path);
     navIndexRef.current = navHistoryRef.current.length - 1;
-  }, []);
-
-  const canGoBack = navIndexRef.current > 0;
-  const canGoForward = navIndexRef.current < navHistoryRef.current.length - 1;
+    updateNavButtons();
+  }, [updateNavButtons]);
 
   const goBack = () => {
     if (navIndexRef.current > 0) {
@@ -158,9 +175,44 @@ export default function LozaTab() {
     }
   };
 
-  const { operations, uploadFile, downloadFile, cancelOperation, removeOperation, retry } = useOperationQueue();
+  // ── WebSocket push listener ──────────────────────────────────────────
 
-  // Global keyboard shortcuts (capture phase — before inputs)
+  useEffect(() => {
+    const unlisten = listen(FILE_CHANGE_EVENT, (event) => {
+      const data = event.payload as { method: string; params: any };
+      if (!data?.method) return;
+
+      // Determine if the changed file is in the current directory or a parent
+      const payload = data.params || {};
+      const changedPath: string | undefined = payload.path;
+
+      // If the change is in the current directory or a subdirectory, refresh
+      if (changedPath) {
+        const shouldRefresh = !currentPath
+          || changedPath === currentPath
+          || changedPath.startsWith(currentPath + "/");
+
+        if (shouldRefresh) {
+          logger.info("files", "WS file change detected, refreshing", {
+            method: data.method,
+            changedPath,
+            currentPath,
+          });
+          loadFiles(currentPath);
+        }
+      } else {
+        // For safety, refresh if we can't determine the path
+        loadFiles(currentPath);
+      }
+    });
+
+    return () => {
+      unlisten.then((f) => f());
+    };
+  }, [currentPath]);
+
+  // ── Global keyboard shortcuts ─�───────────────────────────────────────
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
@@ -181,15 +233,18 @@ export default function LozaTab() {
     return () => window.removeEventListener("resize", onResize);
   }, [showNewMenu]);
 
+  // ── Load files ────────────────────────────────────────────────────────
+
   const loadFiles = useCallback(async (path: string) => {
     setLoading(true);
     setError(null);
-    setSelectedId(null);
+    setSelectedIds(new Set());
     try {
       const result = await fileApi.listFiles(path);
       setFiles(result);
     } catch (e: any) {
-      setError(e.message || "Failed to load files");
+      const msg = e?.message || "Failed to load files";
+      setError(msg);
       logger.error("files", "loadFiles error", e);
     } finally {
       setLoading(false);
@@ -199,6 +254,10 @@ export default function LozaTab() {
   useEffect(() => {
     loadFiles(currentPath);
   }, [loadFiles, currentPath]);
+
+  useEffect(() => {
+    updateNavButtons();
+  }, [currentPath, updateNavButtons]);
 
   const breadcrumbs = buildBreadcrumbs(currentPath);
 
@@ -228,6 +287,8 @@ export default function LozaTab() {
     }
   }, [showNewMenu]);
 
+  // ── Filtering & sorting ───────────────────────────────────────────────
+
   const filtered = useMemo(() => {
     if (!search.trim()) return files;
     const q = search.toLowerCase();
@@ -241,6 +302,8 @@ export default function LozaTab() {
     });
   }, [filtered]);
 
+  // ── Navigation ───────────────────────────────────────────────────────
+
   const handleNavigate = useCallback((path: string) => {
     if (path === currentPath) return;
     pushHistory(path);
@@ -250,7 +313,53 @@ export default function LozaTab() {
     setContextMenu(null);
     setRenameTarget(null);
     setPreviewFile(null);
+    setSelectedIds(new Set());
+    setError(null); // Clear error on navigation
   }, [currentPath, pushHistory]);
+
+  // ── Selection ──────────────────────────────────────────────────────────
+
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const handleContextMenu = (e: React.MouseEvent, item: FileInfo) => {
+    e.preventDefault();
+    setContextMenu({ item, x: e.clientX, y: e.clientY });
+  };
+
+  const handleSelection = (file: FileInfo, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const id = file.id;
+
+    if (e.ctrlKey || e.metaKey) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    } else if (e.shiftKey && selectedIds.size > 0) {
+      // Find the last selected index and select range
+      const sortedIds = sorted.map((f) => f.id);
+      const lastSelectedId = Array.from(selectedIds).pop() || id;
+      const lastIndex = sortedIds.indexOf(lastSelectedId);
+      const currentIndex = sortedIds.indexOf(id);
+
+      if (lastIndex >= 0 && currentIndex >= 0) {
+        const [start, end] = [Math.min(lastIndex, currentIndex), Math.max(lastIndex, currentIndex)];
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          for (let i = start; i <= end; i++) {
+            next.add(sortedIds[i]);
+          }
+          return next;
+        });
+      }
+    } else {
+      setSelectedIds(new Set([id]));
+    }
+  };
+
+  // ── File operations ───────────────────────────────────────────────────
 
   const handleDoubleClick = (file: FileInfo) => {
     if (file.isDir) {
@@ -287,12 +396,16 @@ export default function LozaTab() {
     e.currentTarget.classList.remove(styles.dragOver);
   };
 
-  const handleDelete = async (file: FileInfo) => {
-    if (!confirm(`Удалить "${file.name}"?`)) return;
+  const handleDeleteSelected = async () => {
+    if (selectedIds.size === 0) return;
+    const selected = sorted.filter((f) => selectedIds.has(f.id));
+    const names = selected.map((f) => f.name).join(", ");
+    if (!confirm(`Удалить ${selected.length} элемент(ов): ${names}?`)) return;
     try {
-      await fileApi.deleteFile(file.path);
-      loadFiles(currentPath);
-      if (previewFile?.id === file.id) setPreviewFile(null);
+      for (const file of selected) {
+        await fileApi.deleteFile(file.path);
+      }
+      clearSelection();
     } catch (e: any) {
       setError(e.message || "Failed to delete");
     }
@@ -303,7 +416,6 @@ export default function LozaTab() {
     const newName = renameValue.trim();
     if (!newName || newName === renameTarget.name) { setRenameTarget(null); return; }
 
-    // Build the new path: same directory, different name
     const parentPath = renameTarget.path.substring(0, renameTarget.path.lastIndexOf("/"));
     const newPath = parentPath ? `${parentPath}/${newName}` : newName;
 
@@ -331,9 +443,17 @@ export default function LozaTab() {
     }
   };
 
-  const handleDownload = (file: FileInfo) => {
+  const handleDownload = async (file: FileInfo) => {
     if (file.isDir) return;
-    downloadFile({ path: file.path, filename: file.name, sizeBytes: file.sizeBytes });
+    await downloadFile({ path: file.path, filename: file.name, sizeBytes: file.sizeBytes });
+  };
+
+  const handleDownloadSelected = async () => {
+    if (selectedIds.size === 0) return;
+    const selected = sorted.filter((f) => selectedIds.has(f.id) && !f.isDir);
+    for (const file of selected) {
+      await downloadFile({ path: file.path, filename: file.name, sizeBytes: file.sizeBytes });
+    }
   };
 
   const handleOpen = (file: FileInfo) => {
@@ -348,23 +468,63 @@ export default function LozaTab() {
     setPreviewFile(file);
   };
 
-  const handleMoveFile = (file: FileInfo) => {
-    navigator.clipboard.writeText(file.path).then(() => {
-      logger.info("files", "Path copied for move", { path: file.path });
-      setContextMenu(null);
-    });
+  // ── Move / Copy ───────────────────────────────────────────────────────
+
+  const handleCut = () => {
+    if (selectedIds.size === 0) return;
+    const selected = sorted.filter((f) => selectedIds.has(f.id));
+    clipboard.current = {
+      operation: "move",
+      paths: selected.map((f) => f.path),
+    };
+    setContextMenu(null);
+    clearSelection();
   };
 
-  const handleCopyFile = (file: FileInfo) => {
-    navigator.clipboard.writeText(file.path).then(() => {
-      logger.info("files", "Path copied", { path: file.path });
-      setContextMenu(null);
-    });
+  const handleCopy = () => {
+    if (selectedIds.size === 0) return;
+    const selected = sorted.filter((f) => selectedIds.has(f.id));
+    clipboard.current = {
+      operation: "copy",
+      paths: selected.map((f) => f.path),
+    };
+    setContextMenu(null);
+    clearSelection();
   };
 
-  const handleContextMenu = (e: React.MouseEvent, item: FileInfo) => {
-    e.preventDefault();
-    setContextMenu({ item, x: e.clientX, y: e.clientY });
+  const handlePaste = async () => {
+    if (!clipboard.current) return;
+    const { operation, paths } = clipboard.current;
+
+    try {
+      if (operation === "copy") {
+        for (const fromPath of paths) {
+          const name = fromPath.split("/").pop() || fromPath;
+          const toPath = currentPath ? `${currentPath}/${name}` : name;
+          await fileApi.copyFile(fromPath, toPath);
+        }
+      } else {
+        for (const fromPath of paths) {
+          const name = fromPath.split("/").pop() || fromPath;
+          const toPath = currentPath ? `${currentPath}/${name}` : name;
+          await fileApi.moveFile(fromPath, toPath);
+        }
+      }
+      loadFiles(currentPath);
+      clipboard.current = null;
+    } catch (e: any) {
+      setError(e.message || "Failed to paste");
+    }
+  };
+
+  const handleDelete = async (file: FileInfo) => {
+    if (!confirm(`Удалить "${file.name}"?`)) return;
+    try {
+      await fileApi.deleteFile(file.path);
+      if (previewFile?.id === file.id) setPreviewFile(null);
+    } catch (e: any) {
+      setError(e.message || "Failed to delete");
+    }
   };
 
   const handleNewFile = async (type: "folder" | "file") => {
@@ -387,6 +547,8 @@ export default function LozaTab() {
       setError(e.message || "Failed to create file");
     }
   };
+
+  const hasClipboard = clipboard.current !== null;
 
   return (
     <div className={styles.root}>
@@ -470,6 +632,56 @@ export default function LozaTab() {
           </div>
 
           <div className={styles.toolbarRight}>
+            {selectedIds.size > 0 && (
+              <>
+                <motion.button
+                  whileHover={{ background: "var(--color-glass-hover-strong)" }}
+                  whileTap={{ scale: 0.94 }}
+                  onClick={handleCut}
+                  className={styles.navBtn}
+                  title="Вырезать"
+                >
+                  <Scissors size={15} />
+                </motion.button>
+                <motion.button
+                  whileHover={{ background: "var(--color-glass-hover-strong)" }}
+                  whileTap={{ scale: 0.94 }}
+                  onClick={handleCopy}
+                  className={styles.navBtn}
+                  title="Копировать"
+                >
+                  <Copy size={15} />
+                </motion.button>
+                <motion.button
+                  whileHover={{ background: "var(--color-glass-hover-strong)" }}
+                  whileTap={{ scale: 0.94 }}
+                  onClick={handlePaste}
+                  disabled={!hasClipboard}
+                  className={styles.navBtn}
+                  title="Вставить"
+                >
+                  <ClipboardPaste size={15} />
+                </motion.button>
+                <motion.button
+                  whileHover={{ background: "var(--color-glass-hover-strong)" }}
+                  whileTap={{ scale: 0.94 }}
+                  onClick={handleDownloadSelected}
+                  className={styles.navBtn}
+                  title="Скачать выбранное"
+                >
+                  <Download size={15} />
+                </motion.button>
+                <motion.button
+                  whileHover={{ background: "rgba(255,100,100,0.12)" }}
+                  whileTap={{ scale: 0.94 }}
+                  onClick={handleDeleteSelected}
+                  className={styles.navBtn}
+                  title="Удалить выбранное"
+                >
+                  <Trash2 size={15} style={{ color: "var(--color-error)" }} />
+                </motion.button>
+              </>
+            )}
             <div style={{ position: "relative", display: "inline-block" }}>
               <div ref={newMenuButtonRef} style={{ display: "inline-block" }}>
                 <motion.button
@@ -614,8 +826,8 @@ export default function LozaTab() {
                     transition={{ duration: 0.18, ease: "easeOut" }}
                     style={{ willChange: "transform, opacity" }}
                   >
-                    <GridItem item={item} selected={selectedId === item.id}
-                      onClick={() => setSelectedId(item.id)}
+                    <GridItem item={item} selected={selectedIds.has(item.id)}
+                      onClick={(e) => handleSelection(item, e)}
                       onDoubleClick={() => handleDoubleClick(item)}
                       onContextMenu={(e) => handleContextMenu(e, item)}
                       onView={() => setPreviewFile(item)} />
@@ -644,8 +856,8 @@ export default function LozaTab() {
                     transition={{ duration: 0.15, ease: "easeOut" }}
                     style={{ willChange: "transform, opacity" }}
                   >
-                    <ListItem item={item} selected={selectedId === item.id}
-                      onClick={() => setSelectedId(item.id)}
+                    <ListItem item={item} selected={selectedIds.has(item.id)}
+                      onClick={(e) => handleSelection(item, e)}
                       onDoubleClick={() => handleDoubleClick(item)}
                       onContextMenu={(e) => handleContextMenu(e, item)}
                       onView={() => setPreviewFile(item)} />
@@ -715,8 +927,8 @@ export default function LozaTab() {
           onDelete={() => handleDelete(contextMenu.item)}
           onOpen={() => handleOpen(contextMenu.item)}
           onPreview={() => handlePreviewFile(contextMenu.item)}
-          onMove={() => handleMoveFile(contextMenu.item)}
-          onCopy={() => handleCopyFile(contextMenu.item)}
+          onMove={handleCut}
+          onCopy={handleCopy}
         />
       )}
 
@@ -1071,7 +1283,7 @@ function GridItem({
   item, selected, onClick, onDoubleClick, onContextMenu, onView,
 }: {
   item: FileInfo; selected: boolean;
-  onClick: () => void; onDoubleClick: () => void;
+  onClick: (e: React.MouseEvent) => void; onDoubleClick: () => void;
   onContextMenu: (e: React.MouseEvent) => void; onView: () => void;
 }) {
   const Icon = iconFor(item);
@@ -1111,11 +1323,9 @@ function GridItem({
           position: "relative",
           transition: "transform 0.15s, box-shadow 0.15s",
         } as React.CSSProperties}
-        onMouseEnter={(e) => { e.currentTarget.style.transform = "scale(1.03)"; e.currentTarget.style.boxShadow = "0 4px 14px rgba(0,0,0,0.25)"; }}
-        onMouseLeave={(e) => { e.currentTarget.style.transform = "scale(1)"; e.currentTarget.style.boxShadow = "none"; }}
       >
         <Icon size={34} strokeWidth={1.3} />
-        {item.isDir && item.sizeBytes && item.sizeBytes > 0 && (
+        {item.isDir && item.sizeBytes > 0 && (
           <span
             className={styles.typeBadge}
             style={{ background: "rgba(96,165,250,0.18)", color: "#60a5fa" }}
@@ -1158,7 +1368,7 @@ function ListItem({
   item, selected, onClick, onDoubleClick, onContextMenu, onView,
 }: {
   item: FileInfo; selected: boolean;
-  onClick: () => void; onDoubleClick: () => void;
+  onClick: (e: React.MouseEvent) => void; onDoubleClick: () => void;
   onContextMenu: (e: React.MouseEvent) => void; onView: () => void;
 }) {
   const Icon = iconFor(item);

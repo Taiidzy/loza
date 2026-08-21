@@ -28,12 +28,21 @@ use uuid::Uuid;
 
 use crate::{server_config, session_store};
 
-/// Tauri event name for live status updates (same as `status.rs`).
+/// Tauri event name for server status updates.
 pub const SERVER_STATUS_EVENT: &str = "server-status";
 
 /// Event emitted when a calendar event is created/updated/deleted by another
 /// connection of the same user. Payload is a stringified JSON WsPush.
 pub const CALENDAR_EVENT_PUSH_EVENT: &str = "calendar-event-pushed";
+
+/// Event emitted when files change on the server (created, deleted, renamed).
+/// Payload contains the path(s) affected and the operation type.
+pub const FILE_CHANGE_EVENT: &str = "file-change";
+
+/// Event emitted during file upload/download progress tracking.
+/// The event name suffix is the operation ID, and the payload contains
+/// the transferred bytes and total bytes.
+pub const FILE_PROGRESS_EVENT_PREFIX: &str = "file-progress-";
 
 // ─── Wire protocol types (mirror backend/src/handlers/ws.rs) ──────────────────
 
@@ -351,17 +360,25 @@ fn drain_pending_and_reconnect(
 fn handle_push(app: &AppHandle, push: &WsPush) {
     match push.method.as_str() {
         "status.update" => {
-            // Re-emit as the same Tauri event the old status listener used.
-            // The payload is the raw JSON value from params.
             let _ = app.emit(SERVER_STATUS_EVENT, push.params.clone());
             tracing::debug!("[ws_client] emitted status.update");
         }
         "calendar.event.created" | "calendar.event.updated" | "calendar.event.deleted" => {
-            // Emit as a stringified JSON so the React listener can parse it.
             if let Ok(json) = serde_json::to_string(&push) {
                 let _ = app.emit(CALENDAR_EVENT_PUSH_EVENT, json);
                 tracing::debug!("[ws_client] emitted {}", push.method);
             }
+        }
+        method @ ("file.created" | "file.deleted" | "file.renamed" | "file.updated") => {
+            // Forward file change events to the frontend as a structured payload.
+            // The frontend will listen on FILE_CHANGE_EVENT and decide whether
+            // to refresh the current directory listing.
+            let payload = serde_json::json!({
+                "method": method,
+                "params": push.params.clone(),
+            });
+            let _ = app.emit(FILE_CHANGE_EVENT, payload);
+            tracing::debug!("[ws_client] emitted {}", method);
         }
         _ => {
             tracing::debug!("[ws_client] received unknown push method: {}", push.method);

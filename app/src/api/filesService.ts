@@ -20,31 +20,32 @@ export class FileApiService {
   async uploadFile(
     path: string,
     filename: string,
-    data: ArrayBuffer,
-    overwrite = false
+    data: Uint8Array,
+    overwrite = false,
+    progressId?: string
   ): Promise<FileInfo> {
-    const dataVec = Array.from(new Uint8Array(data));
     logger.info("files", "invoke(upload_file)", { path, filename, size: data.byteLength, overwrite });
     return await invoke<FileInfo>("upload_file", {
       path,
       filename,
-      data: dataVec,
+      data,
       overwrite,
+      progressId,
     });
   }
 
   // ── Download ─────────────────────────────────────────────────────────
 
-  async downloadFile(path: string): Promise<Blob> {
+  async downloadFile(path: string, progressId?: string): Promise<Uint8Array> {
     logger.info("files", "invoke(download_file)", { path });
-    const bytes = await invoke<number[]>("download_file", { path });
-    return new Blob([new Uint8Array(bytes)]);
+    return await invoke<Uint8Array>("download_file", { path, progressId });
   }
 
   // ── View (in-memory for preview) ─────────────────────────────────────
 
   async viewFile(path: string): Promise<Blob> {
-    return await this.downloadFile(path);
+    const bytes = await this.downloadFile(path);
+    return new Blob([bytes]);
   }
 
   // ── Delete ────────────────────────────────────────────────────────────

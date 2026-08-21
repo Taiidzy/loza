@@ -7,12 +7,17 @@
 //! React видит только типизированные ответы (FileInfo, Vec<FileInfo>, bytes),
 //! а токен сессии и адрес сервера подставляются автоматически из Rust-хранилища.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
+use tokio::io::AsyncWriteExt;
 
 use crate::server_config;
 use crate::session_store;
 use crate::LozaState;
+use crate::ws_client::FILE_PROGRESS_EVENT_PREFIX;
 
 // ─── Types (mirror backend/src/models/file.rs) ─────────────────────────────────
 
@@ -142,9 +147,13 @@ pub async fn get_file_info(
         .map_err(|e| format!("PARSE_ERROR: {}", e))
 }
 
-/// `invoke("upload_file", { path, filename, data, overwrite? })`
+
+/// `invoke("upload_file", { path, filename, data, overwrite?, progressId? })`
 /// `data` is a `Vec<u8>` containing the file content.
+/// `progressId` (optional) - UUID from the frontend to correlate progress events.
 /// `overwrite` (optional) - if true, replaces existing file.
+///
+/// Emits progress events on `file-progress-{progressId}` with `{ sent, total }`.
 #[tauri::command]
 pub async fn upload_file(
     app: AppHandle,
@@ -153,15 +162,59 @@ pub async fn upload_file(
     filename: String,
     data: Vec<u8>,
     overwrite: Option<bool>,
+    progress_id: Option<String>,
 ) -> Result<FileInfo, String> {
     let (token, server_url) = require_session(&app)?;
+
+    let total = data.len() as u64;
+    let progress_id = progress_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let progress_event = format!("{}{}", FILE_PROGRESS_EVENT_PREFIX, progress_id);
+
+    let chunk_size = 512 * 1024usize;
+
+    // Use a duplex channel: a background task writes chunks and emits progress,
+    // while the receiver is wrapped in a stream for reqwest's Part::stream.
+    let (mut writer, reader) = tokio::io::duplex(data.len().min(64 * 1024 * 1024) + 1);
+
+    let sent_counter = Arc::new(AtomicU64::new(0));
+    let app_for_task = app.clone();
+    let progress_event_for_task = progress_event.clone();
+    let total_for_task = total;
+
+    let progress_handle = tokio::spawn(async move {
+        for chunk in data.chunks(chunk_size) {
+            let new_sent = sent_counter.fetch_add(chunk.len() as u64, Ordering::SeqCst) + chunk.len() as u64;
+            let _ = app_for_task.emit(
+                &progress_event_for_task,
+                serde_json::json!({ "sent": new_sent, "total": total_for_task }),
+            );
+            tracing::debug!("[upload] progress {}/{}", new_sent, total_for_task);
+            if let Err(e) = writer.write_all(chunk).await {
+                tracing::error!("[upload] write error: {}", e);
+                return;
+            }
+        }
+
+        // Emit final progress event
+        let _ = app_for_task.emit(
+            &progress_event_for_task,
+            serde_json::json!({ "sent": total_for_task, "total": total_for_task }),
+        );
+
+        let _ = writer.shutdown().await;
+    });
+
+    // Convert the DuplexStream reader into a streaming Body with progress
+    let reader_stream = tokio_util::io::ReaderStream::new(reader);
+    let body = reqwest::Body::wrap_stream(reader_stream);
 
     let form = reqwest::multipart::Form::new()
         .text("path", path)
         .text("overwrite", overwrite.unwrap_or(false).to_string())
+        .text("progressId", progress_id)
         .part(
             "file",
-            reqwest::multipart::Part::bytes(data)
+            reqwest::multipart::Part::stream(body)
                 .file_name(filename.clone()),
         );
 
@@ -174,6 +227,9 @@ pub async fn upload_file(
         .await
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
 
+    // Ensure the progress task has completed
+    progress_handle.abort();
+
     if !resp.status().is_success() {
         return Err(describe_http_error(resp, "upload file").await);
     }
@@ -183,15 +239,21 @@ pub async fn upload_file(
         .map_err(|e| format!("PARSE_ERROR: {}", e))
 }
 
-/// `invoke("download_file", { path })`
-/// Returns the raw bytes of the file.
+/// `invoke("download_file", { path, progressId? })`
+/// Returns the raw bytes of the file as a `Vec<u8>`.
+///
+/// Emits progress events on `file-progress-{progressId}` with `{ received, total }`.
 #[tauri::command]
 pub async fn download_file(
     app: AppHandle,
     state: tauri::State<'_, LozaState>,
     path: String,
+    progress_id: Option<String>,
 ) -> Result<Vec<u8>, String> {
     let (token, server_url) = require_session(&app)?;
+
+    let progress_id = progress_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let progress_event = format!("{}{}", FILE_PROGRESS_EVENT_PREFIX, progress_id);
 
     let mut url = url::Url::parse(&format!("{}/files/download", server_url))
         .map_err(|e| format!("URL_ERROR: {}", e))?;
@@ -209,10 +271,39 @@ pub async fn download_file(
         return Err(describe_http_error(resp, "download file").await);
     }
 
-    resp.bytes()
-        .await
-        .map(|b| b.to_vec())
-        .map_err(|e| format!("READ_ERROR: {}", e))
+    let total = resp.content_length().unwrap_or(0);
+    let app_for_stream = app.clone();
+    let progress_event_for_stream = progress_event.clone();
+
+    let mut body = resp;
+
+    let mut result = Vec::new();
+    let mut received: u64 = 0;
+
+    loop {
+        match body.chunk().await {
+            Ok(Some(chunk)) => {
+                received += chunk.len() as u64;
+                if total > 0 {
+                    let _ = app_for_stream.emit(
+                        &progress_event_for_stream,
+                        serde_json::json!({ "received": received, "total": total }),
+                    );
+                }
+                result.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(e) => return Err(format!("READ_ERROR: {}", e)),
+        }
+    }
+
+    // Emit final progress event
+    let _ = app.emit(
+        &progress_event,
+        serde_json::json!({ "received": total, "total": total }),
+    );
+
+    Ok(result)
 }
 
 /// `invoke("delete_file", { path })`

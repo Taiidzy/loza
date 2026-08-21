@@ -8,31 +8,13 @@ import {
   Upload, Download, X, CheckCircle, AlertCircle, Loader,
   RefreshCw,
 } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
 
-const CHUNK_SIZE = 512 * 1024; // 512KB chunks for progressive upload
+const FILE_PROGRESS_EVENT_PREFIX = "file-progress-";
 
 export function useOperationQueue() {
   const [operations, setOperations] = useState<Operation[]>([]);
   const operationsRef = useRef<Map<string, AbortController>>(new Map());
-
-  const addOperation = useCallback((op: Omit<Operation, "id" | "progress" | "transferred" | "speed" | "eta" | "status"> & { sizeBytes: number }): string => {
-    const id = crypto.randomUUID();
-    const newOp: Operation = {
-      id,
-      type: op.type,
-      filename: op.filename,
-      path: op.path,
-      sizeBytes: op.sizeBytes,
-      transferred: 0,
-      speed: 0,
-      eta: 0,
-      status: "pending",
-      progress: 0,
-      file: op.file,
-    };
-    setOperations((prev) => [...prev, newOp]);
-    return id;
-  }, []);
 
   const updateOperation = useCallback((id: string, updates: Partial<Operation>) => {
     setOperations((prev) =>
@@ -53,77 +35,45 @@ export function useOperationQueue() {
     updateOperation(id, { status: "cancelled" });
   }, [updateOperation]);
 
+  // ── Upload with real progress via Tauri events ──────────────────────
+
   const uploadFile = useCallback(async (params: {
     path: string;
     filename: string;
     file: File;
   }): Promise<void> => {
     const sizeBytes = params.file.size;
-    const id = addOperation({
+    const fileData = new Uint8Array(await params.file.arrayBuffer());
+    const progressId = crypto.randomUUID();
+    const id = progressId;
+
+    const op: Operation = {
+      id,
       type: "upload",
       filename: params.filename,
       path: params.path,
       sizeBytes,
+      transferred: 0,
+      speed: 0,
+      eta: 0,
+      status: "pending",
+      progress: 0,
       file: params.file,
-    });
-
-    const startTime = Date.now();
-
-    const controller = new AbortController();
-    operationsRef.current.set(id, controller);
+    };
+    setOperations((prev) => [...prev, op]);
 
     updateOperation(id, { status: "active" });
 
+    const unlisten = await listen(`${FILE_PROGRESS_EVENT_PREFIX}${progressId}`, (event) => {
+      const data = event.payload as { sent: number; total: number };
+      const transferred = data.sent;
+      const progress = data.total > 0 ? (transferred / data.total) * 100 : 0;
+      updateOperation(id, { transferred, progress, status: "active" });
+    });
+
     try {
-      const data = await params.file.arrayBuffer();
+      await fileApi.uploadFile(params.path, params.filename, fileData, false, progressId);
 
-      if (controller.signal.aborted) {
-        updateOperation(id, { status: "cancelled" });
-        return;
-      }
-
-      // Simulate progressive upload for large files
-      const fileData = new Uint8Array(data);
-      const chunks: Uint8Array[] = [];
-      let offset = 0;
-      while (offset < fileData.length) {
-        if (controller.signal.aborted) {
-          updateOperation(id, { status: "cancelled" });
-          return;
-        }
-        chunks.push(fileData.slice(offset, offset + CHUNK_SIZE));
-        offset += CHUNK_SIZE;
-      }
-
-      // Concatenate all chunks
-      const combined = new Uint8Array(fileData.length);
-      let pos = 0;
-      for (const chunk of chunks) {
-        if (controller.signal.aborted) {
-          updateOperation(id, { status: "cancelled" });
-          return;
-        }
-        combined.set(chunk, pos);
-        pos += chunk.length;
-
-        // Update progress
-        const now = Date.now();
-        const elapsed = now - startTime;
-        const transferred = pos;
-        const progress = Math.min(95, (transferred / sizeBytes) * 100);
-        const speed = elapsed > 0 ? (transferred / (elapsed / 1000)) : 0;
-        const eta = speed > 0 ? (sizeBytes - transferred) / speed : 0;
-
-        updateOperation(id, {
-          transferred,
-          progress,
-          speed,
-         eta,
-      });
-      }
-
-      // Final invoke
-      const result = await fileApi.uploadFile(params.path, params.filename, combined.buffer);
       updateOperation(id, {
         transferred: sizeBytes,
         progress: 100,
@@ -131,23 +81,23 @@ export function useOperationQueue() {
         eta: 0,
         status: "completed",
       });
-      logger.success("files", "Upload completed", result);
-      return;
+
+      logger.success("files", "Upload completed", { filename: params.filename });
     } catch (e: any) {
-      if (controller.signal.aborted) {
+      if (e.name === "AbortError" || e.message?.includes("aborted")) {
         updateOperation(id, { status: "cancelled" });
       } else {
         updateOperation(id, {
           status: "error",
           error: e.message || "Upload failed",
-          progress: 0,
         });
       }
       throw e;
     } finally {
+      unlisten();
       operationsRef.current.delete(id);
     }
-  }, [addOperation, updateOperation]);
+  }, [updateOperation]);
 
   const retry = useCallback(async (operation: Operation) => {
     removeOperation(operation.id);
@@ -164,46 +114,46 @@ export function useOperationQueue() {
     }
   }, [uploadFile, removeOperation]);
 
+  // ── Download with real progress via Tauri events ────────────────────
+
   const downloadFile = useCallback(async (params: {
     path: string;
     filename: string;
     sizeBytes: number;
   }): Promise<void> => {
-    const id = addOperation({
+    const id = crypto.randomUUID();
+    const progressId = id;
+    const sizeBytes = params.sizeBytes;
+
+    const op: Operation = {
+      id,
       type: "download",
       filename: params.filename,
       path: params.path,
-      sizeBytes: params.sizeBytes,
-    });
+      sizeBytes,
+      transferred: 0,
+      speed: 0,
+      eta: 0,
+      status: "pending",
+      progress: 0,
+    };
+    setOperations((prev) => [...prev, op]);
 
     const startTime = Date.now();
-    const controller = new AbortController();
-    operationsRef.current.set(id, controller);
-
     updateOperation(id, { status: "active" });
 
+    const unlisten = await listen(`${FILE_PROGRESS_EVENT_PREFIX}${progressId}`, (event) => {
+      const data = event.payload as { received: number; total: number };
+      const transferred = data.received;
+      const progress = data.total > 0 ? (transferred / data.total) * 100 : 0;
+      updateOperation(id, { transferred, progress, status: "active" });
+    });
+
     try {
-      const blob = await fileApi.downloadFile(params.path);
-
-      if (controller.signal.aborted) {
-        updateOperation(id, { status: "cancelled" });
-        return;
-      }
-
-      const sizeBytes = blob.size;
-      const now = Date.now();
-      const elapsed = now - startTime;
-      const speed = elapsed > 0 ? (sizeBytes / (elapsed / 1000)) : 0;
-
-      updateOperation(id, {
-        transferred: sizeBytes,
-        progress: 100,
-        speed,
-        eta: 0,
-        status: "completed",
-      });
+      const bytes = await fileApi.downloadFile(params.path, progressId);
 
       // Trigger browser download
+      const blob = new Blob([bytes]);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -212,8 +162,20 @@ export function useOperationQueue() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
+
+      const now = Date.now();
+      const elapsed = (now - startTime) / 1000;
+      const speed = elapsed > 0 ? sizeBytes / elapsed : 0;
+
+      updateOperation(id, {
+        transferred: bytes.byteLength,
+        progress: 100,
+        speed,
+        eta: 0,
+        status: "completed",
+      });
     } catch (e: any) {
-      if (controller.signal.aborted) {
+      if (e.name === "AbortError" || e.message?.includes("aborted")) {
         updateOperation(id, { status: "cancelled" });
       } else {
         updateOperation(id, {
@@ -223,9 +185,10 @@ export function useOperationQueue() {
       }
       throw e;
     } finally {
+      unlisten();
       operationsRef.current.delete(id);
     }
-  }, [addOperation, updateOperation]);
+  }, [updateOperation]);
 
   return {
     operations,

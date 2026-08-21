@@ -33,7 +33,7 @@ use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
 use crate::db::{storage_fs, AppState};
-use crate::handlers::auth::{ErrorResponse, require_session};
+use crate::handlers::{auth::{ErrorResponse, require_session}, ws::WsPush};
 use crate::models::{FileError, FileInfo, fmt_ts, guess_mime, sanitize_path, split_parent};
 
 type ApiError = (StatusCode, Json<ErrorResponse>);
@@ -440,7 +440,7 @@ pub async fn upload_file(
         .map_err(FileError::from)
         .map_err(file_error)?;
 
-        result = Some(FileInfo {
+        let file_info = FileInfo {
             id: file_id.to_string(),
             path: clean_path.clone(),
             name: dir_name,
@@ -449,8 +449,10 @@ pub async fn upload_file(
             mime_type: mime,
             created_at: fmt_ts(now),
             updated_at: fmt_ts(now),
-        });
-        break; // обрабатываем первый файл
+        };
+        // Broadcast file change via WebSocket for each uploaded file
+        state.broadcast_push(&username, serde_json::json!(WsPush::file_created(file_info.clone())));
+        result = Some(file_info);
     }
 
     match result {
@@ -680,6 +682,9 @@ pub async fn delete_file(
             .map_err(file_error)?;
     }
 
+    // Broadcast file change via WebSocket
+    state.broadcast_push(&username, serde_json::json!(WsPush::file_deleted(&path)));
+
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -762,7 +767,7 @@ pub async fn rename_file(
         .map(|(_, n)| n.to_string())
         .unwrap_or_else(|| to.clone());
 
-    Ok(Json(FileInfo {
+    let result = FileInfo {
         id,
         path: to.clone(),
         name: new_name,
@@ -771,7 +776,12 @@ pub async fn rename_file(
         mime_type: mime,
         created_at: fmt_ts(now),
         updated_at: fmt_ts(now),
-    }))
+    };
+
+    // Broadcast file change via WebSocket
+    state.broadcast_push(&username, serde_json::json!(WsPush::file_renamed(&from, to.clone(), is_dir, result.clone())));
+
+    Ok(Json(result))
 }
 
 /// POST /files/move  {"from": "<path>", "to": "<path>"}
@@ -884,7 +894,7 @@ pub async fn copy_file(
     }
 
     let now_str = fmt_ts(now);
-    Ok(Json(FileInfo {
+    let result = FileInfo {
         id: Uuid::new_v4().to_string(),
         path: to.clone(),
         name: name.clone(),
@@ -893,7 +903,12 @@ pub async fn copy_file(
         mime_type: mime,
         created_at: now_str.clone(),
         updated_at: now_str,
-    }))
+    };
+
+    // Broadcast file change via WebSocket
+    state.broadcast_push(&username, serde_json::json!(WsPush::file_created(result.clone())));
+
+    Ok(Json(result))
 }
 
 async fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
@@ -965,7 +980,7 @@ pub async fn create_dir(
     .map_err(file_error)?;
 
     let ts = fmt_ts(now);
-    Ok(Json(FileInfo {
+    let result = FileInfo {
         id: dir_id.to_string(),
         path: path.clone(),
         name: dir_name,
@@ -974,5 +989,10 @@ pub async fn create_dir(
         mime_type: Some("inode/directory".to_string()),
         created_at: ts.clone(),
         updated_at: ts,
-    }))
+    };
+
+    // Broadcast file change via WebSocket
+    state.broadcast_push(&username, serde_json::json!(WsPush::file_created(result.clone())));
+
+    Ok(Json(result))
 }
