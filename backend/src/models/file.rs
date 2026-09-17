@@ -46,6 +46,43 @@ pub struct CopyRequest {
     pub to: String,
 }
 
+/// One server-authoritative mutation for several selected filesystem nodes.
+/// The response deliberately contains a result per source so callers can show
+/// partial failures without inventing local filesystem state.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchRequest {
+    pub operation: BatchOperation,
+    pub paths: Vec<String>,
+    #[serde(default)]
+    pub destination: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BatchOperation {
+    Copy,
+    Move,
+    Delete,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchItemResult {
+    pub path: String,
+    pub target_path: Option<String>,
+    pub success: bool,
+    pub error: Option<String>,
+    pub file: Option<FileInfo>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchResponse {
+    pub operation: BatchOperation,
+    pub results: Vec<BatchItemResult>,
+}
+
 /// Ошибка файловой операции — транспортно-независимая, как CalendarError.
 #[derive(Debug, Clone)]
 pub struct FileError {
@@ -120,9 +157,6 @@ pub fn sanitize_path(raw: &str) -> Result<String, FileError> {
     }
     if raw.ends_with('/') {
         return Err(FileError::invalid_path(raw));
-    }
-    if raw.is_empty() {
-        return Err(FileError::new("INVALID_PATH", "Path must not be empty"));
     }
     // Reject traversal and ambiguous paths. Keep valid Unicode names intact.
     for segment in raw.split('/') {

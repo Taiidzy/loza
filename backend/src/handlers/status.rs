@@ -63,7 +63,7 @@ fn collect_storage(state: &AppState) -> StorageInfo {
     let (total_bytes, used_bytes) = match target_disk {
         Some(disk) => (
             disk.total_space(),
-            disk.total_space() - disk.available_space(),
+            disk.total_space().saturating_sub(disk.available_space()),
         ),
         None => (0, 0),
     };

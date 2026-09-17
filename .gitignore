@@ -19,6 +19,7 @@ app/src-tauri/gen/schemas/
 backend/target/
 backend/.env
 backend/storage/
+storage/
 
 loza-data/
 mobile/ios/Loza.xcodeproj/project.xcworkspace/xcuserdata/

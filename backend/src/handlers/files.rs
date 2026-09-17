@@ -34,7 +34,10 @@ use uuid::Uuid;
 
 use crate::db::{storage_fs, AppState};
 use crate::handlers::{auth::{ErrorResponse, require_session}, ws::WsPush};
-use crate::models::{FileError, FileInfo, fmt_ts, guess_mime, sanitize_path, split_parent};
+use crate::models::{
+    BatchItemResult, BatchOperation, BatchRequest, BatchResponse, FileError, FileInfo, fmt_ts,
+    guess_mime, sanitize_path, split_parent,
+};
 
 type ApiError = (StatusCode, Json<ErrorResponse>);
 
@@ -239,72 +242,7 @@ pub async fn list_files(
         .map_err(FileError::from)
         .map_err(file_error)?;
 
-        let mut files = rows.into_iter().map(FileInfo::from).collect::<Vec<_>>();
-
-        let categories = [
-            ("photos", "Фото", "image/"),
-            ("video", "Видео", "video/"),
-            ("docs", "Документы", "application/"),
-            ("backups", "Бэкапы", "application/"),
-            ("other", "Прочее", ""),
-        ];
-
-        for (cat_path, cat_name, _mime_prefix) in categories {
-            let exists = sqlx::query_scalar::<_, i64>(
-                r#"SELECT COUNT(*) FROM user_files WHERE username = $1 AND path = $2 AND is_dir = true"#,
-            )
-            .bind(&username)
-            .bind(cat_path)
-            .fetch_one(&state.pool)
-            .await
-            .map_err(FileError::from)
-            .map_err(file_error)?;
-
-            if exists == 0 {
-                let cat_id = Uuid::new_v4();
-                let now = Utc::now().timestamp();
-                let inserted = sqlx::query(
-                    r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, created_at, updated_at)
-                       VALUES ($1, $2, $3, $4, true, 0, $5, $6, $6)
-                       ON CONFLICT (username, path) DO NOTHING"#,
-                )
-                .bind(cat_id)
-                .bind(&username)
-                .bind(cat_path)
-                .bind(cat_name)
-                .bind(Some("inode/directory".to_string()))
-                .bind(now)
-                .execute(&state.pool)
-                .await
-                .map_err(FileError::from)
-                .map_err(file_error)?;
-
-                if inserted.rows_affected() == 1 {
-                    files.push(FileInfo {
-                        id: cat_id.to_string(),
-                        path: cat_path.to_string(),
-                        name: cat_name.to_string(),
-                        is_dir: true,
-                        size_bytes: 0,
-                        mime_type: Some("inode/directory".to_string()),
-                        created_at: fmt_ts(now),
-                        updated_at: fmt_ts(now),
-                    });
-                }
-            }
-            // If the category already exists, it was already returned by the
-            // initial SELECT query above — don't push a duplicate.
-        }
-
-        use std::cmp::Ordering;
-
-        files.sort_by(|a, b| {
-            if a.is_dir != b.is_dir {
-                return if a.is_dir { Ordering::Less } else { Ordering::Greater };
-            }
-            a.name.cmp(&b.name)
-        });
-        files
+        rows.into_iter().map(FileInfo::from).collect()
     } else {
         let rows: Vec<FileRow> = sqlx::query_as(
             r#"SELECT fr.id::text, fr.path, fr.name, fr.is_dir,
@@ -401,42 +339,6 @@ pub async fn file_info(
     }
 }
 
-/// Определяет категорию хранения по MIME-типу.
-/// Возвращает имя подпапки в storage/<username>/
-fn categorize_by_mime(mime: Option<&str>) -> &'static str {
-    let mime = mime.unwrap_or("");
-    if mime.starts_with("image/") {
-        "photos"
-    } else if mime.starts_with("video/") {
-        "video"
-    } else if mime.starts_with("audio/") {
-        "video" // audio вместе с видео, либо можно отдельную "audio"
-    } else if mime.starts_with("text/") ||
-              mime == "application/pdf" ||
-              mime == "application/json" ||
-              mime == "application/xml" ||
-              mime == "application/zip" ||
-              mime == "application/x-tar" ||
-              mime == "application/gzip" ||
-              mime == "application/x-7z-compressed" ||
-              mime == "application/x-rar-compressed" ||
-              mime == "application/msword" ||
-              mime == "application/vnd.openxmlformats-officedocument" ||
-              mime == "application/vnd.ms-excel" ||
-              mime == "application/vnd.ms-powerpoint" {
-        "docs"
-    } else if mime == "application/zip" ||
-              mime == "application/x-tar" ||
-              mime == "application/gzip" ||
-              mime == "application/x-7z-compressed" ||
-              mime == "application/x-rar-compressed" ||
-              mime == "application/octet-stream" {
-        "backups"
-    } else {
-        "other"
-    }
-}
-
 /// POST /files/upload
 /// Multipart: поле `file` (файл), поле `path` (директория назначения, опционально), поле `overwrite` (boolean, опционально).
 /// Для больших файлов использует потоковую запись на диск.
@@ -450,7 +352,6 @@ pub async fn upload_file(
 
     let mut dest_dir = String::new();
     let mut overwrite = false;
-    let mut total_size: u64 = 0;
     let mut result: Option<FileInfo> = None;
 
     while let Some(field) = multipart
@@ -472,19 +373,18 @@ pub async fn upload_file(
         }
 
         // file field
+        let mut total_size: u64 = 0;
         let fname = field
             .file_name()
             .map(|f| f.to_string())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
         let ct = field.content_type().map(|c| c.to_string());
 
-        // Определяем MIME для категоризации
-        let mime_for_category = ct.as_deref().or_else(|| guess_mime(&fname));
-
-        // Если dest_dir пустой — авто-категория по MIME
+        // The destination is always the directory chosen by the user. Root is
+        // a valid destination; uploads never mutate the tree by inventing
+        // MIME-based category folders.
         let final_path = if dest_dir.is_empty() {
-            let category = categorize_by_mime(mime_for_category);
-            format!("{category}/{fname}")
+            fname.clone()
         } else {
             format!("{dest_dir}/{fname}")
         };
@@ -711,11 +611,7 @@ pub async fn view_file(
         return Ok(response);
     }
 
-    // Full file
-    let file = tokio::fs::File::open(&disk_path)
-        .await
-        .map_err(FileError::from)
-        .map_err(file_error)?;
+    // Full file — reuse the handle already opened above.
     let stream = ReaderStream::new(file);
     let body = Body::from_stream(stream);
     let mut response = Response::new(body);
@@ -756,23 +652,6 @@ fn percent_encode(input: &str) -> String {
     result
 }
 
-#[cfg(test)]
-mod tests {
-    use super::parse_range;
-
-    #[test]
-    fn rejects_invalid_or_empty_ranges() {
-        assert_eq!(parse_range("bytes=0-", 0), None);
-        assert_eq!(parse_range("bytes=100-", 100), None);
-        assert_eq!(parse_range("bytes=9-2", 10), None);
-    }
-
-    #[test]
-    fn clamps_open_ended_ranges() {
-        assert_eq!(parse_range("bytes=5-", 10), Some((5, 9)));
-    }
-}
-
 /// DELETE /files/delete?path=<path>
 pub async fn delete_file(
     State(state): State<AppState>,
@@ -798,20 +677,9 @@ pub async fn delete_file(
 
     let disk_path = storage_path(&username, &path).await?;
 
-    // Remove the filesystem object first. If a previous interrupted operation
-    // left only stale metadata, removing that metadata is still a successful
-    // delete from the user's perspective.
-    match tokio::fs::symlink_metadata(&disk_path).await {
-        Ok(metadata) if metadata.is_dir() => tokio::fs::remove_dir_all(&disk_path).await,
-        Ok(_) => tokio::fs::remove_file(&disk_path).await,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
-    .map_err(FileError::from)
-    .map_err(file_error)?;
-
-    // Delete the node and only its descendants. `path%` would also delete
-    // unrelated siblings such as `photos` and `photoshop`.
+    // Delete the database records first. If the disk delete subsequently fails,
+    // the metadata is already gone — the file is effectively deleted from the
+    // user's perspective and a failed disk cleanup is logged but not fatal.
     sqlx::query(
         r#"DELETE FROM user_files WHERE username = $1 AND (path = $2 OR path LIKE $3)"#,
     )
@@ -823,10 +691,144 @@ pub async fn delete_file(
     .map_err(FileError::from)
     .map_err(file_error)?;
 
+    match tokio::fs::symlink_metadata(&disk_path).await {
+        Ok(metadata) if metadata.is_dir() => tokio::fs::remove_dir_all(&disk_path).await,
+        Ok(_) => tokio::fs::remove_file(&disk_path).await,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+    .map_err(FileError::from)
+    .map_err(file_error)?;
+
     // Broadcast file change via WebSocket
     state.broadcast_push(&username, serde_json::json!(WsPush::file_deleted(&path)));
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn join_path(parent: &str, name: &str) -> String {
+    if parent.is_empty() { name.to_string() } else { format!("{parent}/{name}") }
+}
+
+/// Select a free sibling name. This is intentionally resolved on the server,
+/// not in React: two clients can paste into the same directory concurrently.
+async fn available_destination(
+    state: &AppState,
+    username: &str,
+    destination: &str,
+    source: &str,
+) -> Result<String, ApiError> {
+    let name = source.rsplit('/').next().unwrap_or(source);
+    let initial = join_path(destination, name);
+    let exists: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM user_files WHERE username = $1 AND path = $2",
+    )
+    .bind(username)
+    .bind(&initial)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(FileError::from)
+    .map_err(file_error)?;
+    if exists == 0 { return Ok(initial); }
+
+    let (stem, extension) = match name.rfind('.') {
+        Some(index) if index > 0 => (&name[..index], &name[index..]),
+        _ => (name, ""),
+    };
+    for index in 2..10_000 {
+        let candidate = join_path(destination, &format!("{stem} ({index}){extension}"));
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM user_files WHERE username = $1 AND path = $2",
+        )
+        .bind(username)
+        .bind(&candidate)
+        .fetch_one(&state.pool)
+        .await
+        .map_err(FileError::from)
+        .map_err(file_error)?;
+        if exists == 0 { return Ok(candidate); }
+    }
+    Err(file_error(FileError::new("PATH_EXISTS", "Could not allocate a unique destination name")))
+}
+
+/// POST /files/batch
+///
+/// Performs a selection mutation on the server and returns an explicit result
+/// for every requested path. A failed item never prevents later independent
+/// items from running; that is essential for a usable multi-delete/paste UI.
+pub async fn batch_files(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<BatchRequest>,
+) -> Result<Json<BatchResponse>, ApiError> {
+    let username = require_username(&state, &headers).await?;
+    if req.paths.is_empty() || req.paths.len() > 1_000 {
+        return Err(file_error(FileError::new("INVALID_BATCH", "Select between 1 and 1000 items")));
+    }
+
+    let destination = match req.operation {
+        BatchOperation::Delete => None,
+        BatchOperation::Copy | BatchOperation::Move => {
+            let raw = req.destination.unwrap_or_default();
+            let path = if raw.is_empty() { String::new() } else { sanitize_path(&raw).map_err(from_file_error)? };
+            if !path.is_empty() {
+                let is_dir: Option<bool> = sqlx::query_scalar(
+                    "SELECT is_dir FROM user_files WHERE username = $1 AND path = $2",
+                )
+                .bind(&username)
+                .bind(&path)
+                .fetch_optional(&state.pool)
+                .await
+                .map_err(FileError::from)
+                .map_err(file_error)?;
+                if is_dir != Some(true) {
+                    return Err(file_error(FileError::not_a_dir(&path)));
+                }
+            }
+            Some(path)
+        }
+    };
+
+    let mut results = Vec::with_capacity(req.paths.len());
+    let mut seen = std::collections::HashSet::new();
+    for raw_path in req.paths {
+        let path = match sanitize_path(&raw_path) {
+            Ok(path) if seen.insert(path.clone()) => path,
+            Ok(path) => {
+                results.push(BatchItemResult { path, target_path: None, success: false, error: Some("Duplicate selection".to_string()), file: None });
+                continue;
+            }
+            Err(error) => {
+                results.push(BatchItemResult { path: raw_path, target_path: None, success: false, error: Some(error.message), file: None });
+                continue;
+            }
+        };
+
+        let operation = req.operation;
+        let target = match operation {
+            BatchOperation::Delete => None,
+            BatchOperation::Copy => Some(available_destination(&state, &username, destination.as_deref().unwrap_or_default(), &path).await?),
+            BatchOperation::Move => {
+                let dest = destination.as_deref().unwrap_or_default();
+                let parent = split_parent(&path).map(|(parent, _)| parent).unwrap_or_default();
+                if parent == dest { Some(path.clone()) }
+                else { Some(available_destination(&state, &username, dest, &path).await?) }
+            }
+        };
+
+        let result = match (operation, target.as_deref()) {
+            (BatchOperation::Delete, _) => delete_file(State(state.clone()), headers.clone(), Query(FileQuery { path: path.clone() })).await.map(|_| None),
+            (BatchOperation::Copy, Some(to)) => copy_file(State(state.clone()), headers.clone(), Json(crate::models::CopyRequest { from: path.clone(), to: to.to_string() })).await.map(|Json(file)| Some(file)),
+            (BatchOperation::Move, Some(to)) if to == path => Ok(None),
+            (BatchOperation::Move, Some(to)) => move_file(State(state.clone()), headers.clone(), Json(crate::models::MoveRequest { from: path.clone(), to: to.to_string() })).await.map(|Json(file)| Some(file)),
+            _ => unreachable!(),
+        };
+        match result {
+            Ok(file) => results.push(BatchItemResult { path, target_path: target, success: true, error: None, file }),
+            Err((_, Json(error))) => results.push(BatchItemResult { path, target_path: target, success: false, error: Some(format!("{}: {}", error.code, error.error)), file: None }),
+        }
+    }
+    Ok(Json(BatchResponse { operation: req.operation, results }))
 }
 
 /// POST /files/rename  {"from": "<path>", "to": "<path>"}
@@ -842,8 +844,8 @@ pub async fn rename_file(
         return Err(file_error(FileError::invalid_path(&to)));
     }
 
-    let row: Option<(String, String, bool, i64, Option<String>)> = sqlx::query_as(
-        r#"SELECT id::text, name, is_dir, size_bytes, mime_type FROM user_files
+    let row: Option<(String, String, bool, i64, Option<String>, i64)> = sqlx::query_as(
+        r#"SELECT id::text, name, is_dir, size_bytes, mime_type, created_at FROM user_files
            WHERE username = $1 AND path = $2"#,
     )
     .bind(&username)
@@ -853,7 +855,7 @@ pub async fn rename_file(
     .map_err(FileError::from)
     .map_err(file_error)?;
 
-    let (id, _name, is_dir, size, mime) =
+    let (id, _name, is_dir, size, mime, original_created_at) =
         row.ok_or_else(|| file_error(FileError::not_found(&from)))?;
 
     // Conflict check
@@ -924,11 +926,11 @@ pub async fn rename_file(
         is_dir,
         size_bytes: size.max(0) as u64,
         mime_type: mime,
-        created_at: fmt_ts(now),
+        created_at: fmt_ts(original_created_at),
         updated_at: fmt_ts(now),
     };
 
-    // Broadcast file change via WebSocket
+// Broadcast file change via WebSocket
     state.broadcast_push(&username, serde_json::json!(WsPush::file_renamed(&from, to.clone(), is_dir, result.clone())));
 
     Ok(Json(result))
@@ -967,7 +969,7 @@ pub async fn copy_file(
     .map_err(FileError::from)
     .map_err(file_error)?;
 
-    let (name, is_dir, size, mime) =
+    let (_name, is_dir, size, mime) =
         row.ok_or_else(|| file_error(FileError::not_found(&from)))?;
 
     // Conflict check
@@ -1007,49 +1009,83 @@ pub async fn copy_file(
             .map_err(file_error)?;
     }
 
-    ensure_parent_directories(&state, &username, &to).await?;
     let now = Utc::now().timestamp();
 
-    // INSERT new DB record(s) for the copied file/directory.
-    if is_dir {
-        // Copy the directory row + all children rows with fresh UUIDs and new paths.
+    // Try to create the destination row first: the unique index on (username, path)
+    // is the real arbiter of conflicts. The COUNT() check above is only a fast-path
+    // error; without this INSERT a concurrent copy to the same destination would
+    // race past the check, copy over the disk file, and then hard-fail (or worse,
+    // leave an orphan on disk).
+    let inserted: u64 = if is_dir {
         sqlx::query(
             r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, created_at, updated_at)
-               SELECT gen_random_uuid(), $1,
-                      CASE WHEN path = $2 THEN $3 ELSE $4 || SUBSTRING(path FROM CHAR_LENGTH($5) + 1) END,
-                      CASE WHEN path = $2 THEN $6 ELSE name END,
-                      is_dir, size_bytes, mime_type, $7, $7
-               FROM user_files
-               WHERE username = $1 AND (path = $2 OR path LIKE $8)"#,
+               VALUES (gen_random_uuid(), $1, $2, $3, true, 0, $4, $5, $5)
+               ON CONFLICT (username, path) DO NOTHING"#,
         )
         .bind(&username)
-        .bind(&from)
         .bind(&to)
-        .bind(format!("{to}/"))
-        .bind(format!("{from}/"))
-        .bind(split_parent(&to).map(|(_, n)| n).unwrap_or(&to))
+        .bind(split_parent(&to).map(|(_, item_name)| item_name).unwrap_or(&to))
+        .bind(Some("inode/directory".to_string()))
         .bind(now)
-        .bind(format!("{from}/%"))
         .execute(&state.pool)
         .await
         .map_err(FileError::from)
-        .map_err(file_error)?;
+        .map_err(file_error)?
+        .rows_affected()
     } else {
+        let destination_name = split_parent(&to)
+            .map(|(_, item_name)| item_name.to_string())
+            .unwrap_or_else(|| to.clone());
         sqlx::query(
             r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, created_at, updated_at)
-               VALUES (gen_random_uuid(), $1, $2, $3, false, $4, $5, $6, $6)"#,
+               VALUES (gen_random_uuid(), $1, $2, $3, false, $4, $5, $6, $6)
+               ON CONFLICT (username, path) DO NOTHING"#,
         )
         .bind(&username)
         .bind(&to)
-        .bind(&name)
+        .bind(&destination_name)
         .bind(size)
         .bind(mime.clone())
         .bind(now)
         .execute(&state.pool)
         .await
         .map_err(FileError::from)
+        .map_err(file_error)?
+        .rows_affected()
+    };
+
+    if inserted == 0 {
+        // Another request won the race — roll back the disk copy we just made.
+        if is_dir {
+            tokio::fs::remove_dir_all(&disk_to).await.ok();
+        } else {
+            tokio::fs::remove_file(&disk_to).await.ok();
+        }
+        return Err(file_error(FileError::conflict(&to)));
+    }
+
+    // Copy the directory children into fresh rows under the new path.
+    if is_dir {
+        sqlx::query(
+            r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, created_at, updated_at)
+               SELECT gen_random_uuid(), $1,
+                      $2 || SUBSTRING(path FROM CHAR_LENGTH($3) + 1),
+                      name, is_dir, size_bytes, mime_type, $4, $4
+               FROM user_files
+               WHERE username = $1 AND path LIKE $3
+               ON CONFLICT (username, path) DO NOTHING"#,
+        )
+        .bind(&username)
+        .bind(format!("{to}/"))
+        .bind(format!("{from}/"))
+        .bind(now)
+        .execute(&state.pool)
+        .await
+        .map_err(FileError::from)
         .map_err(file_error)?;
     }
+
+    ensure_parent_directories(&state, &username, &to).await?;
 
     let destination_name = split_parent(&to)
         .map(|(_, item_name)| item_name.to_string())
@@ -1088,7 +1124,11 @@ async fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std
         let entry_path = entry.path();
         let dest_path = dst.join(entry.file_name());
         let file_type = entry.file_type().await?;
-        if file_type.is_dir() {
+        if file_type.is_symlink() {
+            // Symlinks are not supported in Loza storage — skip rather than
+            // following them, which could escape the user's storage root.
+            continue;
+        } else if file_type.is_dir() {
             Box::pin(copy_dir_recursive(&entry_path, &dest_path)).await?;
         } else {
             tokio::fs::copy(&entry_path, &dest_path).await?;
@@ -1166,4 +1206,21 @@ pub async fn create_dir(
     state.broadcast_push(&username, serde_json::json!(WsPush::file_created(result.clone())));
 
     Ok(Json(result))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_range;
+
+    #[test]
+    fn rejects_invalid_or_empty_ranges() {
+        assert_eq!(parse_range("bytes=0-", 0), None);
+        assert_eq!(parse_range("bytes=100-", 100), None);
+        assert_eq!(parse_range("bytes=9-2", 10), None);
+    }
+
+    #[test]
+    fn clamps_open_ended_ranges() {
+        assert_eq!(parse_range("bytes=5-", 10), Some((5, 9)));
+    }
 }

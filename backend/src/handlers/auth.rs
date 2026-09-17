@@ -219,10 +219,14 @@ pub async fn bootstrap_admin(pool: &sqlx::PgPool) -> Result<(), String> {
         role: ROLE_ADMIN.to_string(),
         quota_bytes: None,
     };
-    repository::create_user(pool, &user)
+    let created = repository::create_user(pool, &user)
         .await
         .map_err(|error| error.to_string())?;
-    tracing::info!(username = %user.username, "bootstrap administrator created");
+    if created {
+        tracing::info!(username = %user.username, "bootstrap administrator created");
+    } else {
+        tracing::info!(username = %user.username, "bootstrap administrator already exists; skipping");
+    }
     Ok(())
 }
 

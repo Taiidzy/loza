@@ -119,6 +119,38 @@
   pointer-events: none;
 }
 
+.errorOverlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  text-align: center;
+  padding: 12px;
+  background: rgba(30, 12, 16, 0.7);
+  backdrop-filter: blur(3px);
+  color: rgba(255, 140, 140, 0.95);
+  font-size: 12px;
+  z-index: 31;
+}
+
+.errorRetryButton {
+  background: transparent;
+  border: 1px solid rgba(255, 140, 140, 0.3);
+  border-radius: var(--radius-sm);
+  padding: 4px 12px;
+  font-size: 11px;
+  color: rgba(255, 140, 140, 0.95);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.errorRetryButton:hover {
+  background: rgba(255, 100, 100, 0.15);
+}
+
 /* Поверхность модалки CRUD — чуть больше "стекла", в тон AuthPage/DashboardPage */
 .modalSurface {
   background: rgba(28, 28, 38, 0.95);

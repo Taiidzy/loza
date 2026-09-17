@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { FileInfo, MoveRequest, CopyRequest } from "../types/files";
+import { BatchOperation, BatchResponse, FileInfo, MoveRequest, CopyRequest } from "../types/files";
 import { logger } from "../shared/utils/logger";
 
 /**
@@ -67,6 +67,11 @@ export class FileApiService {
     return toUint8Array(await invoke<unknown>("download_file", { path, progressId }));
   }
 
+  async downloadFileToDownloads(path: string, filename: string, progressId?: string): Promise<string> {
+    logger.info("files", "invoke(download_file_to_downloads)", { path, filename });
+    return await invoke<string>("download_file_to_downloads", { path, filename, progressId });
+  }
+
   // ── View (in-memory for preview) ─────────────────────────────────────
 
   async viewFile(path: string): Promise<Blob> {
@@ -106,6 +111,11 @@ export class FileApiService {
   async createDir(path: string): Promise<FileInfo> {
     logger.info("files", "invoke(create_dir)", { path });
     return await invoke<FileInfo>("create_dir", { path });
+  }
+
+  async mutateFiles(operation: BatchOperation, paths: string[], destination?: string): Promise<BatchResponse> {
+    logger.info("files", "invoke(mutate_files)", { operation, count: paths.length, destination });
+    return await invoke<BatchResponse>("mutate_files", { operation, paths, destination: destination ?? null });
   }
 }
 

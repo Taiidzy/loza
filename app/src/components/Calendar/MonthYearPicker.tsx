@@ -70,7 +70,11 @@ export default function MonthYearPicker({ isOpen, currentDate, onSelect, onClose
                     key={label}
                     type="button"
                     onClick={() => {
-                      onSelect(dayjs().year(viewYear).month(idx).date(1));
+                      // Важен порядок: сначала ставим день = 1, затем месяц.
+                      // Если сначала month(idx), то при "сегодня" 29–31 числа
+                      // происходит переполнение (31 янв + февраль → 3 марта),
+                      // и выбранным окажется не тот месяц.
+                      onSelect(dayjs().year(viewYear).date(1).month(idx));
                       onClose();
                     }}
                     className={`${styles.pickerMonthButton} ${isActive ? styles.pickerMonthButtonActive : ''}`}

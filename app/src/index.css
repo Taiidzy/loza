@@ -17,3 +17,11 @@ body,
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
 }
+
+/* Всегда видимый индикатор для клавиатурной навигации. Модульные стили,
+   которые глушат outline на инпутах, взамен меняют цвет рамки/фона при
+   focus — поэтому глобальное правило не конфликтует с ними. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}

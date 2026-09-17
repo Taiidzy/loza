@@ -106,7 +106,17 @@ function buildBreadcrumbs(currentPath: string): { name: string; path: string }[]
 // ── Clipboard manager for move/copy ──────────────────────────────────────
 
 type ClipboardEntry = { operation: "move" | "copy"; paths: string[] };
-const clipboard: { current: ClipboardEntry | null } = { current: null };
+
+function validItemName(name: string): boolean {
+  return Boolean(name) && name !== "." && name !== ".." && !/[\\/\0]/.test(name);
+}
+
+function topLevelPaths(files: FileInfo[]): string[] {
+  return files
+    .map((file) => file.path)
+    .sort((a, b) => a.length - b.length)
+    .filter((path, index, paths) => !paths.slice(0, index).some((parent) => path.startsWith(`${parent}/`)));
+}
 
 export default function LozaTab() {
   const [currentPath, setCurrentPath] = useState("");
@@ -116,6 +126,8 @@ export default function LozaTab() {
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [search, setSearch] = useState("");
   const [searchResults, setSearchResults] = useState<FileInfo[] | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchNonce, setSearchNonce] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
@@ -125,7 +137,9 @@ export default function LozaTab() {
   const [contextMenu, setContextMenu] = useState<{ item: FileInfo; x: number; y: number } | null>(null);
   const [previewFile, setPreviewFile] = useState<FileInfo | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [clipboardEntry, setClipboardEntry] = useState<ClipboardEntry | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const newMenuButtonRef = useRef<HTMLDivElement>(null);
   const [newMenuPos, setNewMenuPos] = useState<{ top: number; left: number } | null>(null);
 
@@ -142,6 +156,7 @@ export default function LozaTab() {
   const loadRequestRef = useRef(0);
   const searchRequestRef = useRef(0);
   const currentPathRef = useRef(currentPath);
+  const clipboardRef = useRef<ClipboardEntry | null>(null);
   currentPathRef.current = currentPath;
 
   const { operations, uploadFile, downloadFile, cancelOperation, removeOperation, retry } = useOperationQueue();
@@ -186,11 +201,27 @@ export default function LozaTab() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (inputModal) { setInputModal(null); return; }
-      if (showNewMenu) { setShowNewMenu(false); return; }
-      if (contextMenu) { setContextMenu(null); return; }
-      if (renameTarget) { setRenameTarget(null); setRenameValue(""); return; }
-      if (previewFile) { setPreviewFile(null); return; }
+      let handled = false;
+      if (inputModal) {
+        setInputModal(null);
+        handled = true;
+      } else if (showNewMenu) {
+        setShowNewMenu(false);
+        handled = true;
+      } else if (contextMenu) {
+        setContextMenu(null);
+        handled = true;
+      } else if (renameTarget) {
+        setRenameTarget(null);
+        setRenameValue("");
+        handled = true;
+      } else if (previewFile) {
+        setPreviewFile(null);
+        handled = true;
+      }
+      // Если Escape закрыл какое-то окно — не даём bubble-слушателю ниже
+      // одновременно сбросить выделение файлов (неожиданное действие).
+      if (handled) e.preventDefault();
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
@@ -251,6 +282,7 @@ export default function LozaTab() {
     if (!search.trim()) {
       searchRequestRef.current += 1;
       setSearchResults(null);
+      setSearchError(null);
       return;
     }
 
@@ -261,15 +293,20 @@ export default function LozaTab() {
         const results = await fileApi.searchFiles(search, currentPath);
         if (requestId !== searchRequestRef.current) return;
         setSearchResults(results);
+        setSearchError(null);
       } catch (e: any) {
         if (requestId !== searchRequestRef.current) return;
         logger.error("files", "Search failed", e);
-        setSearchResults([]);
+        // Не показываем «ничего не найдено» при сетевой ошибке — иначе
+        // пользователь решает, что файлов не существует, хотя сервер просто
+        // не ответил.
+        setSearchResults(null);
+        setSearchError("Не удалось выполнить поиск. Проверьте соединение с сервером.");
       }
     }, 300);
 
     return () => clearTimeout(timer);
-  }, [search, currentPath]);
+  }, [search, currentPath, searchNonce]);
 
   useEffect(() => {
     updateNavButtons();
@@ -421,13 +458,15 @@ export default function LozaTab() {
     const names = selected.map((f) => f.name).join(", ");
     if (!confirm(`Удалить ${selected.length} элемент(ов): ${names}?`)) return;
     try {
-      for (const file of selected) {
-        await fileApi.deleteFile(file.path);
-      }
+      const report = await fileApi.mutateFiles("delete", topLevelPaths(selected));
+      const failed = report.results
+        .filter((result) => !result.success)
+        .map((result) => result.path.split("/").pop() || result.path);
       clearSelection();
-      loadFiles(currentPath);
-    } catch (e: any) {
-      setError(e.message || "Failed to delete");
+      await loadFiles(currentPath);
+      if (failed.length) setError(`Не удалось удалить: ${failed.join(", ")}`);
+    } catch (error: any) {
+      setError(error?.message || "Не удалось удалить выбранные элементы");
     }
   };
 
@@ -435,6 +474,10 @@ export default function LozaTab() {
     if (!renameTarget) return;
     const newName = renameValue.trim();
     if (!newName || newName === renameTarget.name) { setRenameTarget(null); return; }
+    if (!validItemName(newName)) {
+      setError("Имя не может содержать /, \\ или быть . / ..");
+      return;
+    }
 
     const parentPath = renameTarget.path.substring(0, renameTarget.path.lastIndexOf("/"));
     const newPath = parentPath ? `${parentPath}/${newName}` : newName;
@@ -453,6 +496,10 @@ export default function LozaTab() {
   const handleMkdir = async (name: string) => {
     if (!name.trim()) return;
     const trimmedName = name.trim();
+    if (!validItemName(trimmedName)) {
+      setError("Имя не может содержать /, \\ или быть . / ..");
+      return;
+    }
     const fullPath = currentPath ? `${currentPath}/${trimmedName}` : trimmedName;
     try {
       await fileApi.createDir(fullPath);
@@ -492,10 +539,12 @@ export default function LozaTab() {
 
   const putInClipboard = (operation: ClipboardEntry["operation"], selected: FileInfo[]) => {
     if (selected.length === 0) return;
-    clipboard.current = {
+    const next = {
       operation,
-      paths: selected.map((f) => f.path),
+      paths: topLevelPaths(selected),
     };
+    clipboardRef.current = next;
+    setClipboardEntry(next);
     setContextMenu(null);
     clearSelection();
   };
@@ -505,40 +554,60 @@ export default function LozaTab() {
   const handleCopy = () => putInClipboard("copy", sorted.filter((f) => selectedIds.has(f.id)));
 
   const handlePaste = async () => {
-    if (!clipboard.current) return;
-    const { operation, paths } = clipboard.current;
-
+    const entry = clipboardRef.current;
+    if (!entry) return;
     try {
-      if (operation === "copy") {
-        for (const fromPath of paths) {
-          const name = fromPath.split("/").pop() || fromPath;
-          const toPath = currentPath ? `${currentPath}/${name}` : name;
-          await fileApi.copyFile(fromPath, toPath);
-        }
-      } else {
-        for (const fromPath of paths) {
-          const name = fromPath.split("/").pop() || fromPath;
-          const toPath = currentPath ? `${currentPath}/${name}` : name;
-          await fileApi.moveFile(fromPath, toPath);
-        }
+      const report = await fileApi.mutateFiles(entry.operation, entry.paths, currentPath);
+      const failures = report.results.filter((result) => !result.success);
+      const completed = report.results.length - failures.length;
+
+      // A copy may remain useful for repeated pastes. A cut is cleared only if
+      // every actionable item reached the server, so partial failures are never
+      // silently lost.
+      if (entry.operation === "move" && failures.length === 0) {
+        clipboardRef.current = null;
+        setClipboardEntry(null);
       }
-      loadFiles(currentPath);
-      clipboard.current = null;
-    } catch (e: any) {
-      setError(e.message || "Failed to paste");
+      await loadFiles(currentPath);
+      if (failures.length) setError(`Вставлено: ${completed}. Ошибки: ${failures.map((result) => `${result.path}: ${result.error}`).join("; ")}`);
+    } catch (error: any) {
+      setError(error?.message || "Не удалось вставить элементы");
     }
   };
 
-  const handleDelete = async (file: FileInfo) => {
-    if (!confirm(`Удалить "${file.name}"?`)) return;
-    try {
-      await fileApi.deleteFile(file.path);
-      loadFiles(currentPath);
-      if (previewFile?.id === file.id) setPreviewFile(null);
-    } catch (e: any) {
-      setError(e.message || "Failed to delete");
-    }
-  };
+  useEffect(() => {
+    const onShortcut = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const editing = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
+      const command = event.metaKey || event.ctrlKey;
+      if (command && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+      if (editing) return;
+      if (command && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        setSelectedIds(new Set(sorted.map((file) => file.id)));
+      } else if (command && event.key.toLowerCase() === "c") {
+        event.preventDefault();
+        handleCopy();
+      } else if (command && event.key.toLowerCase() === "x") {
+        event.preventDefault();
+        handleCut();
+      } else if (command && event.key.toLowerCase() === "v") {
+        event.preventDefault();
+        void handlePaste();
+      } else if ((event.key === "Delete" || event.key === "Backspace") && selectedIds.size) {
+        event.preventDefault();
+        void handleDeleteSelected();
+      } else if (event.key === "Escape" && !event.defaultPrevented) {
+        clearSelection();
+      }
+    };
+    window.addEventListener("keydown", onShortcut);
+    return () => window.removeEventListener("keydown", onShortcut);
+  }, [sorted, selectedIds, handleCopy, handleCut, handlePaste, handleDeleteSelected]);
 
   const handleNewFile = async (type: "folder" | "file") => {
     setShowNewMenu(false);
@@ -552,6 +621,10 @@ export default function LozaTab() {
   const createEmptyFile = async (name: string) => {
     const trimmedName = name.trim();
     if (!trimmedName) return;
+    if (!validItemName(trimmedName)) {
+      setError("Имя не может содержать /, \\ или быть . / ..");
+      return;
+    }
     try {
       const emptyFile = new File([], trimmedName, { type: "text/plain" });
       await uploadFile({ path: currentPath, filename: trimmedName, file: emptyFile });
@@ -561,7 +634,7 @@ export default function LozaTab() {
     }
   };
 
-  const hasClipboard = clipboard.current !== null;
+  const hasClipboard = clipboardEntry !== null;
 
   return (
     <div className={`${styles.root} ${sidebarCollapsed ? styles.collapsed : ""}`}>
@@ -680,16 +753,6 @@ export default function LozaTab() {
                 <motion.button
                   whileHover={{ background: "var(--color-glass-hover-strong)" }}
                   whileTap={{ scale: 0.94 }}
-                  onClick={handlePaste}
-                  disabled={!hasClipboard}
-                  className={styles.navBtn}
-                  title="Вставить"
-                >
-                  <ClipboardPaste size={15} />
-                </motion.button>
-                <motion.button
-                  whileHover={{ background: "var(--color-glass-hover-strong)" }}
-                  whileTap={{ scale: 0.94 }}
                   onClick={handleDownloadSelected}
                   className={styles.navBtn}
                   title="Скачать выбранное"
@@ -707,6 +770,16 @@ export default function LozaTab() {
                 </motion.button>
               </>
             )}
+            <motion.button
+              whileHover={hasClipboard ? { background: "var(--color-glass-hover-strong)" } : undefined}
+              whileTap={hasClipboard ? { scale: 0.94 } : undefined}
+              onClick={handlePaste}
+              disabled={!hasClipboard}
+              className={styles.navBtn}
+              title={clipboardEntry ? `Вставить (${clipboardEntry.paths.length})` : "Вставить"}
+            >
+              <ClipboardPaste size={15} />
+            </motion.button>
             <div style={{ position: "relative", display: "inline-block" }}>
               <div ref={newMenuButtonRef} style={{ display: "inline-block" }}>
                 <motion.button
@@ -798,6 +871,7 @@ export default function LozaTab() {
             <div className={styles.search}>
               <Search size={14} className={styles.searchIcon} />
               <input
+                ref={searchInputRef}
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Поиск…"
@@ -819,6 +893,19 @@ export default function LozaTab() {
               >
                 <span>{error}</span>
                 <button className={styles.errorRetryButton} onClick={() => loadFiles(currentPath)}>Повторить</button>
+              </motion.div>
+            )}
+
+            {searchError && !error && (
+              <motion.div
+                className={styles.errorBanner}
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18 }}
+              >
+                <span>{searchError}</span>
+                <button className={styles.errorRetryButton} onClick={() => setSearchNonce((n) => n + 1)}>Повторить</button>
               </motion.div>
             )}
           </AnimatePresence>
@@ -959,11 +1046,11 @@ export default function LozaTab() {
           onClose={() => setContextMenu(null)}
           onRename={() => { setRenameTarget(contextMenu.item); setRenameValue(contextMenu.item.name); setContextMenu(null); }}
           onDownload={() => handleDownload(contextMenu.item)}
-          onDelete={() => handleDelete(contextMenu.item)}
+          onDelete={handleDeleteSelected}
           onOpen={() => handleOpen(contextMenu.item)}
           onPreview={() => handlePreviewFile(contextMenu.item)}
-          onMove={() => putInClipboard("move", [contextMenu.item])}
-          onCopy={() => putInClipboard("copy", [contextMenu.item])}
+          onMove={handleCut}
+          onCopy={handleCopy}
         />
       )}
 
@@ -1347,6 +1434,16 @@ function GridItem({
       onClick={onClick}
       onDoubleClick={onDoubleClick}
       onContextMenu={onContextMenu}
+      tabIndex={0}
+      role="button"
+      aria-selected={selected}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          e.stopPropagation();
+          onClick(e as unknown as React.MouseEvent);
+        }
+      }}
       style={{
         display: "flex",
         flexDirection: "column",
@@ -1424,6 +1521,16 @@ function ListItem({
       onClick={onClick}
       onDoubleClick={onDoubleClick}
       onContextMenu={onContextMenu}
+      tabIndex={0}
+      role="button"
+      aria-selected={selected}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          e.stopPropagation();
+          onClick(e as unknown as React.MouseEvent);
+        }
+      }}
       style={{
         display: "grid",
         gridTemplateColumns: "1fr 120px 100px 40px",

@@ -23,6 +23,21 @@ export interface CopyRequest {
   to: string;
 }
 
+export type BatchOperation = "copy" | "move" | "delete";
+
+export interface BatchItemResult {
+  path: string;
+  targetPath: string | null;
+  success: boolean;
+  error: string | null;
+  file: FileInfo | null;
+}
+
+export interface BatchResponse {
+  operation: BatchOperation;
+  results: BatchItemResult[];
+}
+
 export interface UploadMeta {
   path?: string;
   filename: string;

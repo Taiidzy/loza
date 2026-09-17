@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use dashmap::DashMap;
 use sqlx::PgPool;
 use sysinfo::System;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
 
 use crate::config::Config;
@@ -24,9 +24,16 @@ const MAX_LOGIN_RATE_LIMIT_ENTRIES: usize = 10_000;
 const STORAGE_CATEGORY_CACHE_SECS: u64 = 60;
 const MAX_STATUS_WS_CONNECTIONS: usize = 20;
 const MAX_APP_WS_CONNECTIONS: usize = 50;
+/// Сколько push-сообщений буферизуется на соединение, прежде чем новые push
+/// начнут отбрасываться. Push'и — fire-and-forget уведомления (клиент при
+/// необходимости перезагружает состояние), поэтому при отстающем/медленном
+/// клиенте лучше уронить сообщение, чем бесконечно копить память.
+/// Размер рассчитан так, чтобы даже самый большой /files/batch (до 1000
+/// операций, каждая с одним push) помещался в буфер без потерь.
+const WS_PUSH_CHANNEL_CAPACITY: usize = 1024;
 
 type WsMessage = axum::extract::ws::Message;
-type WsClientEntry = (Uuid, UnboundedSender<WsMessage>);
+type WsClientEntry = (Uuid, Sender<WsMessage>);
 pub type ClientRegistry = Arc<DashMap<String, Vec<WsClientEntry>>>;
 
 type StorageCategoryCache = (u64, Vec<StorageCategory>);
@@ -222,9 +229,9 @@ impl AppState {
         self.app_ws_connections.fetch_sub(1, Ordering::AcqRel);
     }
 
-    pub fn register_ws_client(&self, username: &str) -> (Uuid, tokio::sync::mpsc::UnboundedReceiver<WsMessage>) {
+    pub fn register_ws_client(&self, username: &str) -> (Uuid, tokio::sync::mpsc::Receiver<WsMessage>) {
         let conn_id = Uuid::new_v4();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, rx) = tokio::sync::mpsc::channel(WS_PUSH_CHANNEL_CAPACITY);
         self.ws_clients
             .entry(username.to_string())
             .or_default()
@@ -244,7 +251,10 @@ impl AppState {
     pub fn broadcast_to_user(&self, username: &str, message: WsMessage) {
         if let Some(clients) = self.ws_clients.get(username) {
             for (_id, tx) in clients.iter() {
-                let _ = tx.send(message.clone());
+                // try_send: если клиент не успевает читать push-сообщения,
+                // пропускаем уведомление вместо блокировки продюсера или
+                // неограниченного роста очереди.
+                let _ = tx.try_send(message.clone());
             }
         }
     }

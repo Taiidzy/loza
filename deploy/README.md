@@ -1,5 +1,41 @@
 # Deployment
 
+## Local development on macOS (Docker)
+
+The repository Compose stack is the only local backend setup: it starts
+Postgres and the Rust backend, exposes the backend at `http://127.0.0.1:4242`,
+and persists user files in `./storage`. It deliberately does **not** start
+Nginx or TLS.
+
+```bash
+cp .env.example .env
+# edit POSTGRES_PASSWORD, JWT_SECRET and BOOTSTRAP_ADMIN_PASSWORD
+docker compose up --build -d
+docker compose ps
+curl http://127.0.0.1:4242/health
+```
+
+On first launch enter `http://127.0.0.1:4242` in the desktop client and sign
+in with the bootstrap account from `.env`. Stop the local stack with:
+
+```bash
+docker compose down
+```
+
+`docker compose down -v` also removes the local Postgres volume; it is an
+intentional data reset and does not remove the bind-mounted `./storage`.
+
+The file API uses HTTP for all file contents and mutations. In particular,
+`POST /files/batch` performs multi-copy, multi-move, and multi-delete and
+returns a result for every selected path; WebSocket `/ws/app` only broadcasts
+invalidations so clients re-fetch the authoritative directory listing.
+Desktop downloads are streamed directly into the operating-system Downloads
+folder, rather than materializing the whole file in the WebView process.
+
+For production, keep using the external Nginx/TLS proxy described in
+[`TRANSPORT.md`](TRANSPORT.md). The same client setting derives `ws://` from
+an `http://` URL and `wss://` from an `https://` URL.
+
 ## Initial Deployment
 
 ```bash

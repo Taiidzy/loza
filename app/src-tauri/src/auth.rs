@@ -285,15 +285,27 @@ pub async fn refresh_session_silently(app: &AppHandle, client: &reqwest::Client)
         return;
     }
 
-    if let Ok(login_resp) = resp.json::<ServerLoginResponse>().await {
-        let new_session = StoredSession {
-            token: login_resp.token,
-            username: login_resp.username,
-            display_name: login_resp.display_name,
-            role: login_resp.role,
-            device: session.device,
-            expires_at: login_resp.expires_at,
-        };
-        let _ = session_store::save_session(app, &new_session);
+    match resp.json::<ServerLoginResponse>().await {
+        Ok(login_resp) => {
+            let new_session = StoredSession {
+                token: login_resp.token,
+                username: login_resp.username,
+                display_name: login_resp.display_name,
+                role: login_resp.role,
+                device: session.device,
+                expires_at: login_resp.expires_at,
+            };
+            let _ = session_store::save_session(app, &new_session);
+        }
+        Err(_) => {
+            // The server accepted the refresh (old token already rotated) but
+            // the body did not parse. Keeping the old token would leave a
+            // possibly-invalidated session in place — clear it so the UI shows
+            // login instead of a dead session.
+            eprintln!(
+                "\x1b[31m[ERROR]\x1b[0m [desktop.auth] failed to parse refresh response; clearing session"
+            );
+            let _ = session_store::clear_session(app);
+        }
     }
 }

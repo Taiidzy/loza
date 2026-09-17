@@ -129,6 +129,10 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
   const pdfRef = useRef<HTMLIFrameElement>(null);
   const objectUrlRef = useRef<string | null>(null);
   const loadSequenceRef = useRef(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+  /** Размер картинки на экране при zoom = 1 (с учётом "contain"), пиксели. */
+  const [imgFit, setImgFit] = useState<{ w: number; h: number } | null>(null);
+  const panRef = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number; active: boolean } | null>(null);
 
   const loadContent = useCallback(async () => {
     if (file.isDir) return;
@@ -138,6 +142,9 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
     setError(null);
     setTextContent(null);
     setBlobUrl(null);
+    setImgFit(null);
+    setZoom(1);
+    setRotation(0);
     if (objectUrlRef.current) {
       URL.revokeObjectURL(objectUrlRef.current);
       objectUrlRef.current = null;
@@ -215,8 +222,12 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
       const a = document.createElement("a");
       a.href = url;
       a.download = file.name;
+      document.body.appendChild(a);
       a.click();
-      URL.revokeObjectURL(url);
+      a.remove();
+      // Ревоким не сразу: в WebView мгновенный revoke может прервать
+      // стартовавшую передачу файла. Небольшая задержка безопасна.
+      window.setTimeout(() => URL.revokeObjectURL(url), 2000);
     } catch (e) {
       logger.error("files", "Download failed", e);
     }
@@ -224,7 +235,10 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
 
   const handleShare = async () => {
     try {
-      await navigator.clipboard.writeText(file.name);
+      // Ссылкой поделиться нельзя: приложение десктопное, а скачивание только
+      // авторизованному пользователю. Поэтому копируем путь файла на сервере —
+      // его можно отправить коллеге, чтобы тот открыл нужную папку в "Мой диск".
+      await navigator.clipboard.writeText(file.path || file.name);
     } catch (e) {
       logger.error("files", "Share failed", e);
     }
@@ -247,6 +261,36 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
   const rotateLeft = () => setRotation((r) => (r - 90) % 360);
   const rotateRight = () => setRotation((r) => (r + 90) % 360);
 
+  const zoomed = zoom > 1 && imgFit !== null;
+
+  // Drag-панорамирование увеличенного изображения: прокручиваем контейнер
+  // по движению указателя (transform scale() не влияет на layout, поэтому
+  // иначе до краёв картинки не добраться — видимые scroll не появляются).
+  const onImagePointerDown = (e: React.PointerEvent) => {
+    if (!zoomed || !containerRef.current) return;
+    const container = containerRef.current;
+    panRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      scrollLeft: container.scrollLeft,
+      scrollTop: container.scrollTop,
+      active: true,
+    };
+    container.setPointerCapture?.(e.pointerId);
+  };
+
+  const onImagePointerMove = (e: React.PointerEvent) => {
+    const pan = panRef.current;
+    const container = containerRef.current;
+    if (!pan?.active || !container) return;
+    container.scrollLeft = pan.scrollLeft - (e.clientX - pan.startX);
+    container.scrollTop = pan.scrollTop - (e.clientY - pan.startY);
+  };
+
+  const endImagePan = () => {
+    if (panRef.current) panRef.current.active = false;
+  };
+
   const renderPreviewContent = () => {
     if (!blobUrl) return null;
     if (isPdf(name, mt)) {
@@ -260,20 +304,32 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
       );
     }
     if (isImageFile) {
+      const displayedWidth = imgFit ? imgFit.w * zoom : "100%";
+      const displayedHeight = imgFit ? imgFit.h * zoom : "100%";
       return (
         <img
           ref={imageRef}
           src={blobUrl}
           alt={name}
+          onLoad={(e) => {
+            const naturalW = e.currentTarget.naturalWidth || 1;
+            const naturalH = e.currentTarget.naturalHeight || 1;
+            const container = containerRef.current;
+            const cw = container?.clientWidth ?? naturalW;
+            const ch = container?.clientHeight ?? naturalH;
+            const fit = Math.min(cw / naturalW, ch / naturalH, 1);
+            setImgFit({ w: naturalW * fit, h: naturalH * fit });
+          }}
           style={{
-            maxWidth: "100%",
-            maxHeight: "100%",
-            objectFit: "contain",
+            width: displayedWidth,
+            height: displayedHeight,
             borderRadius: "var(--radius-sm)",
-            transform: `scale(${zoom}) rotate(${rotation}deg)`,
+            transform: `rotate(${rotation}deg)`,
             transformOrigin: "center center",
-            transition: "transform 0.15s ease-out",
-            cursor: zoom > 1 ? "grab" : "default",
+            transition: "width 0.15s ease-out, height 0.15s ease-out, transform 0.15s ease-out",
+            cursor: zoomed ? "grab" : "default",
+            userSelect: "none",
+            touchAction: zoomed ? "none" : undefined,
           }}
         />
       );
@@ -340,16 +396,25 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
       </div>
 
       {/* Content */}
-      <div style={{
-        flex: 1,
-        overflow: "auto",
-        padding: 16,
-        minHeight: 0,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "var(--color-popup-bg)",
-      }}>
+      <div
+        ref={containerRef}
+        style={{
+          flex: 1,
+          overflow: "auto",
+          padding: 16,
+          minHeight: 0,
+          display: "flex",
+          alignItems: zoomed ? "flex-start" : "center",
+          justifyContent: zoomed ? "flex-start" : "center",
+          background: "var(--color-popup-bg)",
+          cursor: zoomed && isImageFile && blobUrl && !isEditing ? (panRef.current?.active ? "grabbing" : "grab") : undefined,
+        }}
+        onPointerDown={isImageFile && blobUrl && !isEditing ? onImagePointerDown : undefined}
+        onPointerMove={isImageFile && blobUrl && !isEditing ? onImagePointerMove : undefined}
+        onPointerUp={endImagePan}
+        onPointerCancel={endImagePan}
+        onPointerLeave={endImagePan}
+      >
         {loading ? (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, color: "var(--color-text-muted)" }}>
             <Loader size={24} style={{ animation: "spin 1s linear infinite" }} />

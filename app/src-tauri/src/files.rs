@@ -9,9 +9,10 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::AsyncWriteExt;
 
 use crate::server_config;
@@ -54,6 +55,39 @@ pub struct MoveRequest {
 pub struct CopyRequest {
     pub from: String,
     pub to: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BatchOperation {
+    Copy,
+    Move,
+    Delete,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchRequest {
+    pub operation: BatchOperation,
+    pub paths: Vec<String>,
+    pub destination: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchItemResult {
+    pub path: String,
+    pub target_path: Option<String>,
+    pub success: bool,
+    pub error: Option<String>,
+    pub file: Option<FileInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchResponse {
+    pub operation: String,
+    pub results: Vec<BatchItemResult>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -252,14 +286,20 @@ pub async fn upload_file(
                 .file_name(filename.clone()),
         );
 
-    let resp = state
+    let resp = match state
         .client
         .post(format!("{}/files/upload", server_url))
         .header("x-session-token", token)
         .multipart(form)
         .send()
         .await
-        .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
+    {
+        Ok(resp) => resp,
+        Err(e) => {
+            progress_handle.abort();
+            return Err(format!("SERVER_UNREACHABLE: {}", e));
+        }
+    };
 
     // Ensure the progress task has completed
     progress_handle.abort();
@@ -276,7 +316,13 @@ pub async fn upload_file(
 /// `invoke("download_file", { path, progressId? })`
 /// Returns the raw bytes of the file as a `Vec<u8>`.
 ///
+/// This loads the whole file into memory — it is meant for previews only.
+/// Rejects files beyond `DOWNLOAD_IN_MEMORY_LIMIT` to avoid exhausting the
+/// process; large files should use `download_file_to_downloads` instead.
+///
 /// Emits progress events on `file-progress-{progressId}` with `{ received, total }`.
+const DOWNLOAD_IN_MEMORY_LIMIT: u64 = 100 * 1024 * 1024;
+
 #[tauri::command]
 pub async fn download_file(
     app: AppHandle,
@@ -306,6 +352,12 @@ pub async fn download_file(
     }
 
     let total = resp.content_length().unwrap_or(0);
+    if total > DOWNLOAD_IN_MEMORY_LIMIT {
+        return Err(format!(
+            "FILE_TOO_LARGE: files larger than {} MB must be downloaded via download_file_to_downloads",
+            DOWNLOAD_IN_MEMORY_LIMIT / (1024 * 1024)
+        ));
+    }
     let app_for_stream = app.clone();
     let progress_event_for_stream = progress_event.clone();
 
@@ -318,6 +370,14 @@ pub async fn download_file(
         match body.chunk().await {
             Ok(Some(chunk)) => {
                 received += chunk.len() as u64;
+                // Guard against a missing Content-Length (chunked) growing
+                // without bound.
+                if received > DOWNLOAD_IN_MEMORY_LIMIT {
+                    return Err(format!(
+                        "FILE_TOO_LARGE: response exceeded {} MB limit",
+                        DOWNLOAD_IN_MEMORY_LIMIT / (1024 * 1024)
+                    ));
+                }
                 if total > 0 {
                     let _ = app_for_stream.emit(
                         &progress_event_for_stream,
@@ -338,6 +398,112 @@ pub async fn download_file(
     );
 
     Ok(result)
+}
+
+fn safe_download_name(filename: &str) -> String {
+    // Take the last path segment explicitly for BOTH separators so behavior is
+    // identical on every OS (on Windows '\' is a separator, on macOS/Linux it
+    // is a literal character — Path::file_name differs between platforms).
+    let stem = filename
+        .split(['/', '\\'])
+        .rfind(|segment| !segment.is_empty());
+    stem.filter(|name| *name != "." && *name != "..")
+        .unwrap_or("download")
+        .to_string()
+}
+
+async fn unique_download_path(directory: &Path, filename: &str) -> Result<PathBuf, String> {
+    let initial = directory.join(filename);
+    if !initial.try_exists().map_err(|e| format!("DOWNLOAD_PATH_ERROR: {e}"))? {
+        return Ok(initial);
+    }
+    let file = Path::new(filename);
+    let stem = file.file_stem().and_then(|value| value.to_str()).unwrap_or("download");
+    let extension = file.extension().and_then(|value| value.to_str()).map(|value| format!(".{value}")).unwrap_or_default();
+    for index in 1..10_000 {
+        let candidate = directory.join(format!("{stem} ({index}){extension}"));
+        if !candidate.try_exists().map_err(|e| format!("DOWNLOAD_PATH_ERROR: {e}"))? {
+            return Ok(candidate);
+        }
+    }
+    Err("DOWNLOAD_PATH_ERROR: unable to create a unique file name".to_string())
+}
+
+/// `invoke("download_file_to_downloads", { path, filename, progressId? })`
+///
+/// Streams the HTTP response directly to the platform Downloads directory.
+/// Unlike `download_file`, this never builds the complete payload in memory.
+#[tauri::command]
+pub async fn download_file_to_downloads(
+    app: AppHandle,
+    state: tauri::State<'_, LozaState>,
+    path: String,
+    filename: String,
+    progress_id: Option<String>,
+) -> Result<String, String> {
+    let (token, server_url) = require_session(&app)?;
+    let progress_id = progress_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let progress_event = format!("{}{}", FILE_PROGRESS_EVENT_PREFIX, progress_id);
+    let mut url = url::Url::parse(&format!("{}/files/download", server_url))
+        .map_err(|e| format!("URL_ERROR: {e}"))?;
+    url.query_pairs_mut().append_pair("path", &path);
+    let response = state.client.get(url).header("x-session-token", token).send().await
+        .map_err(|e| format!("SERVER_UNREACHABLE: {e}"))?;
+    if !response.status().is_success() {
+        return Err(describe_http_error(response, "download file").await);
+    }
+
+    let downloads = app.path().download_dir()
+        .map_err(|e| format!("DOWNLOAD_PATH_ERROR: {e}"))?;
+    tokio::fs::create_dir_all(&downloads).await.map_err(|e| format!("DOWNLOAD_PATH_ERROR: {e}"))?;
+    let destination = unique_download_path(&downloads, &safe_download_name(&filename)).await?;
+    let temporary = destination.with_extension(format!("{}.loza-part", uuid::Uuid::new_v4()));
+    let total = response.content_length().unwrap_or(0);
+    let mut file = tokio::fs::File::create(&temporary).await.map_err(|e| format!("DOWNLOAD_WRITE_ERROR: {e}"))?;
+    let mut stream = response.bytes_stream();
+    let mut received = 0u64;
+
+    while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                let _ = tokio::fs::remove_file(&temporary).await;
+                return Err(format!("READ_ERROR: {error}"));
+            }
+        };
+        if let Err(error) = file.write_all(&chunk).await {
+            let _ = tokio::fs::remove_file(&temporary).await;
+            return Err(format!("DOWNLOAD_WRITE_ERROR: {error}"));
+        }
+        received += chunk.len() as u64;
+        let _ = app.emit(&progress_event, serde_json::json!({ "received": received, "total": total }));
+    }
+    if let Err(error) = file.flush().await {
+        let _ = tokio::fs::remove_file(&temporary).await;
+        return Err(format!("DOWNLOAD_WRITE_ERROR: {error}"));
+    }
+    drop(file);
+    if let Err(error) = tokio::fs::rename(&temporary, &destination).await {
+        let _ = tokio::fs::remove_file(&temporary).await;
+        return Err(format!("DOWNLOAD_WRITE_ERROR: {error}"));
+    }
+    let _ = app.emit(&progress_event, serde_json::json!({ "received": received, "total": total.max(received) }));
+    Ok(destination.to_string_lossy().into_owned())
+}
+
+#[cfg(test)]
+mod download_tests {
+    use super::safe_download_name;
+
+    #[test]
+    fn download_name_cannot_escape_the_download_directory() {
+        assert_eq!(safe_download_name("../../secret.txt"), "secret.txt");
+        assert_eq!(safe_download_name("folder\\report.pdf"), "report.pdf");
+        assert_eq!(safe_download_name("C:\\temp\\report.pdf"), "report.pdf");
+        assert_eq!(safe_download_name("folder/report.pdf"), "report.pdf");
+        assert_eq!(safe_download_name(""), "download");
+        assert_eq!(safe_download_name(".."), "download");
+    }
 }
 
 /// `invoke("delete_file", { path })`
@@ -472,6 +638,42 @@ pub async fn create_dir(
     }
 
     resp.json::<FileInfo>()
+        .await
+        .map_err(|e| format!("PARSE_ERROR: {}", e))
+}
+
+/// `invoke("mutate_files", { operation, paths, destination? })`
+///
+/// A single HTTP request for a multi-selection operation. The server owns
+/// conflict naming and returns a result for every input path, so React never
+/// guesses which files actually changed.
+#[tauri::command]
+pub async fn mutate_files(
+    app: AppHandle,
+    state: tauri::State<'_, LozaState>,
+    operation: String,
+    paths: Vec<String>,
+    destination: Option<String>,
+) -> Result<BatchResponse, String> {
+    let (token, server_url) = require_session(&app)?;
+    let operation = match operation.as_str() {
+        "copy" => BatchOperation::Copy,
+        "move" => BatchOperation::Move,
+        "delete" => BatchOperation::Delete,
+        _ => return Err("INVALID_BATCH: unsupported operation".to_string()),
+    };
+    let request = BatchRequest { operation, paths, destination };
+    let response = state.client
+        .post(format!("{}/files/batch", server_url))
+        .header("x-session-token", token)
+        .json(&request)
+        .send()
+        .await
+        .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
+    if !response.status().is_success() {
+        return Err(describe_http_error(response, "mutate files").await);
+    }
+    response.json::<BatchResponse>()
         .await
         .map_err(|e| format!("PARSE_ERROR: {}", e))
 }

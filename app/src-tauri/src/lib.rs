@@ -44,13 +44,15 @@ pub fn run() {
         .setup({
             let ws = ws_client.clone();
             move |app| {
-                let window = app.get_webview_window("main").unwrap();
+                if let Some(window) = app.get_webview_window("main") {
+                    #[cfg(target_os = "macos")]
+                    let _ = apply_vibrancy(&window, NSVisualEffectMaterial::Popover, None, Some(14.0));
 
-                #[cfg(target_os = "macos")]
-                let _ = apply_vibrancy(&window, NSVisualEffectMaterial::Popover, None, Some(14.0));
-
-                #[cfg(target_os = "windows")]
-                let _ = apply_mica(&window, Some(true));
+                    #[cfg(target_os = "windows")]
+                    let _ = apply_mica(&window, Some(true));
+                } else {
+                    tracing::warn!("main window not found — vibrancy effects skipped");
+                }
 
                 // Start the unified WS client. This replaces the old
                 // `spawn_status_listener` (which connected to /ws/status).
@@ -62,7 +64,11 @@ pub fn run() {
                 // приложения — пользователю не нужно входить заново, пока он
                 // открывает приложение хотя бы раз в TOKEN_TTL_SECS.
                 let app_handle = app.handle().clone();
-                let client = reqwest::Client::new();
+                let client = reqwest::Client::builder()
+                    .connect_timeout(std::time::Duration::from_secs(10))
+                    .timeout(std::time::Duration::from_secs(30))
+                    .build()
+                    .unwrap_or_else(|_| reqwest::Client::new());
                 tauri::async_runtime::spawn(async move {
                     auth::refresh_session_silently(&app_handle, &client).await;
                 });
@@ -71,7 +77,11 @@ pub fn run() {
             }
         })
         .manage(LozaState {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("failed to build HTTP client"),
             ws: ws_client,
         })
         .plugin(tauri_plugin_opener::init())
@@ -94,11 +104,13 @@ pub fn run() {
             files::get_file_info,
             files::upload_file,
             files::download_file,
+            files::download_file_to_downloads,
             files::delete_file,
             files::rename_file,
             files::move_file,
             files::copy_file,
             files::create_dir,
+            files::mutate_files,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

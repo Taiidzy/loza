@@ -51,10 +51,14 @@ pub fn issue_token(
 
 /// Проверяет подпись и срок действия токена, возвращает claims если валиден.
 pub fn verify_token(secret: &str, token: &str) -> Option<Claims> {
+    let mut validation = Validation::default();
+    // Require the `sub` claim: a crafted token without a subject must not
+    // pass validation (defense-in-depth on top of signature verification).
+    validation.set_required_spec_claims(&["exp", "sub"]);
     let data = decode::<Claims>(
         token,
         &DecodingKey::from_secret(secret.as_bytes()),
-        &Validation::default(),
+        &validation,
     )
     .ok()?;
     Some(data.claims)

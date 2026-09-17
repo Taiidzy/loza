@@ -150,25 +150,14 @@ export function useOperationQueue() {
     });
 
     try {
-      const bytes = await fileApi.downloadFile(params.path, progressId);
-
-      // Trigger browser download
-      const blob = new Blob([bytes]);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = params.filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      await fileApi.downloadFileToDownloads(params.path, params.filename, progressId);
 
       const now = Date.now();
       const elapsed = (now - startTime) / 1000;
       const speed = elapsed > 0 ? sizeBytes / elapsed : 0;
 
       updateOperation(id, {
-        transferred: bytes.byteLength,
+        transferred: sizeBytes,
         progress: 100,
         speed,
         eta: 0,
@@ -322,12 +311,16 @@ function OperationCard({
           <span style={{ color: statusColor, flexShrink: 0 }}>{StatusIcon}</span>
         </div>
 
-        <div style={{ fontSize: 11, color: "var(--color-text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {formatBytes(operation.transferred)} / {formatBytes(operation.sizeBytes)}
-          {" · "}
-          {operation.speed > 0 && formatBytes(operation.speed)}/сек
-          {" · "}
-          {operation.eta > 0 && formatEta(operation.eta)}
+        <div style={{
+          fontSize: 11,
+          color: operation.status === "error" ? "var(--color-error)" : "var(--color-text-muted)",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+          whiteSpace: "nowrap",
+        }} title={operation.status === "error" ? (operation.error || "") : undefined}>
+          {operation.status === "error"
+            ? (operation.error || "Операция завершилась с ошибкой")
+            : `${formatBytes(operation.transferred)} / ${formatBytes(operation.sizeBytes)} · ${operation.speed > 0 ? formatBytes(operation.speed) + "/сек" : ""}${operation.eta > 0 ? " · " + formatEta(operation.eta) : ""}`}
         </div>
 
         <div style={{

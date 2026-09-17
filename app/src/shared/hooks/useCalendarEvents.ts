@@ -1,8 +1,27 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dayjs, { type Dayjs } from 'dayjs';
 import * as calendarService from '../../api/calendarService';
 import { eventEnd, eventStart } from '../utils/calendarDateUtils';
 import type { CalendarEvent, CalendarEventDraft, ExpandedCalendarEvent } from '../../types/calendar';
+
+/**
+ * Adds a month while clamping the day-of-month to the target day. `dayjs.add(1,'month')`
+ * alone silently clamps (Jan 31 → Feb 28 → Mar 28 … permanent drift); this restores the
+ * intended day on months that have it, and becomes "the last day of the month" otherwise.
+ */
+function addMonthToTargetDay(value: Dayjs, targetDay: number): Dayjs {
+  const next = value.add(1, 'month');
+  return next.date(Math.min(targetDay, next.daysInMonth()));
+}
+
+/**
+ * Adds a year while clamping the day-of-month (so Feb 29 events land on Feb 28 in
+ * non-leap years instead of collapsing permanently).
+ */
+function addYearToTargetDay(value: Dayjs, targetDay: number): Dayjs {
+  const next = value.add(1, 'year');
+  return next.date(Math.min(targetDay, next.daysInMonth()));
+}
 
 /**
  * Хук данных календаря: обёртка над calendarService (аналогично тому, как
@@ -21,16 +40,26 @@ export function useCalendarEvents(visibleRangeStart: Dayjs, visibleRangeEnd: Day
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  /**
+   * Monotonically increasing token so a stale `reload()` completion can never
+   * overwrite a newer fetch's state (or set state after the consumer switched
+   * visible ranges).
+   */
+  const reloadToken = useRef(0);
+
   const reload = useCallback(async () => {
+    const token = ++reloadToken.current;
+    setIsLoading(true);
     try {
-      setIsLoading(true);
       const data = await calendarService.getEvents();
+      if (token !== reloadToken.current) return;
       setEvents(data);
       setError(null);
     } catch (err) {
+      if (token !== reloadToken.current) return;
       setError(err instanceof Error ? err.message : 'Не удалось загрузить события');
     } finally {
-      setIsLoading(false);
+      if (token === reloadToken.current) setIsLoading(false);
     }
   }, []);
 
@@ -69,7 +98,9 @@ export function useCalendarEvents(visibleRangeStart: Dayjs, visibleRangeEnd: Day
 
       // Сдвигаем именно даты (не время) — время начала/конца остаётся тем же
       // на каждом повторении, меняется только календарный день.
-      let currStart = dayjs(evt.startDate, 'YYYY-MM-DD');
+      const firstStart = dayjs(evt.startDate, 'YYYY-MM-DD');
+      let currStart = firstStart;
+      const targetDayOfMonth = firstStart.date();
       const dayOffset = dayjs(evt.endDate, 'YYYY-MM-DD').diff(currStart, 'day');
 
       while (currStart.isBefore(windowEnd)) {
@@ -86,8 +117,8 @@ export function useCalendarEvents(visibleRangeStart: Dayjs, visibleRangeEnd: Day
         }
         if (evt.recurrence === 'daily') currStart = currStart.add(1, 'day');
         else if (evt.recurrence === 'weekly') currStart = currStart.add(1, 'week');
-        else if (evt.recurrence === 'monthly') currStart = currStart.add(1, 'month');
-        else currStart = currStart.add(1, 'year');
+        else if (evt.recurrence === 'monthly') currStart = addMonthToTargetDay(currStart, targetDayOfMonth);
+        else currStart = addYearToTargetDay(currStart, targetDayOfMonth);
       }
     });
 
@@ -127,6 +158,12 @@ export function useCalendarEvents(visibleRangeStart: Dayjs, visibleRangeEnd: Day
         else bucket.singleDay.push(evt);
         cursor = cursor.add(1, 'day');
       }
+    });
+
+    // Панель "События дня" показывает события в порядке их поступления из
+    // бэкенда — сортируем однодневные по времени начала (аллдэй — по дате).
+    byDay.forEach((bucket) => {
+      bucket.singleDay.sort((a, b) => eventStart(a).valueOf() - eventStart(b).valueOf());
     });
 
     return { eventsByDay: byDay, eventSlots: slots };

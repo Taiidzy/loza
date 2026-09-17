@@ -26,6 +26,9 @@ export interface CustomCalendarProps {
   eventSlots: Record<string, number>;
   isLoading?: boolean;
   hasAnyEvents?: boolean;
+  /** Текст ошибки загрузки событий (если сервер недоступен) — показывается оверлеем. */
+  error?: string | null;
+  onRetry?: () => void;
 }
 
 /**
@@ -51,6 +54,8 @@ export const CustomCalendar = ({
   eventSlots,
   isLoading,
   hasAnyEvents = true,
+  error = null,
+  onRetry,
 }: CustomCalendarProps) => {
   const [direction, setDirection] = useState(0);
   const [hoveredEvent, setHoveredEvent] = useState<ExpandedCalendarEvent | null>(null);
@@ -216,6 +221,17 @@ export const CustomCalendar = ({
 
       {isLoading && !hasAnyEvents && (
         <div className={styles.loadingOverlay}>Загрузка событий…</div>
+      )}
+
+      {error && (
+        <div className={styles.errorOverlay}>
+          <span>{error}</span>
+          {onRetry && (
+            <button type="button" className={styles.errorRetryButton} onClick={onRetry}>
+              Повторить
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

@@ -31,10 +31,12 @@ type ModalState =
  */
 export default function DayEventsPanel({ selectedDate, dayEvents, events, onCreate, onUpdate, onDelete }: DayEventsPanelProps) {
   const [modal, setModal] = useState<ModalState>({ kind: 'none' });
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   // При смене выбранного дня закрываем любые открытые модалки.
   useEffect(() => {
     setModal({ kind: 'none' });
+    setDeleteError(null);
   }, [selectedDate?.format('YYYY-MM-DD')]);
 
   const originalFor = (evt: ExpandedCalendarEvent): CalendarEvent | null =>
@@ -48,13 +50,25 @@ export default function DayEventsPanel({ selectedDate, dayEvents, events, onCrea
       await onCreate(draft);
     }
     setModal({ kind: 'none' });
+    setDeleteError(null);
   };
 
   const handleDelete = async (evt: ExpandedCalendarEvent) => {
     const original = originalFor(evt);
     if (!original) return;
-    await onDelete(original.id);
-    setModal({ kind: 'none' });
+    if (evt.recurrence !== 'none') {
+      const confirmed = window.confirm(
+        'Это повторяющееся событие. Будут удалены ВСЕ его вхождения, а не только это. Продолжить?'
+      );
+      if (!confirmed) return;
+    }
+    try {
+      await onDelete(original.id);
+      setModal({ kind: 'none' });
+      setDeleteError(null);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Не удалось удалить событие');
+    }
   };
 
   if (!selectedDate) {
@@ -118,6 +132,7 @@ export default function DayEventsPanel({ selectedDate, dayEvents, events, onCrea
 
       <EventDetailsModal
         event={modal.kind === 'details' ? modal.event : null}
+        error={modal.kind === 'details' ? deleteError : null}
         onEdit={() => modal.kind === 'details' && setModal({ kind: 'edit', event: modal.event })}
         onDelete={() => modal.kind === 'details' && handleDelete(modal.event)}
         onClose={() => setModal({ kind: 'none' })}

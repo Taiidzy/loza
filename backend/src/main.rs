@@ -108,6 +108,7 @@ async fn main() {
                 .route("/rename", post(handlers::files::rename_file))
                 .route("/move", post(handlers::files::move_file))
                 .route("/copy", post(handlers::files::copy_file))
+                .route("/batch", post(handlers::files::batch_files))
                 .route("/mkdir", post(handlers::files::create_dir))
                 .layer(DefaultBodyLimit::max(500 * 1024 * 1024)),
         )
