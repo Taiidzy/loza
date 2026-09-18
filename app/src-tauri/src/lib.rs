@@ -60,9 +60,11 @@ pub fn run() {
                 // request-response (calendar CRUD) and push (status, events).
                 ws_client::spawn_ws_loop(app.handle().clone(), ws);
 
-                // Тихо продлевает токен сессии (если она есть) при каждом запуске
-                // приложения — пользователю не нужно входить заново, пока он
-                // открывает приложение хотя бы раз в TOKEN_TTL_SECS.
+                // Тихо продлевает токен сессии при старте и далее каждые 6ч,
+                // пока приложение открыто. Access-JWT живёт 24ч, но строка
+                // сессии на сервере — 30 дней, поэтому refresh с любым живым
+                // токеном выдаёт новый; пользователь не должен входить заново,
+                // если открывает приложение хотя бы раз в месяц.
                 let app_handle = app.handle().clone();
                 let client = reqwest::Client::builder()
                     .connect_timeout(std::time::Duration::from_secs(10))
@@ -70,7 +72,10 @@ pub fn run() {
                     .build()
                     .unwrap_or_else(|_| reqwest::Client::new());
                 tauri::async_runtime::spawn(async move {
-                    auth::refresh_session_silently(&app_handle, &client).await;
+                    loop {
+                        let _ = auth::refresh_session_silently(&app_handle, &client).await;
+                        tokio::time::sleep(std::time::Duration::from_secs(6 * 60 * 60)).await;
+                    }
                 });
 
                 Ok(())
@@ -103,6 +108,7 @@ pub fn run() {
             files::search_files,
             files::get_file_info,
             files::upload_file,
+            files::upload_paths,
             files::download_file,
             files::download_file_to_downloads,
             files::delete_file,

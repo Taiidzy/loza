@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { BatchOperation, BatchResponse, FileInfo, MoveRequest, CopyRequest } from "../types/files";
+import { BatchOperation, BatchResponse, FileInfo, MoveRequest, CopyRequest, PathUploadResult } from "../types/files";
 import { logger } from "../shared/utils/logger";
 
 /**
@@ -55,6 +55,14 @@ export class FileApiService {
       data,
       overwrite,
       progressId,
+    });
+  }
+
+  async uploadPaths(paths: string[], destination?: string): Promise<PathUploadResult[]> {
+    logger.info("files", "invoke(upload_paths)", { count: paths.length, destination });
+    return await invoke<PathUploadResult[]>("upload_paths", {
+      paths,
+      destination: destination ?? null,
     });
   }
 

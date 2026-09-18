@@ -133,6 +133,7 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
   /** Размер картинки на экране при zoom = 1 (с учётом "contain"), пиксели. */
   const [imgFit, setImgFit] = useState<{ w: number; h: number } | null>(null);
   const panRef = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number; active: boolean } | null>(null);
+  const [panning, setPanning] = useState(false);
 
   const loadContent = useCallback(async () => {
     if (file.isDir) return;
@@ -268,6 +269,9 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
   // иначе до краёв картинки не добраться — видимые scroll не появляются).
   const onImagePointerDown = (e: React.PointerEvent) => {
     if (!zoomed || !containerRef.current) return;
+    // Не даём стартовать нативной HTML5-drag картинки и выделению текста —
+    // иначе pointer-события прерываются и панорамирование ломается.
+    e.preventDefault();
     const container = containerRef.current;
     panRef.current = {
       startX: e.clientX,
@@ -276,6 +280,7 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
       scrollTop: container.scrollTop,
       active: true,
     };
+    setPanning(true);
     container.setPointerCapture?.(e.pointerId);
   };
 
@@ -289,6 +294,7 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
 
   const endImagePan = () => {
     if (panRef.current) panRef.current.active = false;
+    setPanning(false);
   };
 
   const renderPreviewContent = () => {
@@ -311,6 +317,8 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
           ref={imageRef}
           src={blobUrl}
           alt={name}
+          draggable={false}
+          onDragStart={(e) => e.preventDefault()}
           onLoad={(e) => {
             const naturalW = e.currentTarget.naturalWidth || 1;
             const naturalH = e.currentTarget.naturalHeight || 1;
@@ -407,7 +415,8 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
           alignItems: zoomed ? "flex-start" : "center",
           justifyContent: zoomed ? "flex-start" : "center",
           background: "var(--color-popup-bg)",
-          cursor: zoomed && isImageFile && blobUrl && !isEditing ? (panRef.current?.active ? "grabbing" : "grab") : undefined,
+          cursor: zoomed && isImageFile && blobUrl && !isEditing ? (panning ? "grabbing" : "grab") : undefined,
+          touchAction: zoomed ? "none" : undefined,
         }}
         onPointerDown={isImageFile && blobUrl && !isEditing ? onImagePointerDown : undefined}
         onPointerMove={isImageFile && blobUrl && !isEditing ? onImagePointerMove : undefined}

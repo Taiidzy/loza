@@ -57,7 +57,7 @@ pub struct CopyRequest {
     pub to: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BatchOperation {
     Copy,
@@ -313,9 +313,112 @@ pub async fn upload_file(
         .map_err(|e| format!("PARSE_ERROR: {}", e))
 }
 
+/// Результат загрузки одного файла по абсолютному пути (drag&drop из OS).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathUploadResult {
+    pub filename: String,
+    pub success: bool,
+    pub message: Option<String>,
+    pub target_path: Option<String>,
+}
+
+/// `invoke("upload_paths", { paths, destination? })`
+///
+/// Загружает файлы по абсолютным путям операционной системы — это путь для
+/// drag&drop из Finder/Explorer. WebView не может читать содержимое файла по
+/// пути, поэтому файлы стримятся с диска на сервер прямо из Rust, без
+/// материализации в памяти приложения. Директории пропускаются. Ошибка одного
+/// файла не прерывает остальные — результат возвращается по каждому пути.
+#[tauri::command]
+pub async fn upload_paths(
+    app: AppHandle,
+    state: tauri::State<'_, LozaState>,
+    paths: Vec<String>,
+    destination: Option<String>,
+) -> Result<Vec<PathUploadResult>, String> {
+    let (token, server_url) = require_session(&app)?;
+    let destination = destination.unwrap_or_default();
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut results = Vec::with_capacity(paths.len());
+    for raw in paths {
+        let path = std::path::PathBuf::from(&raw);
+        let filename = match path.file_name().and_then(|name| name.to_str()) {
+            Some(name) if !name.is_empty() => name.to_string(),
+            _ => continue,
+        };
+        let metadata = match tokio::fs::metadata(&path).await {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                results.push(PathUploadResult { filename, success: false, message: Some(format!("OPEN_ERROR: {e}")), target_path: None });
+                continue;
+            }
+        };
+        if metadata.is_dir() {
+            // Папки не загружаем (при drag&drop папок их пропускаем).
+            continue;
+        }
+        let file = match tokio::fs::File::open(&path).await {
+            Ok(file) => file,
+            Err(e) => {
+                results.push(PathUploadResult { filename, success: false, message: Some(format!("OPEN_ERROR: {e}")), target_path: None });
+                continue;
+            }
+        };
+
+        let stream = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
+        let progress_id = uuid::Uuid::new_v4().to_string();
+        let form = reqwest::multipart::Form::new()
+            .text("path", destination.clone())
+            .text("overwrite", "false")
+            .text("progressId", progress_id.clone())
+            .part(
+                "file",
+                reqwest::multipart::Part::stream(stream).file_name(filename.clone()),
+            );
+
+        let resp = match state
+            .client
+            .post(format!("{}/files/upload", server_url))
+            .header("x-session-token", token.as_str())
+            .multipart(form)
+            .send()
+            .await
+        {
+            Ok(resp) => resp,
+            Err(e) => {
+                results.push(PathUploadResult { filename, success: false, message: Some(format!("SERVER_UNREACHABLE: {e}")), target_path: None });
+                continue;
+            }
+        };
+
+        if !resp.status().is_success() {
+            results.push(PathUploadResult { filename, success: false, message: Some(describe_http_error(resp, "upload file").await), target_path: None });
+            continue;
+        }
+
+        match resp.json::<FileInfo>().await {
+            Ok(info) => {
+                results.push(PathUploadResult { filename, success: true, message: None, target_path: Some(info.path) });
+                let _ = app.emit(
+                    &format!("{}{}", FILE_PROGRESS_EVENT_PREFIX, progress_id),
+                    serde_json::json!({ "sent": metadata.len(), "total": metadata.len() }),
+                );
+            }
+            Err(e) => {
+                results.push(PathUploadResult { filename, success: false, message: Some(format!("PARSE_ERROR: {e}")), target_path: None });
+            }
+        }
+    }
+
+    Ok(results)
+}
+
 /// `invoke("download_file", { path, progressId? })`
 /// Returns the raw bytes of the file as a `Vec<u8>`.
-///
 /// This loads the whole file into memory — it is meant for previews only.
 /// Rejects files beyond `DOWNLOAD_IN_MEMORY_LIMIT` to avoid exhausting the
 /// process; large files should use `download_file_to_downloads` instead.
@@ -670,10 +773,165 @@ pub async fn mutate_files(
         .send()
         .await
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        // Старый сервер без /files/batch (до введения batch-эндпоинта):
+        // деградируем до пер-файловых операций, чтобы удаление/копирование/
+        // вставка продолжали работать и после обновления десктоп-клиента.
+        return batch_fallback(app, state, operation, request.paths.clone(), request.destination).await;
+    }
     if !response.status().is_success() {
         return Err(describe_http_error(response, "mutate files").await);
     }
     response.json::<BatchResponse>()
         .await
         .map_err(|e| format!("PARSE_ERROR: {}", e))
+}
+
+/// Вспомогательный пер-файловый фолбэк для серверов без `/files/batch`.
+///
+/// Поведение повторяет semantics batch-операций: результат по каждому пути,
+/// независимость элементов, имени с правкой конфликтов (`name (2)`), но через
+/// одиночные эндпоинты /files/delete, /files/copy, /files/move. Имена занятых
+/// в директории-назначении берутся из списка файлов этой директории один раз.
+async fn batch_fallback(
+    app: AppHandle,
+    state: tauri::State<'_, LozaState>,
+    operation: BatchOperation,
+    paths: Vec<String>,
+    destination: Option<String>,
+) -> Result<BatchResponse, String> {
+    let (token, server_url) = require_session(&app)?;
+    let dest = destination.unwrap_or_default();
+
+    // Уже занятые имена в назначении, чтобы выбрать свободное целевое имя.
+    let mut taken: std::collections::HashSet<String> = match list_destination_names(&state.client, &server_url, &token, &dest).await {
+        Some(names) => names.into_iter().collect(),
+        None => std::collections::HashSet::new(),
+    };
+
+    let operation_str = match operation {
+        BatchOperation::Copy => "copy",
+        BatchOperation::Move => "move",
+        BatchOperation::Delete => "delete",
+    };
+    let mut results = Vec::with_capacity(paths.len());
+
+    for path in paths {
+        match operation {
+            BatchOperation::Delete => {
+                let mut url = match url::Url::parse(&format!("{}/files/delete", server_url)) {
+                    Ok(url) => url,
+                    Err(e) => {
+                        results.push(batch_error(BatchOperation::Delete, &path, &format!("URL_ERROR: {e}")));
+                        continue;
+                    }
+                };
+                url.query_pairs_mut().append_pair("path", &path);
+                let resp = match state.client.delete(url.as_str()).header("x-session-token", token.as_str()).send().await {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        results.push(batch_error(BatchOperation::Delete, &path, &format!("SERVER_UNREACHABLE: {e}")));
+                        continue;
+                    }
+                };
+                if resp.status().is_success() {
+                    results.push(BatchItemResult { path, target_path: None, success: true, error: None, file: None });
+                } else {
+                    results.push(batch_error(BatchOperation::Delete, &path, &describe_http_error(resp, "delete file").await));
+                }
+            }
+            BatchOperation::Copy | BatchOperation::Move => {
+                // Move в ту же директорию — no-op (как в /files/batch).
+                if matches!(operation, BatchOperation::Move) {
+                    let parent = path.rsplit_once('/').map(|(p, _)| p.to_string()).unwrap_or_default();
+                    if parent == dest {
+                        results.push(BatchItemResult { path: path.clone(), target_path: Some(path.clone()), success: true, error: None, file: None });
+                        continue;
+                    }
+                }
+                let name = path.rsplit('/').next().unwrap_or(&path).to_string();
+                let target = fallback_target_name(&dest, &name, &mut taken);
+                let endpoint = if matches!(operation, BatchOperation::Copy) { "copy" } else { "move" };
+                let body = serde_json::json!({ "from": path.clone(), "to": target });
+                let resp = match state.client
+                    .post(format!("{}/files/{endpoint}", server_url))
+                    .header("x-session-token", token.as_str())
+                    .json(&body)
+                    .send()
+                    .await
+                {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        results.push(batch_error(operation, &path, &format!("SERVER_UNREACHABLE: {e}")));
+                        continue;
+                    }
+                };
+                if !resp.status().is_success() {
+                    results.push(batch_error(operation, &path, &describe_http_error(resp, operation_str).await));
+                    continue;
+                }
+                match resp.json::<FileInfo>().await {
+                    Ok(info) => results.push(BatchItemResult {
+                        path,
+                        target_path: Some(target),
+                        success: true,
+                        error: None,
+                        file: Some(info),
+                    }),
+                    Err(e) => results.push(batch_error(operation, &path, &format!("PARSE_ERROR: {e}"))),
+                }
+            }
+        }
+    }
+
+    Ok(BatchResponse { operation: operation_str.to_string(), results })
+}
+
+fn batch_error(operation: BatchOperation, path: &str, message: &str) -> BatchItemResult {
+    let target_path = match operation {
+        BatchOperation::Copy | BatchOperation::Move => Some(path.to_string()),
+        BatchOperation::Delete => None,
+    };
+    BatchItemResult { path: path.to_string(), target_path, success: false, error: Some(message.to_string()), file: None }
+}
+
+/// Список путей в директории-назначении (для выбора свободного имени при
+/// фолбэке). Считаем отсутствие списка некритичным: ошибочные попытки будут
+/// отдельно отражены в результатах batch.
+async fn list_destination_names(client: &reqwest::Client, server_url: &str, token: &str, dest: &str) -> Option<Vec<String>> {
+    let mut url = url::Url::parse(&format!("{}/files/list", server_url)).ok()?;
+    url.query_pairs_mut().append_pair("path", dest);
+    let resp = client.get(url.as_str()).header("x-session-token", token).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let files: Vec<FileInfo> = resp.json().await.ok()?;
+    Some(files.into_iter().map(|file| file.path).collect())
+}
+
+/// Выбирает свободное имя в destination: `name`, затем `stem (2)ext`, и т.д.
+fn fallback_target_name(destination: &str, name: &str, taken: &mut std::collections::HashSet<String>) -> String {
+    let (stem, extension) = match name.rfind('.') {
+        Some(index) if index > 0 => (&name[..index], &name[index..]),
+        _ => (name, ""),
+    };
+    let make = |num: u32| {
+        let candidate = if num == 1 { name.to_string() } else { format!("{stem} ({num}){extension}") };
+        if destination.is_empty() {
+            candidate
+        } else {
+            format!("{destination}/{candidate}")
+        }
+    };
+    let mut index = 1u32;
+    let mut candidate = make(1);
+    while taken.contains(&candidate) {
+        index += 1;
+        if index > 10_000 {
+            break;
+        }
+        candidate = make(index);
+    }
+    taken.insert(candidate.clone());
+    candidate
 }

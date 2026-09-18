@@ -16,6 +16,7 @@ import { useOperationQueue } from "../../../components/files/OperationQueue";
 import OperationQueueList from "../../../components/files/OperationQueue";
 import FileViewer from "../../../components/files/FileViewer";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 const SECONDARY = "var(--color-text-secondary)";
 const PRIMARY = "var(--color-text-primary)";
@@ -35,15 +36,21 @@ const iconFor = (file: FileInfo): any => {
   return FileIcon;
 };
 
+const getExtension = (name: string): string => {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0 || dot === name.length - 1) return "";
+  return name.slice(dot + 1).toLowerCase();
+};
+
 const colorFor = (file: FileInfo): string => {
-  if (file.isDir) return "#60a5fa";
-  const ext = file.name.split(".").pop()?.toLowerCase() || "";
+  if (file.isDir) return "var(--color-accent)";
+  const ext = getExtension(file.name);
   const map: Record<string, string> = {
     jpg:"#f472b6",jpeg:"#f472b6",png:"#f472b6",gif:"#f472b6",webp:"#f472b6",avif:"#f472b6",svg:"#f472b6",
     mp4:"#fb923c",webm:"#fb923c",mov:"#fb923c",avi:"#fb923c",mkv:"#fb923c",
     mp3:"#34d39f",wav:"#34d39f",ogg:"#34d39f",flac:"#34d39f",m4a:"#34d39f",
     zip:"#fbbf24",gz:"#fbbf24",tar:"#fbbf24","7z":"#fbbf24",rar:"#fbbf24",
-    pdf:"#ef4444",json:"#60a5fa",md:"#34d39f",rs:"#ea5818",go:"#00add8",
+    pdf:"#ef4444",json:"#f9a8d4",md:"#34d39f",rs:"#ea5818",go:"#00add8",
     py:"#3776ab",js:"#f7df1e",ts:"#f7df1e",jsx:"#f7df1e",tsx:"#f7df1e",
     html:"#e34c26",htm:"#e34c26",css:"#1572b6",xml:"#f472b6",
   };
@@ -128,6 +135,7 @@ export default function LozaTab() {
   const [searchResults, setSearchResults] = useState<FileInfo[] | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [searchNonce, setSearchNonce] = useState(0);
+  const [dragOver, setDragOver] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
@@ -451,6 +459,55 @@ export default function LozaTab() {
     e.preventDefault();
     e.currentTarget.classList.remove(styles.dragOver);
   };
+
+  // Drag&drop из Finder/Explorer: OS передаёт абсолютные пути, содержимое
+  // которых WebView прочитать не может — загрузку выполняет Rust (`upload_paths`).
+  const handleDropPaths = async (paths: string[]) => {
+    if (paths.length === 0) return;
+    try {
+      const results = await fileApi.uploadPaths(paths, currentPath);
+      await loadFiles(currentPath);
+      const failed = results.filter((result) => !result.success);
+      if (failed.length) {
+        setError(`Не удалось загрузить: ${failed.map((result) => result.filename).join(", ")}`);
+      }
+    } catch (e: any) {
+      setError(e?.message || "Не удалось загрузить файлы");
+      logger.error("files", "Drop paths upload failed", e);
+    }
+  };
+
+  // Keep the latest closure behind a ref so the Tauri subscription is created
+  // exactly once while still seeing current state (currentPath, loadFiles…).
+  const dropHandlerRef = useRef(handleDropPaths);
+  dropHandlerRef.current = handleDropPaths;
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (disposed) return;
+        const payload = event.payload;
+        if (payload.type === "enter" || payload.type === "over") {
+          setDragOver(true);
+        } else if (payload.type === "leave") {
+          setDragOver(false);
+        } else if (payload.type === "drop") {
+          setDragOver(false);
+          void dropHandlerRef.current(payload.paths);
+        }
+      })
+      .then((stop) => {
+        if (disposed) stop();
+        else unlisten = stop;
+      })
+      .catch((e: any) => logger.error("files", "onDragDropEvent subscribe failed", e));
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
 
   const handleDeleteSelected = async () => {
     if (selectedIds.size === 0) return;
@@ -881,7 +938,7 @@ export default function LozaTab() {
           </div>
         </motion.div>
 
-        <div className={styles.body} onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave}>
+        <div className={`${styles.body} ${dragOver ? styles.dragOver : ""}`} onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave}>
           <AnimatePresence>
             {error && (
               <motion.div
@@ -1384,7 +1441,7 @@ const FolderTreeSidebar: React.FC<{
                 color: isActive ? "var(--color-accent)" : "var(--color-text-muted)",
               }} />
             )}
-            <Folder size={13} style={{ color: "#60a5fa" }} />
+            <Folder size={13} style={{ color: "var(--color-accent)" }} />
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.name}</span>
           </button>
           {isDir && isExpanded && node.children.length > 0 && (
@@ -1469,7 +1526,7 @@ function GridItem({
         {item.isDir && item.sizeBytes > 0 && (
           <span
             className={styles.typeBadge}
-            style={{ background: "rgba(96,165,250,0.18)", color: "#60a5fa" }}
+            style={{ background: "var(--color-accent-soft)", color: "var(--color-accent)" }}
           >
             {item.sizeBytes}
           </span>

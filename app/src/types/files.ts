@@ -38,6 +38,13 @@ export interface BatchResponse {
   results: BatchItemResult[];
 }
 
+export interface PathUploadResult {
+  filename: string;
+  success: boolean;
+  message: string | null;
+  targetPath: string | null;
+}
+
 export interface UploadMeta {
   path?: string;
   filename: string;

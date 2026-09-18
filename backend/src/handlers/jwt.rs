@@ -3,11 +3,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::handlers::auth::now_secs;
 
-/// Время жизни токена — как было в исходной сессии (24ч).
-/// Tauri-слой сам продлевает токен при каждом запуске приложения через /auth/refresh,
-/// поэтому реальный "срок жизни без активности" не ограничен для пользователя,
-/// пока он открывает приложение хотя бы раз в 24ч.
-pub const TOKEN_TTL_SECS: u64 = 86_400;
+/// Срок жизни access-JWT (как было: 24ч). Проверяется подписью и `exp`
+/// при каждом обращении (`require_session`). Десктоп-клиент продлевает его
+/// при старте и раз в несколько часов через /auth/refresh, поэтому короткий
+/// TTL незаметен для пользователя.
+pub const ACCESS_TOKEN_TTL_SECS: u64 = 86_400;
+
+/// Срок жизни сессии в БД — "окно" для /auth/refresh. Это refresh-токен:
+/// пока строка сессии жива, /auth/refresh выдаёт новый access-JWT даже если
+/// старый уже просрочен. Десктоп-клиент хранит токен в безопасном хранилище
+/// ОС, поэтому долгое окно оправдано — пользователь не должен входить заново,
+/// если открывает приложение хотя бы раз в 30 дней.
+pub const SESSION_TTL_SECS: u64 = 30 * 24 * 60 * 60;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
@@ -28,7 +35,7 @@ pub fn issue_token(
     device: &str,
 ) -> (String, u64) {
     let now = now_secs();
-    let exp = now + TOKEN_TTL_SECS;
+    let exp = now + ACCESS_TOKEN_TTL_SECS;
 
     let claims = Claims {
         sub: username.to_string(),

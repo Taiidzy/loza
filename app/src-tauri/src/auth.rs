@@ -151,67 +151,116 @@ pub async fn login(
 /// если сессии нет. Используется ProtectedRoute для проверки при старте.
 ///
 /// Валидирует сессию против сервера (через /auth/me) — если токен истёк или
-/// отозван, локальная сессия очищается и возвращается None.
+/// отозван, локальная сессия очищается и возвращается None. Но перед тем как
+/// сдаться, делает две попытки:
+///   1. Заново читает сессию из хранилища — её мог ротировать параллельный
+///      refresh при старте (гонка: /auth/refresh уже удалил старую строку, и
+///      наша копия токена стала невалидной даже при живом пользователе).
+///   2. Пытается тихо продлить сессию (/auth/refresh) и проверяет /auth/me
+///      уже новым токеном. Только если и это не помогло — сессия мертва.
 #[tauri::command]
 pub async fn get_current_user(
     app: AppHandle,
     state: tauri::State<'_, LozaState>,
 ) -> Result<Option<UserInfo>, String> {
     eprintln!("\x1b[36m[INFO]\x1b[0m [desktop.auth] get_current_user called");
-    
+
     // 1. Проверяем наличие локальной сессии
-    let Some(session) = session_store::load_session(&app) else {
+    let Some(mut session) = session_store::load_session(&app) else {
         eprintln!("\x1b[33m[WARNING]\x1b[0m [desktop.auth] no local session found in keyring");
         return Ok(None);
     };
     eprintln!("\x1b[90m[DEBUG]\x1b[0m [desktop.auth] local session loaded for user: {}", session.username);
-    
+
     // 2. Проверяем наличие адреса сервера
     let Some(server_url) = server_config::load_server_url(&app) else {
         eprintln!("\x1b[33m[WARNING]\x1b[0m [desktop.auth] no server URL configured");
         return Ok(None);
     };
-    
-    let url = format!("{}/auth/me", server_url);
-    eprintln!("\x1b[90m[DEBUG]\x1b[0m [desktop.auth] checking session with backend: {}", url);
-    
-    // 3. Делаем запрос к бэкенду
-    let resp = state
-        .client
-        .get(&url)
-        .header("x-session-token", &session.token)
-        .send()
-        .await;
-        
-    // 4. Обрабатываем ответ с логированием
-    match resp {
-        Ok(r) => {
-            let status = r.status();
-            eprintln!("\x1b[90m[DEBUG]\x1b[0m [desktop.auth] /auth/me response status: {}", status);
-            
-            if status.is_success() {
-                Ok(Some(UserInfo::from(&session)))
-            } else {
-                let body = r.text().await.unwrap_or_default();
-                eprintln!("\x1b[33m[WARNING]\x1b[0m [desktop.auth] /auth/me failed with status {}: {}", status, body);
-                
-                // Чистим сессию ТОЛЬКО если бэкенд явно сказал, что токен невалиден
-                if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
-                    eprintln!("\x1b[33m[WARNING]\x1b[0m [desktop.auth] token rejected by server, clearing local session");
-                    let _ = session_store::clear_session(&app);
-                    Ok(None)
-                } else {
-                    // При 404, 500 и других ошибках НЕ чистим сессию, а считаем юзера авторизованным
-                    eprintln!("\x1b[33m[WARNING]\x1b[0m [desktop.auth] keeping local session despite server error");
-                    Ok(Some(UserInfo::from(&session)))
+
+    // Проверка токена на сервере. `Invalid` значит, что сервер явно отверг
+    // токен (401/403); `Unavailable` — сервер не ответил или 5xx, сессию
+    // трогать нельзя.
+    let mut tried_tokens = std::collections::HashSet::new();
+    let mut refresh_tried = false;
+    loop {
+        let token = session.token.clone();
+        if !tried_tokens.insert(token.clone()) {
+            // Уже проверяли этот токен — новых вариантов не осталось.
+            break;
+        }
+
+        match check_me_token(&state.client, &server_url, &token).await {
+            CheckMe::Valid => {
+                // Refresh мог ротировать токен — перечитываем свежую сессию,
+                // чтобы вернуть актуальные данные пользователя.
+                return Ok(Some(UserInfo::from(
+                    session_store::load_session(&app).as_ref().unwrap_or(&session),
+                )));
+            }
+            CheckMe::Unavailable => {
+                eprintln!("\x1b[33m[WARNING]\x1b[0m [desktop.auth] /auth/me unavailable; keeping local session");
+                return Ok(Some(UserInfo::from(&session)));
+            }
+            CheckMe::Invalid => {
+                eprintln!("\x1b[90m[DEBUG]\x1b[0m [desktop.auth] /auth/me rejected token; probing for a fresher one");
+                // (a) Гонка со стартовым refresh: в хранилище уже может лежать
+                // новый токен. Если он отличается — пробуем его следующим.
+                if let Some(newest) = session_store::load_session(&app) {
+                    if newest.token != token {
+                        session = newest;
+                        continue;
+                    }
                 }
+                // (b) Токен действительно старый/просрочен — пробуем тихо
+                // продлить сессию один раз и повторить с новым токеном.
+                if !refresh_tried {
+                    refresh_tried = true;
+                    if refresh_session_silently(&app, &state.client).await {
+                        if let Some(newest) = session_store::load_session(&app) {
+                            session = newest;
+                            continue;
+                        }
+                    }
+                }
+                // (c) Ничего не помогло — сессия мертва, чистим.
+                let _ = session_store::clear_session(&app);
+                return Ok(None);
             }
         }
+    }
+
+    let _ = session_store::clear_session(&app);
+    Ok(None)
+}
+
+enum CheckMe {
+    Valid,
+    Invalid,
+    Unavailable,
+}
+
+async fn check_me_token(client: &reqwest::Client, server_url: &str, token: &str) -> CheckMe {
+    let resp = match client
+        .get(format!("{server_url}/auth/me"))
+        .header("x-session-token", token)
+        .send()
+        .await
+    {
+        Ok(resp) => resp,
         Err(e) => {
-            // При сетевых ошибках (сервер недоступен) НЕ чистим сессию
-            eprintln!("\x1b[31m[ERROR]\x1b[0m [desktop.auth] network error during /auth/me: {}", e);
-            Ok(Some(UserInfo::from(&session)))
+            eprintln!("\x1b[31m[ERROR]\x1b[0m [desktop.auth] network error during /auth/me: {e}");
+            return CheckMe::Unavailable;
         }
+    };
+    let status = resp.status();
+    eprintln!("\x1b[90m[DEBUG]\x1b[0m [desktop.auth] /auth/me response status: {status}");
+    if status.is_success() {
+        CheckMe::Valid
+    } else if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        CheckMe::Invalid
+    } else {
+        CheckMe::Unavailable
     }
 }
 
@@ -257,16 +306,26 @@ pub async fn health_check(state: tauri::State<'_, LozaState>, url: String) -> Re
 }
 
 /// Тихо продлевает токен сессии на сервере (/auth/refresh) и обновляет
-/// локальное хранилище. Вызывается один раз при старте приложения (см. lib.rs::run),
-/// пока пользователь залогинен — так TTL токена не ощущается пользователем,
-/// и после перезапуска приложения не нужно входить заново.
-pub async fn refresh_session_silently(app: &AppHandle, client: &reqwest::Client) {
+/// локальное хранилище. Вызывается при старте приложения (см. lib.rs::run)
+/// и периодически во время работы, пока пользователь залогинен — так TTL
+/// токена не ощущается пользователем, и после перезапуска приложения не нужно
+/// входить заново.
+///
+/// Возвращает `true`, если удалось продлить сессию (хранилище обновлено).
+/// При явном отказе сервера (INVALID_TOKEN и т.п.) сессия очищается и
+/// возвращается `false`.
+pub async fn refresh_session_silently(app: &AppHandle, client: &reqwest::Client) -> bool {
     let Some(session) = session_store::load_session(app) else {
-        return;
+        return false;
     };
     let Some(server_url) = server_config::load_server_url(app) else {
-        return;
+        return false;
     };
+
+    eprintln!(
+        "\x1b[90m[DEBUG]\x1b[0m [desktop.auth] refreshing session for {}",
+        session.username
+    );
 
     let resp = client
         .post(format!("{}/auth/refresh", server_url))
@@ -275,14 +334,20 @@ pub async fn refresh_session_silently(app: &AppHandle, client: &reqwest::Client)
         .await;
 
     let Ok(resp) = resp else {
-        return; // сервер недоступен — оставляем старую сессию как есть, попробуем в следующий раз
+        // Сервер недоступен — оставляем старую сессию как есть, попробуем в следующий раз.
+        eprintln!("\x1b[33m[WARNING]\x1b[0m [desktop.auth] refresh request failed (server unreachable)");
+        return false;
     };
 
     if !resp.status().is_success() {
         // Токен отозван/истёк по-настоящему — чистим локальную сессию,
         // ProtectedRoute на фронте перекинет на экран логина при следующей проверке.
+        eprintln!(
+            "\x1b[33m[WARNING]\x1b[0m [desktop.auth] refresh rejected with HTTP {}; clearing session",
+            resp.status()
+        );
         let _ = session_store::clear_session(app);
-        return;
+        return false;
     }
 
     match resp.json::<ServerLoginResponse>().await {
@@ -295,7 +360,12 @@ pub async fn refresh_session_silently(app: &AppHandle, client: &reqwest::Client)
                 device: session.device,
                 expires_at: login_resp.expires_at,
             };
-            let _ = session_store::save_session(app, &new_session);
+            let saved = session_store::save_session(app, &new_session);
+            eprintln!(
+                "\x1b[32m[SUCCESS]\x1b[0m [desktop.auth] session refreshed for {} (saved: {})",
+                new_session.username, saved.is_ok()
+            );
+            saved.is_ok()
         }
         Err(_) => {
             // The server accepted the refresh (old token already rotated) but
@@ -306,6 +376,7 @@ pub async fn refresh_session_silently(app: &AppHandle, client: &reqwest::Client)
                 "\x1b[31m[ERROR]\x1b[0m [desktop.auth] failed to parse refresh response; clearing session"
             );
             let _ = session_store::clear_session(app);
+            false
         }
     }
 }
