@@ -15,8 +15,10 @@ import {
 import { useOperationQueue } from "../../../components/files/OperationQueue";
 import OperationQueueList from "../../../components/files/OperationQueue";
 import FileViewer from "../../../components/files/FileViewer";
+import ShareModal from "../../../components/files/ShareModal";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
 const SECONDARY = "var(--color-text-secondary)";
 const PRIMARY = "var(--color-text-primary)";
@@ -144,6 +146,7 @@ export default function LozaTab() {
   const [renameValue, setRenameValue] = useState("");
   const [contextMenu, setContextMenu] = useState<{ item: FileInfo; x: number; y: number } | null>(null);
   const [previewFile, setPreviewFile] = useState<FileInfo | null>(null);
+  const [shareTarget, setShareTarget] = useState<FileInfo | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [clipboardEntry, setClipboardEntry] = useState<ClipboardEntry | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -167,7 +170,7 @@ export default function LozaTab() {
   const clipboardRef = useRef<ClipboardEntry | null>(null);
   currentPathRef.current = currentPath;
 
-  const { operations, uploadFile, downloadFile, cancelOperation, removeOperation, retry } = useOperationQueue();
+  const { operations, uploadFile, uploadPath, downloadFile, cancelOperation, removeOperation, retry } = useOperationQueue();
 
   // ── Navigation history with React state ──────────────────────────────
 
@@ -481,6 +484,27 @@ export default function LozaTab() {
   // exactly once while still seeing current state (currentPath, loadFiles…).
   const dropHandlerRef = useRef(handleDropPaths);
   dropHandlerRef.current = handleDropPaths;
+
+  // Нативный диалог выбора файлов: отдаёт OS-пути, которые Rust стримит на
+  // сервер (`upload_file_path`). Это заменяет `<input type=file>`, где весь
+  // файл сначала материализуется в памяти WebView-движка (OOM на больших).
+  const handleOpenUploadDialog = async () => {
+    try {
+      const picked = await openDialog({ multiple: true, directory: false, title: "Загрузить файлы" });
+      if (!picked) return;
+      const list = (Array.isArray(picked) ? picked : [picked]).filter((p): p is string => typeof p === "string");
+      for (const osPath of list) {
+        try {
+          await uploadPath({ osPath, destination: currentPath });
+        } catch (e: any) {
+          logger.error("files", "Upload failed", e);
+        }
+      }
+      loadFiles(currentPath);
+    } catch (e: any) {
+      setError(e?.message || "Не удалось открыть выбор файлов");
+    }
+  };
 
   useEffect(() => {
     let disposed = false;
@@ -897,7 +921,7 @@ export default function LozaTab() {
             <motion.button
               whileHover={{ background: "var(--color-glass-hover-strong)" }}
               whileTap={{ scale: 0.94 }}
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => void handleOpenUploadDialog()}
               className={styles.navBtn}
               title="Загрузить файлы"
             >
@@ -1106,9 +1130,14 @@ export default function LozaTab() {
           onDelete={handleDeleteSelected}
           onOpen={() => handleOpen(contextMenu.item)}
           onPreview={() => handlePreviewFile(contextMenu.item)}
+          onShare={() => setShareTarget(contextMenu.item)}
           onMove={handleCut}
           onCopy={handleCopy}
         />
+      )}
+
+      {shareTarget && (
+        <ShareModal file={shareTarget} onClose={() => { setShareTarget(null); loadFiles(currentPath); }} />
       )}
 
       {renameTarget && (
@@ -1215,13 +1244,13 @@ function EmptyState({ title, sub }: { title: string; sub: string }) {
 
 function ContextMenu({
   item, x, y, onClose, onRename, onDownload, onDelete,
-  onOpen, onPreview, onMove, onCopy,
+  onOpen, onPreview, onShare, onMove, onCopy,
 }: {
   item: FileInfo; x: number; y: number;
   onClose: () => void; onRename: () => void;
   onDownload: () => void; onDelete: () => void;
   onOpen: () => void; onPreview: () => void;
-  onMove: () => void; onCopy: () => void;
+  onShare: () => void; onMove: () => void; onCopy: () => void;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
   const [menuRect, setMenuRect] = useState<DOMRect | null>(null);
@@ -1336,7 +1365,7 @@ function ContextMenu({
           <>
             {renderSeparator("sep2")}
             {renderLabel("Поделиться")}
-            {renderItem(Share2, "Поделиться ссылкой", () => { navigator.clipboard.writeText(item.name); onClose(); })}
+            {renderItem(Share2, "Поделиться ссылкой", () => { onShare(); onClose(); })}
           </>
         )}
 

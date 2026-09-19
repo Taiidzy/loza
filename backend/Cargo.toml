@@ -30,3 +30,14 @@ dashmap = "6"
 futures-util = "0.3"
 bytes = "1"
 mime = "0.3"
+
+# Workaround: rustc (aarch64-apple-darwin) in release mode emits the proc-macro
+# dylib with a LINKEDIT string pool that macOS 27 dyld rejects as mis-aligned
+# ("mis-aligned LINKEDIT string pool"). Emitting debuginfo shifts the layout and
+# fixes the alignment. Only build-time macro crates are affected — they never
+# link into the final binary, so this does not bloat the release artifact.
+[profile.release.package.sqlx-macros]
+debug = 1
+
+[profile.release.package.sqlx-macros-core]
+debug = 1

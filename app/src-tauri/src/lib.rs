@@ -17,13 +17,19 @@ mod files;
 mod server_config;
 mod session_store;
 mod status;
+mod transfers;
 mod ws_client;
 
 // ─── Shared state ──────────────────────────────────────────────────────────────
 
 pub struct LozaState {
     pub client: reqwest::Client,
+    /// Клиент без общего таймаута — для длительных upload/download.
+    /// Общий `client` имеет лимит 30с на весь запрос, которого не хватает
+    /// для больших файлов (тело загрузки отправляется до ответа сервера).
+    pub file_client: reqwest::Client,
     pub ws: Arc<ws_client::WsClient>,
+    pub transfers: transfers::TransferRegistry,
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
@@ -87,10 +93,16 @@ pub fn run() {
                 .timeout(std::time::Duration::from_secs(30))
                 .build()
                 .expect("failed to build HTTP client"),
+            file_client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .build()
+                .expect("failed to build file-transfer HTTP client"),
             ws: ws_client,
+            transfers: transfers::TransferRegistry::new(),
         })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             auth::login,
             auth::get_current_user,
@@ -107,7 +119,12 @@ pub fn run() {
             files::list_files,
             files::search_files,
             files::get_file_info,
+            files::create_share,
+            files::list_shares,
+            files::revoke_share,
+            files::get_share_url,
             files::upload_file,
+            files::upload_file_path,
             files::upload_paths,
             files::download_file,
             files::download_file_to_downloads,
@@ -117,6 +134,7 @@ pub fn run() {
             files::copy_file,
             files::create_dir,
             files::mutate_files,
+            transfers::cancel_transfer,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

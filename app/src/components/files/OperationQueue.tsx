@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Operation } from "../../types/files";
 import { fileApi } from "../../api/filesService";
@@ -14,7 +14,6 @@ const FILE_PROGRESS_EVENT_PREFIX = "file-progress-";
 
 export function useOperationQueue() {
   const [operations, setOperations] = useState<Operation[]>([]);
-  const operationsRef = useRef<Map<string, AbortController>>(new Map());
 
   const updateOperation = useCallback((id: string, updates: Partial<Operation>) => {
     setOperations((prev) =>
@@ -24,14 +23,12 @@ export function useOperationQueue() {
 
   const removeOperation = useCallback((id: string) => {
     setOperations((prev) => prev.filter((op) => op.id !== id));
-    operationsRef.current.delete(id);
   }, []);
 
   const cancelOperation = useCallback((id: string) => {
-    const controller = operationsRef.current.get(id);
-    if (controller) {
-      controller.abort();
-    }
+    // Реальная отмена: Rust снимает CancelToken передачи (reqwest-запрос
+    // роняется, сервер чистит свой temp-файл), а не просто прячет карточку.
+    void fileApi.cancelTransfer(id).catch(() => undefined);
     updateOperation(id, { status: "cancelled" });
   }, [updateOperation]);
 
@@ -84,7 +81,7 @@ export function useOperationQueue() {
 
       logger.success("files", "Upload completed", { filename: params.filename });
     } catch (e: any) {
-      if (e.name === "AbortError" || e.message?.includes("aborted")) {
+      if (e?.message?.includes("CANCELLED")) {
         updateOperation(id, { status: "cancelled" });
       } else {
         updateOperation(id, {
@@ -95,7 +92,70 @@ export function useOperationQueue() {
       throw e;
     } finally {
       unlisten();
-      operationsRef.current.delete(id);
+    }
+  }, [updateOperation]);
+
+  /** Стриминговый upload файла по OS-пути (диалог). Не держит файл в памяти. */
+  const uploadPath = useCallback(async (params: {
+    osPath: string;
+    destination: string;
+  }): Promise<void> => {
+    const progressId = crypto.randomUUID();
+    const id = progressId;
+    const fallbackName = params.osPath.split(/[\\/]/).filter(Boolean).pop() || "file";
+
+    const op: Operation = {
+      id,
+      type: "upload",
+      filename: fallbackName,
+      path: params.destination,
+      sizeBytes: 0,
+      transferred: 0,
+      speed: 0,
+      eta: 0,
+      status: "pending",
+      progress: 0,
+    };
+    setOperations((prev) => [...prev, op]);
+    updateOperation(id, { status: "active" });
+
+    const unlisten = await listen(`${FILE_PROGRESS_EVENT_PREFIX}${progressId}`, (event) => {
+      const data = event.payload as { sent?: number; received?: number; total?: number };
+      const total = data.total ?? 0;
+      const transferred = data.sent ?? data.received ?? 0;
+      updateOperation(id, {
+        transferred,
+        // total приходит из метаданных файла с первого чанка — прогресс и
+        // итоговый размер становятся известны почти сразу.
+        sizeBytes: total > 0 ? total : op.sizeBytes,
+        progress: total > 0 ? (transferred / total) * 100 : 0,
+        status: "active",
+      });
+    });
+
+    try {
+      await fileApi.uploadFilePath(params.osPath, params.destination, progressId);
+
+      updateOperation(id, {
+        transferred: op.sizeBytes > 0 ? op.sizeBytes : undefined,
+        progress: 100,
+        speed: 0,
+        eta: 0,
+        status: "completed",
+      });
+      logger.success("files", "Upload completed", { path: params.osPath });
+    } catch (e: any) {
+      if (e?.message?.includes("CANCELLED")) {
+        updateOperation(id, { status: "cancelled" });
+      } else {
+        updateOperation(id, {
+          status: "error",
+          error: e.message || "Upload failed",
+        });
+      }
+      throw e;
+    } finally {
+      unlisten();
     }
   }, [updateOperation]);
 
@@ -164,7 +224,7 @@ export function useOperationQueue() {
         status: "completed",
       });
     } catch (e: any) {
-      if (e.name === "AbortError" || e.message?.includes("aborted")) {
+      if (e?.message?.includes("CANCELLED")) {
         updateOperation(id, { status: "cancelled" });
       } else {
         updateOperation(id, {
@@ -175,13 +235,13 @@ export function useOperationQueue() {
       throw e;
     } finally {
       unlisten();
-      operationsRef.current.delete(id);
     }
   }, [updateOperation]);
 
   return {
     operations,
     uploadFile,
+    uploadPath,
     downloadFile,
     cancelOperation,
     removeOperation,
@@ -320,7 +380,11 @@ function OperationCard({
         }} title={operation.status === "error" ? (operation.error || "") : undefined}>
           {operation.status === "error"
             ? (operation.error || "Операция завершилась с ошибкой")
-            : `${formatBytes(operation.transferred)} / ${formatBytes(operation.sizeBytes)} · ${operation.speed > 0 ? formatBytes(operation.speed) + "/сек" : ""}${operation.eta > 0 ? " · " + formatEta(operation.eta) : ""}`}
+            : `${operation.sizeBytes > 0
+                ? `${formatBytes(operation.transferred)} / ${formatBytes(operation.sizeBytes)}`
+                : operation.transferred > 0
+                  ? formatBytes(operation.transferred)
+                  : ""}${operation.speed > 0 ? " · " + formatBytes(operation.speed) + "/сек" : ""}${operation.eta > 0 ? " · " + formatEta(operation.eta) : ""}`}
         </div>
 
         <div style={{

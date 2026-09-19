@@ -18,7 +18,17 @@ use tokio::io::AsyncWriteExt;
 use crate::server_config;
 use crate::session_store;
 use crate::LozaState;
-use crate::ws_client::FILE_PROGRESS_EVENT_PREFIX;
+use crate::ws_client::{FILE_CHANGE_EVENT, FILE_PROGRESS_EVENT_PREFIX};
+
+/// `app.emit(FILE_CHANGE_EVENT, ...)` — синхронный fallback для обновления
+/// списка файлов, когда WS-канал недоступен. Backend шлёт те же события по WS,
+/// дублирование безопасно: фронт просто перезагружает текущую папку.
+fn emit_file_change(app: &AppHandle, operation: &str, path: &str) {
+    let _ = app.emit(
+        FILE_CHANGE_EVENT,
+        serde_json::json!({ "source": "desktop", "operation": operation, "path": path }),
+    );
+}
 
 // ─── Types (mirror backend/src/models/file.rs) ─────────────────────────────────
 
@@ -37,6 +47,29 @@ pub struct FileInfo {
     pub created_at: String,
     #[serde(rename = "updatedAt")]
     pub updated_at: String,
+    /// SHA-256 контента (hex). Отсутствует для директорий и файлов, загруженных
+    /// до миграции 0004 — поэтому `default`, чтобы старые ответы парсились.
+    #[serde(default)]
+    pub sha256: Option<String>,
+}
+
+/// Share-ссылка пользователя (зеркало backend ShareInfo, camelCase).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareInfo {
+    pub id: String,
+    pub token: String,
+    pub created_at: String,
+    pub expires_at: Option<String>,
+    pub is_active: bool,
+}
+
+/// Ответ `create_share`: сама ссылка + готовый к передаче URL.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedShare {
+    pub share: ShareInfo,
+    pub url: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -215,6 +248,111 @@ pub async fn get_file_info(
         .map_err(|e| format!("PARSE_ERROR: {}", e))
 }
 
+// ─── Shares ──────────────────────────────────────────────────────────────────
+
+/// `invoke("create_share", { path })` — создаёт публичную ссылку на файл.
+/// Возвращает токен и полный URL вида `<server>/share/<token>`.
+#[tauri::command]
+pub async fn create_share(
+    app: AppHandle,
+    state: tauri::State<'_, LozaState>,
+    path: String,
+) -> Result<CreatedShare, String> {
+    let (token, server_url) = require_session(&app)?;
+
+    let resp = state
+        .client
+        .post(format!("{}/files/share", server_url))
+        .header("x-session-token", token)
+        .json(&serde_json::json!({ "path": path }))
+        .send()
+        .await
+        .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(describe_http_error(resp, "create share").await);
+    }
+
+    let share: ShareInfo = resp
+        .json()
+        .await
+        .map_err(|e| format!("PARSE_ERROR: {}", e))?;
+    Ok(CreatedShare {
+        url: format!("{}/share/{}", server_url, share.token),
+        share,
+    })
+}
+
+/// `invoke("list_shares", { path? })` — ссылки на файл (или все ссылки
+/// пользователя, если path пустой).
+#[tauri::command]
+pub async fn list_shares(
+    app: AppHandle,
+    state: tauri::State<'_, LozaState>,
+    path: Option<String>,
+) -> Result<Vec<ShareInfo>, String> {
+    let (token, server_url) = require_session(&app)?;
+
+    let mut url = url::Url::parse(&format!("{}/files/shares", server_url))
+        .map_err(|e| format!("URL_ERROR: {}", e))?;
+    url.query_pairs_mut()
+        .append_pair("path", path.as_deref().unwrap_or(""));
+
+    let resp = state
+        .client
+        .get(url.as_str())
+        .header("x-session-token", token)
+        .send()
+        .await
+        .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(describe_http_error(resp, "list shares").await);
+    }
+
+    resp.json::<Vec<ShareInfo>>()
+        .await
+        .map_err(|e| format!("PARSE_ERROR: {}", e))
+}
+
+/// `invoke("revoke_share", { token })` — отзывает ссылку (только владелец).
+#[tauri::command]
+pub async fn revoke_share(
+    app: AppHandle,
+    state: tauri::State<'_, LozaState>,
+    token: String,
+) -> Result<(), String> {
+    let (session_token, server_url) = require_session(&app)?;
+
+    let mut url = url::Url::parse(&format!("{}/files/share/revoke", server_url))
+        .map_err(|e| format!("URL_ERROR: {}", e))?;
+    url.query_pairs_mut().append_pair("token", &token);
+
+    let resp = state
+        .client
+        .delete(url.as_str())
+        .header("x-session-token", session_token)
+        .send()
+        .await
+        .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
+
+    if !resp.status().is_success() {
+        return Err(describe_http_error(resp, "revoke share").await);
+    }
+
+    Ok(())
+}
+
+/// `invoke("get_share_url", { token })` — строит публичный URL ссылки.
+#[tauri::command]
+pub fn get_share_url(
+    app: AppHandle,
+    token: String,
+) -> Result<String, String> {
+    let server_url = server_config::require_server_url(&app)?;
+    Ok(format!("{}/share/{}", server_url, token))
+}
+
 
 /// `invoke("upload_file", { path, filename, data, overwrite?, progressId? })`
 /// `data` is a `Vec<u8>` containing the file content.
@@ -222,6 +360,7 @@ pub async fn get_file_info(
 /// `overwrite` (optional) - if true, replaces existing file.
 ///
 /// Emits progress events on `file-progress-{progressId}` with `{ sent, total }`.
+/// Отменяется через `invoke("cancel_transfer", { progressId })`.
 #[tauri::command]
 pub async fn upload_file(
     app: AppHandle,
@@ -237,6 +376,7 @@ pub async fn upload_file(
     let total = data.len() as u64;
     let progress_id = progress_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let progress_event = format!("{}{}", FILE_PROGRESS_EVENT_PREFIX, progress_id);
+    let cancel = state.transfers.register(&progress_id);
 
     let chunk_size = 512 * 1024usize;
 
@@ -279,38 +419,162 @@ pub async fn upload_file(
     let form = reqwest::multipart::Form::new()
         .text("path", path)
         .text("overwrite", overwrite.unwrap_or(false).to_string())
-        .text("progressId", progress_id)
+        .text("progressId", progress_id.clone())
         .part(
             "file",
             reqwest::multipart::Part::stream(body)
                 .file_name(filename.clone()),
         );
 
-    let resp = match state
-        .client
+    // file_client не имеет общего таймаута: большие файлы загружаются долго.
+    // Отмена через cancel_transfer снимает флаг — футур запроса роняется,
+    // сервер видит оборванное multipart-тело и чистит свой temp-файл.
+    let request_send = state
+        .file_client
         .post(format!("{}/files/upload", server_url))
         .header("x-session-token", token)
         .multipart(form)
-        .send()
-        .await
-    {
-        Ok(resp) => resp,
-        Err(e) => {
+        .send();
+    tokio::pin!(request_send);
+
+    let resp = tokio::select! {
+        result = &mut request_send => match result {
+            Ok(resp) => resp,
+            Err(e) => {
+                progress_handle.abort();
+                state.transfers.finish(&progress_id);
+                return Err(format!("SERVER_UNREACHABLE: {}", e));
+            }
+        },
+        _ = cancel.cancelled() => {
             progress_handle.abort();
-            return Err(format!("SERVER_UNREACHABLE: {}", e));
+            state.transfers.finish(&progress_id);
+            return Err("CANCELLED".to_string());
         }
     };
 
     // Ensure the progress task has completed
     progress_handle.abort();
+    state.transfers.finish(&progress_id);
 
     if !resp.status().is_success() {
         return Err(describe_http_error(resp, "upload file").await);
     }
 
-    resp.json::<FileInfo>()
+    let info: FileInfo = resp
+        .json()
         .await
-        .map_err(|e| format!("PARSE_ERROR: {}", e))
+        .map_err(|e| format!("PARSE_ERROR: {}", e))?;
+    emit_file_change(&app, "upload", &info.path);
+    Ok(info)
+}
+
+/// `invoke("upload_file_path", { osPath, destination, progressId, overwrite? })`
+///
+/// Стриминговый upload одного файла по абсолютному пути OS (диалог выбора
+/// файлов). Файл читается с диска и уходит на сервер потоком, без
+/// материализации в памяти → большие файлы больше не роняют приложение.
+/// Прогресс идёт через `file-progress-{progressId}`, отмена — через
+/// `cancel_transfer(progressId)`.
+#[tauri::command]
+pub async fn upload_file_path(
+    app: AppHandle,
+    state: tauri::State<'_, LozaState>,
+    os_path: String,
+    destination: String,
+    progress_id: String,
+    overwrite: Option<bool>,
+) -> Result<FileInfo, String> {
+    let (token, server_url) = require_session(&app)?;
+    let os_path_buf = std::path::PathBuf::from(&os_path);
+    let filename = os_path_buf
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "INVALID_PATH: no file name".to_string())?
+        .to_string();
+
+    let metadata = tokio::fs::metadata(&os_path_buf)
+        .await
+        .map_err(|e| format!("OPEN_ERROR: {e}"))?;
+    if metadata.is_dir() {
+        return Err("IS_DIRECTORY: directories are not uploaded".to_string());
+    }
+    let file = tokio::fs::File::open(&os_path_buf)
+        .await
+        .map_err(|e| format!("OPEN_ERROR: {e}"))?;
+
+    let total = metadata.len();
+    let progress_event = format!("{}{}", FILE_PROGRESS_EVENT_PREFIX, progress_id);
+    let cancel = state.transfers.register(&progress_id);
+
+    // Прогресс-обёртка над ReaderStream: считаем байты и эмитим события.
+    let sent = Arc::new(AtomicU64::new(0));
+    let app_for_stream = app.clone();
+    let event_for_stream = progress_event.clone();
+    let stream = tokio_util::io::ReaderStream::new(file);
+    let body = reqwest::Body::wrap_stream(futures_util::StreamExt::map(
+        stream,
+        move |chunk| -> Result<tokio_util::bytes::Bytes, std::io::Error> {
+            let chunk = chunk?;
+            if !chunk.is_empty() {
+                let new_sent = sent.fetch_add(chunk.len() as u64, Ordering::SeqCst) + chunk.len() as u64;
+                let _ = app_for_stream.emit(
+                    &event_for_stream,
+                    serde_json::json!({ "sent": new_sent, "total": total }),
+                );
+            }
+            Ok(chunk)
+        },
+    ));
+
+    let form = reqwest::multipart::Form::new()
+        .text("path", destination)
+        .text("overwrite", overwrite.unwrap_or(false).to_string())
+        .text("progressId", progress_id.clone())
+        .part(
+            "file",
+            reqwest::multipart::Part::stream(body).file_name(filename),
+        );
+
+    let request_send = state
+        .file_client
+        .post(format!("{}/files/upload", server_url))
+        .header("x-session-token", token)
+        .multipart(form)
+        .send();
+    tokio::pin!(request_send);
+
+    let resp = tokio::select! {
+        result = &mut request_send => match result {
+            Ok(resp) => resp,
+            Err(e) => {
+                state.transfers.finish(&progress_id);
+                return Err(format!("SERVER_UNREACHABLE: {}", e));
+            }
+        },
+        _ = cancel.cancelled() => {
+            state.transfers.finish(&progress_id);
+            return Err("CANCELLED".to_string());
+        }
+    };
+    state.transfers.finish(&progress_id);
+
+    let _ = app.emit(
+        &progress_event,
+        serde_json::json!({ "sent": total, "total": total }),
+    );
+
+    if !resp.status().is_success() {
+        return Err(describe_http_error(resp, "upload file").await);
+    }
+
+    let info: FileInfo = resp
+        .json()
+        .await
+        .map_err(|e| format!("PARSE_ERROR: {}", e))?;
+    emit_file_change(&app, "upload", &info.path);
+    Ok(info)
 }
 
 /// Результат загрузки одного файла по абсолютному пути (drag&drop из OS).
@@ -381,7 +645,7 @@ pub async fn upload_paths(
             );
 
         let resp = match state
-            .client
+            .file_client
             .post(format!("{}/files/upload", server_url))
             .header("x-session-token", token.as_str())
             .multipart(form)
@@ -402,6 +666,7 @@ pub async fn upload_paths(
 
         match resp.json::<FileInfo>().await {
             Ok(info) => {
+                emit_file_change(&app, "upload", &info.path);
                 results.push(PathUploadResult { filename, success: true, message: None, target_path: Some(info.path) });
                 let _ = app.emit(
                     &format!("{}{}", FILE_PROGRESS_EVENT_PREFIX, progress_id),
@@ -443,7 +708,7 @@ pub async fn download_file(
     url.query_pairs_mut().append_pair("path", &path);
 
     let resp = state
-        .client
+        .file_client
         .get(url.as_str())
         .header("x-session-token", token)
         .send()
@@ -463,6 +728,7 @@ pub async fn download_file(
     }
     let app_for_stream = app.clone();
     let progress_event_for_stream = progress_event.clone();
+    let cancel = state.transfers.register(&progress_id);
 
     let mut body = resp;
 
@@ -470,12 +736,20 @@ pub async fn download_file(
     let mut received: u64 = 0;
 
     loop {
-        match body.chunk().await {
+        let chunk = tokio::select! {
+            value = body.chunk() => value,
+            _ = cancel.cancelled() => {
+                state.transfers.finish(&progress_id);
+                return Err("CANCELLED".to_string());
+            }
+        };
+        match chunk {
             Ok(Some(chunk)) => {
                 received += chunk.len() as u64;
                 // Guard against a missing Content-Length (chunked) growing
                 // without bound.
                 if received > DOWNLOAD_IN_MEMORY_LIMIT {
+                    state.transfers.finish(&progress_id);
                     return Err(format!(
                         "FILE_TOO_LARGE: response exceeded {} MB limit",
                         DOWNLOAD_IN_MEMORY_LIMIT / (1024 * 1024)
@@ -490,9 +764,13 @@ pub async fn download_file(
                 result.extend_from_slice(&chunk);
             }
             Ok(None) => break,
-            Err(e) => return Err(format!("READ_ERROR: {}", e)),
+            Err(e) => {
+                state.transfers.finish(&progress_id);
+                return Err(format!("READ_ERROR: {}", e));
+            }
         }
     }
+    state.transfers.finish(&progress_id);
 
     // Emit final progress event
     let _ = app.emit(
@@ -550,7 +828,7 @@ pub async fn download_file_to_downloads(
     let mut url = url::Url::parse(&format!("{}/files/download", server_url))
         .map_err(|e| format!("URL_ERROR: {e}"))?;
     url.query_pairs_mut().append_pair("path", &path);
-    let response = state.client.get(url).header("x-session-token", token).send().await
+    let response = state.file_client.get(url).header("x-session-token", token).send().await
         .map_err(|e| format!("SERVER_UNREACHABLE: {e}"))?;
     if !response.status().is_success() {
         return Err(describe_http_error(response, "download file").await);
@@ -565,21 +843,39 @@ pub async fn download_file_to_downloads(
     let mut file = tokio::fs::File::create(&temporary).await.map_err(|e| format!("DOWNLOAD_WRITE_ERROR: {e}"))?;
     let mut stream = response.bytes_stream();
     let mut received = 0u64;
+    let cancel = state.transfers.register(&progress_id);
 
-    while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+    loop {
+        let next = tokio::select! {
+            value = futures_util::StreamExt::next(&mut stream) => value,
+            _ = cancel.cancelled() => {
+                let _ = tokio::fs::remove_file(&temporary).await;
+                state.transfers.finish(&progress_id);
+                return Err("CANCELLED".to_string());
+            }
+        };
+        let Some(chunk) = next else { break };
         let chunk = match chunk {
             Ok(chunk) => chunk,
             Err(error) => {
                 let _ = tokio::fs::remove_file(&temporary).await;
+                state.transfers.finish(&progress_id);
                 return Err(format!("READ_ERROR: {error}"));
             }
         };
         if let Err(error) = file.write_all(&chunk).await {
             let _ = tokio::fs::remove_file(&temporary).await;
+            state.transfers.finish(&progress_id);
             return Err(format!("DOWNLOAD_WRITE_ERROR: {error}"));
         }
         received += chunk.len() as u64;
         let _ = app.emit(&progress_event, serde_json::json!({ "received": received, "total": total }));
+    }
+    state.transfers.finish(&progress_id);
+
+    if total > 0 && received != total {
+        let _ = tokio::fs::remove_file(&temporary).await;
+        return Err(format!("DOWNLOAD_INCOMPLETE: received {received} of {total} bytes"));
     }
     if let Err(error) = file.flush().await {
         let _ = tokio::fs::remove_file(&temporary).await;
@@ -634,6 +930,7 @@ pub async fn delete_file(
         return Err(describe_http_error(resp, "delete file").await);
     }
 
+    emit_file_change(&app, "delete", &path);
     Ok(())
 }
 
@@ -659,9 +956,12 @@ pub async fn rename_file(
         return Err(describe_http_error(resp, "rename file").await);
     }
 
-    resp.json::<FileInfo>()
+    let info: FileInfo = resp
+        .json()
         .await
-        .map_err(|e| format!("PARSE_ERROR: {}", e))
+        .map_err(|e| format!("PARSE_ERROR: {}", e))?;
+    emit_file_change(&app, "rename", &info.path);
+    Ok(info)
 }
 
 /// `invoke("move_file", { from, to })`
@@ -686,9 +986,12 @@ pub async fn move_file(
         return Err(describe_http_error(resp, "move file").await);
     }
 
-    resp.json::<FileInfo>()
+    let info: FileInfo = resp
+        .json()
         .await
-        .map_err(|e| format!("PARSE_ERROR: {}", e))
+        .map_err(|e| format!("PARSE_ERROR: {}", e))?;
+    emit_file_change(&app, "move", &info.path);
+    Ok(info)
 }
 
 /// `invoke("copy_file", { from, to })`
@@ -713,9 +1016,12 @@ pub async fn copy_file(
         return Err(describe_http_error(resp, "copy file").await);
     }
 
-    resp.json::<FileInfo>()
+    let info: FileInfo = resp
+        .json()
         .await
-        .map_err(|e| format!("PARSE_ERROR: {}", e))
+        .map_err(|e| format!("PARSE_ERROR: {}", e))?;
+    emit_file_change(&app, "copy", &info.path);
+    Ok(info)
 }
 
 /// `invoke("create_dir", { path })`
@@ -740,9 +1046,12 @@ pub async fn create_dir(
         return Err(describe_http_error(resp, "create directory").await);
     }
 
-    resp.json::<FileInfo>()
+    let info: FileInfo = resp
+        .json()
         .await
-        .map_err(|e| format!("PARSE_ERROR: {}", e))
+        .map_err(|e| format!("PARSE_ERROR: {}", e))?;
+    emit_file_change(&app, "mkdir", &info.path);
+    Ok(info)
 }
 
 /// `invoke("mutate_files", { operation, paths, destination? })`
@@ -782,6 +1091,16 @@ pub async fn mutate_files(
     if !response.status().is_success() {
         return Err(describe_http_error(response, "mutate files").await);
     }
+    let operation_label = match operation {
+        BatchOperation::Copy => "copy",
+        BatchOperation::Move => "move",
+        BatchOperation::Delete => "delete",
+    };
+    emit_file_change(
+        &app,
+        operation_label,
+        request.destination.as_deref().unwrap_or_default(),
+    );
     response.json::<BatchResponse>()
         .await
         .map_err(|e| format!("PARSE_ERROR: {}", e))
@@ -884,6 +1203,7 @@ async fn batch_fallback(
         }
     }
 
+    emit_file_change(&app, operation_str, &dest);
     Ok(BatchResponse { operation: operation_str.to_string(), results })
 }
 

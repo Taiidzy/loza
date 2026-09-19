@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { BatchOperation, BatchResponse, FileInfo, MoveRequest, CopyRequest, PathUploadResult } from "../types/files";
+import { BatchOperation, BatchResponse, CreatedShare, FileInfo, MoveRequest, CopyRequest, PathUploadResult, ShareInfo } from "../types/files";
 import { logger } from "../shared/utils/logger";
 
 /**
@@ -64,6 +64,49 @@ export class FileApiService {
       paths,
       destination: destination ?? null,
     });
+  }
+
+  /** Стриминговый upload одного файла по абсолютному OS-пути (диалог выбора). */
+  async uploadFilePath(
+    osPath: string,
+    destination: string,
+    progressId: string,
+    overwrite = false
+  ): Promise<FileInfo> {
+    logger.info("files", "invoke(upload_file_path)", { osPath, destination, overwrite });
+    return await invoke<FileInfo>("upload_file_path", {
+      osPath,
+      destination,
+      progressId,
+      overwrite,
+    });
+  }
+
+  // ── Shares ────────────────────────────────────────────────────────────
+
+  async createShare(path: string): Promise<CreatedShare> {
+    logger.info("files", "invoke(create_share)", { path });
+    return await invoke<CreatedShare>("create_share", { path });
+  }
+
+  async listShares(path?: string): Promise<ShareInfo[]> {
+    logger.info("files", "invoke(list_shares)", { path: path || "" });
+    return await invoke<ShareInfo[]>("list_shares", { path: path ?? null });
+  }
+
+  async revokeShare(token: string): Promise<void> {
+    logger.info("files", "invoke(revoke_share)", { token });
+    return await invoke<void>("revoke_share", { token });
+  }
+
+  async getShareUrl(token: string): Promise<string> {
+    logger.info("files", "invoke(get_share_url)", { token });
+    return await invoke<string>("get_share_url", { token });
+  }
+
+  async cancelTransfer(progressId: string): Promise<boolean> {
+    logger.info("files", "invoke(cancel_transfer)", { progressId });
+    return await invoke<boolean>("cancel_transfer", { progressId });
   }
 
   // ── Download ─────────────────────────────────────────────────────────

@@ -74,6 +74,12 @@ async fn main() {
     });
     let state = AppState::new(pool, config);
 
+    // Реконсиляция «БД ⇄ диск» — стартует в фоне, не блокируя сервер.
+    let reconcile_pool = state.pool.clone();
+    tokio::spawn(async move {
+        db::consistency::reconcile_storage(&reconcile_pool).await;
+    });
+
     let app = Router::new()
         .route("/health", get(handlers::auth::health))
         .route("/auth/login", post(handlers::auth::login))
@@ -91,6 +97,9 @@ async fn main() {
             "/calendar/events/:id",
             put(handlers::calendar::update_event).delete(handlers::calendar::delete_event),
         )
+        // Публичные share-ссылки (без авторизации — сила в энтропии токена).
+        .route("/share/:token", get(handlers::shares::share_info))
+        .route("/share/:token/download", get(handlers::shares::share_download))
         // File API — HTTP (не WebSocket) с поддержкой потоковой передачи.
         // 500 MB лимит тела для файловых операций (загрузка файлов).
         // multipart уже стримится на диск по чанкам, лимит только для
@@ -110,6 +119,10 @@ async fn main() {
                 .route("/copy", post(handlers::files::copy_file))
                 .route("/batch", post(handlers::files::batch_files))
                 .route("/mkdir", post(handlers::files::create_dir))
+                // Управление share-ссылками (auth).
+                .route("/share", post(handlers::shares::create_share))
+                .route("/shares", get(handlers::shares::list_shares))
+                .route("/share/revoke", delete(handlers::shares::revoke_share))
                 .layer(DefaultBodyLimit::max(500 * 1024 * 1024)),
         )
         .layer(DefaultBodyLimit::max(16 * 1024))

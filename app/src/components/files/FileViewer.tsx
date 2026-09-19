@@ -125,6 +125,7 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
   const [saving, setSaving] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [rotation, setRotation] = useState(0);
+  const [shareStatus, setShareStatus] = useState<string | null>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   const pdfRef = useRef<HTMLIFrameElement>(null);
   const objectUrlRef = useRef<string | null>(null);
@@ -236,12 +237,14 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
 
   const handleShare = async () => {
     try {
-      // Ссылкой поделиться нельзя: приложение десктопное, а скачивание только
-      // авторизованному пользователю. Поэтому копируем путь файла на сервере —
-      // его можно отправить коллеге, чтобы тот открыл нужную папку в "Мой диск".
-      await navigator.clipboard.writeText(file.path || file.name);
-    } catch (e) {
+      const created = await fileApi.createShare(file.path);
+      await navigator.clipboard.writeText(created.url);
+      setShareStatus("Ссылка скопирована");
+      setTimeout(() => setShareStatus((value) => (value === "Ссылка скопирована" ? null : value)), 2000);
+    } catch (e: any) {
+      setShareStatus(e?.message || "Не удалось создать ссылку");
       logger.error("files", "Share failed", e);
+      setTimeout(() => setShareStatus(null), 4000);
     }
   };
 
@@ -378,6 +381,9 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
           </span>
           {file.sizeBytes > 0 && (
             <span style={{ fontSize: 11, color: "var(--color-text-muted)", flexShrink: 0 }}>{formatBytes(file.sizeBytes)}</span>
+          )}
+          {shareStatus && (
+            <span style={{ fontSize: 11, color: "var(--color-success)", flexShrink: 0 }}>{shareStatus}</span>
           )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>

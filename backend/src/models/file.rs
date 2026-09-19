@@ -24,6 +24,39 @@ pub struct FileInfo {
     pub created_at: String,
     #[serde(rename = "updatedAt")]
     pub updated_at: String,
+    /// SHA-256 контента (hex). NULL для директорий и файлов, загруженных до 0004.
+    pub sha256: Option<String>,
+}
+
+/// Информация о share-ссылке. Никогда не содержит путь к файлу — это
+/// внутренняя деталь, которую нельзя раскрывать наружу.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShareInfo {
+    pub id: String,
+    pub token: String,
+    pub created_at: String,
+    pub expires_at: Option<String>,
+    pub is_active: bool,
+}
+
+/// Тело запроса на создание share-ссылки.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateShareRequest {
+    pub path: String,
+}
+
+/// Общедоступное описание разделённого файла (GET /share/:token).
+/// Намеренно не содержит путь/владельца — только имя, размер, MIME и чексумму.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharePublicInfo {
+    pub name: String,
+    pub size_bytes: u64,
+    pub mime_type: Option<String>,
+    pub sha256: Option<String>,
+    pub created_at: String,
 }
 
 /// Тело запроса на создание директории.
@@ -143,13 +176,18 @@ impl From<sqlx::Error> for FileError {
 }
 
 /// Приводит путь к «чистому» виду: убирает ведущие и trailing слеши,
-/// отказывается в path traversal (..).
+/// отказывается в path traversal (..) и вскоре небезопасных имён.
 ///
 /// Пример: "docs/new_folder" → Ok
 ///         "../etc/passwd"     → Err
 ///         "/absolute"         → Err (ведущий / не нужен)
 pub fn sanitize_path(raw: &str) -> Result<String, FileError> {
-    if raw.is_empty() || raw.starts_with('/') || raw.starts_with('\\') || raw.contains('\\') || raw.contains('\0') {
+    if raw.is_empty()
+        || raw.starts_with('/')
+        || raw.starts_with('\\')
+        || raw.contains('\\')
+        || raw.contains('\0')
+    {
         return Err(FileError::invalid_path(raw));
     }
     if std::path::Path::new(raw).is_absolute() {
@@ -158,14 +196,31 @@ pub fn sanitize_path(raw: &str) -> Result<String, FileError> {
     if raw.ends_with('/') {
         return Err(FileError::invalid_path(raw));
     }
-    // Reject traversal and ambiguous paths. Keep valid Unicode names intact.
+    if raw.len() > MAX_PATH_LEN {
+        return Err(FileError::invalid_path(raw));
+    }
+    // Reject traversal, ambiguous paths and names that normalise badly on some
+    // filesystems. Keep valid Unicode names intact.
     for segment in raw.split('/') {
-        if segment.is_empty() || segment == "." || segment == ".." {
+        if segment.is_empty()
+            || segment == "."
+            || segment == ".."
+            || segment.len() > MAX_SEGMENT_LEN
+            || segment.ends_with('.')
+            || segment.ends_with(' ')
+            || segment.chars().any(|c| c.is_control())
+        {
             return Err(FileError::invalid_path(raw));
         }
     }
     Ok(raw.to_string())
 }
+
+/// Максимальная длина одного элемента пути (имени файла/директории) —
+/// ограничение common filesystems (255 байт).
+const MAX_SEGMENT_LEN: usize = 255;
+/// Общая предельная длина пути в символах — защита от ресурсоёмких путей.
+const MAX_PATH_LEN: usize = 2048;
 
 /// Нормализует путь директории: гарантированно заканчивается на `/`.
 #[allow(dead_code)]
@@ -269,8 +324,47 @@ mod tests {
 
     #[test]
     fn rejects_traversal_absolute_and_ambiguous_paths() {
-        for path in ["../secret", "docs/../secret", "/etc/passwd", "C:\\temp", "docs//file", "./file", "docs/"] {
+        for path in ["../secret", "docs/../secret", "/etc/passwd", "C:\\temp", "docs//file", "./file", "docs/", ""] {
             assert!(sanitize_path(path).is_err(), "{path} must be rejected");
+        }
+    }
+
+    #[test]
+    fn rejects_control_chars_and_dangling_whitespace() {
+        for path in [
+            "docs/na\x01me",
+            "docs/\n",
+            "name.",
+            "name ",
+            "docs/trailing.",
+            "docs/trailing ",
+        ] {
+            assert!(sanitize_path(path).is_err(), "{path:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn rejects_excessively_long_segments() {
+        let long_segment = "a".repeat(256);
+        assert!(sanitize_path(&format!("docs/{long_segment}")).is_err());
+        let ok_segment = "b".repeat(255);
+        assert!(sanitize_path(&ok_segment).is_ok());
+    }
+
+    #[test]
+    fn rejects_excessively_long_paths() {
+        let mut long_path = String::new();
+        for i in 0..600 {
+            long_path.push_str(&format!("d{i}/"));
+        }
+        long_path.push_str("file.txt");
+        assert!(sanitize_path(&long_path).is_err());
+    }
+
+    #[test]
+    fn keeps_normal_relative_unicode_paths() {
+        for path in ["docs/sub/file", "file.txt", "照片/夜景.png"] {
+            assert!(sanitize_path(path).is_ok(), "{path} must be accepted");
         }
     }
 }

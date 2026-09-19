@@ -7,6 +7,21 @@ export interface FileInfo {
   mimeType: string | null;
   createdAt: string;
   updatedAt: string;
+  /** SHA-256 контента (hex); может отсутствовать для директорий и старых файлов. */
+  sha256?: string | null;
+}
+
+export interface ShareInfo {
+  id: string;
+  token: string;
+  createdAt: string;
+  expiresAt: string | null;
+  isActive: boolean;
+}
+
+export interface CreatedShare {
+  share: ShareInfo;
+  url: string;
 }
 
 export interface CreateDirRequest {

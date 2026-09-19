@@ -20,20 +20,27 @@
 //!   POST   /files/mkdir               — создание директории
 
 use axum::extract::Multipart;
-use axum::http::header::{ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, RANGE};
+use axum::http::header::{
+    ACCEPT_RANGES, CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, RANGE,
+};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Json, Response};
 use axum::{body::Body, extract::Query, extract::State};
 use chrono::Utc;
 use futures_util::StreamExt;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use sqlx::FromRow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use tokio::io::AsyncWriteExt;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
 use crate::db::{storage_fs, AppState};
-use crate::handlers::{auth::{ErrorResponse, require_session}, ws::WsPush};
+use crate::handlers::{
+    auth::{ErrorResponse, require_session},
+    ws::WsPush,
+};
 use crate::models::{
     BatchItemResult, BatchOperation, BatchRequest, BatchResponse, FileError, FileInfo, fmt_ts,
     guess_mime, sanitize_path, split_parent,
@@ -46,7 +53,9 @@ fn file_error(err: FileError) -> ApiError {
         "FILE_NOT_FOUND" | "IO_NOT_FOUND" => StatusCode::NOT_FOUND,
         "PATH_EXISTS" => StatusCode::CONFLICT,
         "INVALID_PATH" => StatusCode::BAD_REQUEST,
-        "IS_DIRECTORY" | "NOT_A_DIRECTORY" => StatusCode::UNPROCESSABLE_ENTITY,
+        "IS_DIRECTORY" | "NOT_A_DIRECTORY" | "SHARE_DIRECTORY_NOT_SUPPORTED" => {
+            StatusCode::UNPROCESSABLE_ENTITY
+        }
         "IO_PERMISSION_DENIED" => StatusCode::FORBIDDEN,
         "DATABASE_UNAVAILABLE" => StatusCode::SERVICE_UNAVAILABLE,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
@@ -60,11 +69,11 @@ fn file_error(err: FileError) -> ApiError {
     )
 }
 
-fn from_file_error(err: FileError) -> ApiError {
+pub(crate) fn from_file_error(err: FileError) -> ApiError {
     file_error(err)
 }
 
-async fn require_username(
+pub(crate) async fn require_username(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<String, ApiError> {
@@ -74,7 +83,7 @@ async fn require_username(
 }
 
 /// Корень директории пользователя на диске: storage/<username>/
-fn user_root(username: &str) -> PathBuf {
+pub(crate) fn user_root(username: &str) -> PathBuf {
     let safe: String = username
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
@@ -85,7 +94,7 @@ fn user_root(username: &str) -> PathBuf {
 /// Builds a user-storage path only from a previously validated relative path.
 /// Symlinks are not supported in Loza storage: following one could escape the
 /// user's root even when the textual path itself is valid.
-async fn storage_path(username: &str, path: &str) -> Result<PathBuf, ApiError> {
+pub(crate) async fn storage_path(username: &str, path: &str) -> Result<PathBuf, ApiError> {
     let root = user_root(username);
     let candidate = root.join(path);
     if !candidate.starts_with(&root) {
@@ -93,7 +102,7 @@ async fn storage_path(username: &str, path: &str) -> Result<PathBuf, ApiError> {
     }
 
     let mut current = root.clone();
-    for component in std::path::Path::new(path).components() {
+    for component in Path::new(path).components() {
         current.push(component);
         match tokio::fs::symlink_metadata(&current).await {
             Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -123,8 +132,8 @@ async fn ensure_parent_directories(
     for segment in parent.split('/') {
         prefix = if prefix.is_empty() { segment.to_string() } else { format!("{prefix}/{segment}") };
         sqlx::query(
-            r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, created_at, updated_at)
-               VALUES ($1, $2, $3, $4, true, 0, $5, $6, $6)
+            r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, sha256_hex, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, true, 0, $5, NULL, $6, $6)
                ON CONFLICT (username, path) DO NOTHING"#,
         )
         .bind(Uuid::new_v4())
@@ -152,6 +161,7 @@ struct FileRow {
     mime_type: Option<String>,
     created_at: i64,
     updated_at: i64,
+    sha256_hex: Option<String>,
 }
 
 impl From<FileRow> for FileInfo {
@@ -165,6 +175,7 @@ impl From<FileRow> for FileInfo {
             mime_type: row.mime_type,
             created_at: fmt_ts(row.created_at),
             updated_at: fmt_ts(row.updated_at),
+            sha256: row.sha256_hex,
         }
     }
 }
@@ -175,7 +186,9 @@ struct FileMetaRow {
     path: String,
     name: String,
     mime_type: Option<String>,
+    #[allow(dead_code)]
     size_bytes: i64,
+    sha256_hex: Option<String>,
 }
 
 // ─── Query params ─────────────────────────────────────────────────────────
@@ -221,18 +234,18 @@ pub async fn list_files(
         format!("{dir_path}/")
     };
 
-    let files: Vec<FileInfo> = if dir_prefix.is_empty() {
-        let rows: Vec<FileRow> = sqlx::query_as(
+    let rows: Vec<FileRow> = if dir_prefix.is_empty() {
+        sqlx::query_as(
             r#"SELECT fr.id::text, fr.path, fr.name, fr.is_dir,
                    CASE WHEN fr.is_dir THEN COUNT(child.path) ELSE fr.size_bytes END AS size_bytes,
-                   fr.mime_type, fr.created_at, fr.updated_at
+                   fr.mime_type, fr.created_at, fr.updated_at, fr.sha256_hex
                FROM user_files fr
                LEFT JOIN user_files child ON child.username = fr.username
                  AND child.path LIKE fr.path || '/%'
                  AND child.path NOT LIKE fr.path || '/%/%'
                WHERE fr.username = $1
                  AND fr.path NOT LIKE $2
-               GROUP BY fr.id, fr.path, fr.name, fr.is_dir, fr.size_bytes, fr.mime_type, fr.created_at, fr.updated_at
+               GROUP BY fr.id, fr.path, fr.name, fr.is_dir, fr.size_bytes, fr.mime_type, fr.created_at, fr.updated_at, fr.sha256_hex
                ORDER BY (CASE WHEN fr.is_dir THEN 0 ELSE 1 END), fr.name"#,
         )
         .bind(&username)
@@ -240,14 +253,12 @@ pub async fn list_files(
         .fetch_all(&state.pool)
         .await
         .map_err(FileError::from)
-        .map_err(file_error)?;
-
-        rows.into_iter().map(FileInfo::from).collect()
+        .map_err(file_error)?
     } else {
-        let rows: Vec<FileRow> = sqlx::query_as(
+        sqlx::query_as(
             r#"SELECT fr.id::text, fr.path, fr.name, fr.is_dir,
                    CASE WHEN fr.is_dir THEN COUNT(child.path) ELSE fr.size_bytes END AS size_bytes,
-                   fr.mime_type, fr.created_at, fr.updated_at
+                   fr.mime_type, fr.created_at, fr.updated_at, fr.sha256_hex
                FROM user_files fr
                LEFT JOIN user_files child ON child.username = fr.username
                  AND child.path LIKE fr.path || '/%'
@@ -255,7 +266,7 @@ pub async fn list_files(
                WHERE fr.username = $1
                  AND fr.path LIKE $2
                  AND fr.path NOT LIKE $3
-               GROUP BY fr.id, fr.path, fr.name, fr.is_dir, fr.size_bytes, fr.mime_type, fr.created_at, fr.updated_at
+               GROUP BY fr.id, fr.path, fr.name, fr.is_dir, fr.size_bytes, fr.mime_type, fr.created_at, fr.updated_at, fr.sha256_hex
                ORDER BY (CASE WHEN fr.is_dir THEN 0 ELSE 1 END), fr.name"#,
         )
         .bind(&username)
@@ -264,12 +275,10 @@ pub async fn list_files(
         .fetch_all(&state.pool)
         .await
         .map_err(FileError::from)
-        .map_err(file_error)?;
-
-        rows.into_iter().map(FileInfo::from).collect()
+        .map_err(file_error)?
     };
 
-    Ok(Json(files))
+    Ok(Json(rows.into_iter().map(FileInfo::from).collect()))
 }
 
 /// GET /files/search?q=<query>&path=<optional dir>
@@ -295,7 +304,7 @@ pub async fn search_files(
     let pattern = format!("{dir_prefix}%");
 
     let rows: Vec<FileRow> = sqlx::query_as(
-        r#"SELECT id::text, path, name, is_dir, size_bytes, mime_type, created_at, updated_at
+        r#"SELECT id::text, path, name, is_dir, size_bytes, mime_type, created_at, updated_at, sha256_hex
            FROM user_files
            WHERE username = $1
              AND path LIKE $2
@@ -323,7 +332,7 @@ pub async fn file_info(
     let path = sanitize_path(&query.path).map_err(from_file_error)?;
 
     let row = sqlx::query_as::<_, FileRow>(
-        r#"SELECT id::text, path, name, is_dir, size_bytes, mime_type, created_at, updated_at
+        r#"SELECT id::text, path, name, is_dir, size_bytes, mime_type, created_at, updated_at, sha256_hex
            FROM user_files WHERE username = $1 AND path = $2"#,
     )
     .bind(&username)
@@ -340,8 +349,20 @@ pub async fn file_info(
 }
 
 /// POST /files/upload
-/// Multipart: поле `file` (файл), поле `path` (директория назначения, опционально), поле `overwrite` (boolean, опционально).
-/// Для больших файлов использует потоковую запись на диск.
+/// Multipart: поле `file` (файл), поле `path` (директория назначения, опционально),
+/// поле `overwrite` (boolean, опционально).
+///
+/// Безопасность и атомарность:
+/// - Каждый файл пишется во временный файл `.«имя».«uuid».loza-part` в той же
+///   директории, досинхронизируется на диск и затем атомарно переименовывается
+///   в целевой путь. Если в процессе записи что-то падает — временный файл
+///   удаляется, а прежний файл (если был) остаётся нетронутым.
+/// - Имя файла не может содержать `/` или `\` — это отдельный элемент пути,
+///   а не вложенная структура.
+/// - MIME предпочитается серверный (по расширению), а не присланный клиентом.
+/// - Контент хэшируется SHA-256, чексумма сохраняется в БД.
+/// - При overwrite запись выполняется UPSERT с сохранением id файла — share-
+///   ссылки на файл продолжают указывать на ту же логическую запись.
 pub async fn upload_file(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -352,6 +373,7 @@ pub async fn upload_file(
 
     let mut dest_dir = String::new();
     let mut overwrite = false;
+    let mut saw_file_field = false;
     let mut result: Option<FileInfo> = None;
 
     while let Some(field) = multipart
@@ -360,9 +382,14 @@ pub async fn upload_file(
         .map_err(|e| file_error(FileError::new("PARSE_ERROR", &format!("Multipart error: {e}"))))?
     {
         let field_name = field.name().map(|n| n.to_string()).unwrap_or_default();
-        let field = field;
 
         if field_name == "path" {
+            if saw_file_field {
+                return Err(file_error(FileError::new(
+                    "FIELD_ORDER",
+                    "Multipart field `path` must come before the file field",
+                )));
+            }
             dest_dir = field.text().await.unwrap_or_default();
             continue;
         }
@@ -372,27 +399,53 @@ pub async fn upload_file(
             continue;
         }
 
+        // A field is a real file upload only when it carries a file name.
+        // Any other non-file text field (future client extensions, unknown
+        // query fields from proxies…) must be ignored — otherwise it would be
+        // stored as an empty random-named file.
+        if field.file_name().is_none() {
+            continue;
+        }
+
         // file field
-        let mut total_size: u64 = 0;
+        saw_file_field = true;
         let fname = field
             .file_name()
             .map(|f| f.to_string())
             .unwrap_or_else(|| Uuid::new_v4().to_string());
-        let ct = field.content_type().map(|c| c.to_string());
+        if fname.is_empty()
+            || fname == "."
+            || fname == ".."
+            || fname.contains('/')
+            || fname.contains('\\')
+        {
+            return Err(file_error(FileError::invalid_path(&fname)));
+        }
+        let client_ct = field.content_type().map(|c| c.to_string());
 
-        // The destination is always the directory chosen by the user. Root is
-        // a valid destination; uploads never mutate the tree by inventing
-        // MIME-based category folders.
-        let final_path = if dest_dir.is_empty() {
+        let dest = if dest_dir.is_empty() {
+            String::new()
+        } else {
+            sanitize_path(&dest_dir).map_err(from_file_error)?
+        };
+        let full_path = if dest.is_empty() {
             fname.clone()
         } else {
-            format!("{dest_dir}/{fname}")
+            format!("{dest}/{fname}")
         };
-        let clean_path = sanitize_path(&final_path).map_err(from_file_error)?;
+        let clean_path = sanitize_path(&full_path).map_err(from_file_error)?;
+
         let disk_path = storage_path(&username, &clean_path).await?;
 
-        ensure_parent_directories(&state, &username, &clean_path).await?;
+        // Only a file may own the target name. A directory occupying the path
+        // is a conflict even with overwrite=true.
+        if let Ok(meta) = tokio::fs::symlink_metadata(&disk_path).await {
+            if meta.is_dir() || !overwrite {
+                return Err(file_error(FileError::conflict(&clean_path)));
+            }
+        }
 
+        ensure_parent_directories(&state, &username, &clean_path).await?;
         if let Some(parent) = disk_path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -400,80 +453,110 @@ pub async fn upload_file(
                 .map_err(file_error)?;
         }
 
-        if disk_path.try_exists().unwrap_or(false) {
-            if overwrite {
-                tokio::fs::remove_file(&disk_path)
-                    .await
-                    .map_err(FileError::from)
-                    .map_err(file_error)?;
-                sqlx::query(
-                    r#"DELETE FROM user_files WHERE username = $1 AND path = $2 AND is_dir = false"#,
-                )
-                .bind(&username)
-                .bind(&clean_path)
-                .execute(&state.pool)
+        // Write to a temp sibling first, then rename onto the final path.
+        // Любая ошибка во время стриминга (в т.ч. оборванный клиентом upload)
+        // удаляет temp-файл сразу — сервер не оставляет мусорных `.loza-part`.
+        let temp_name = format!(".{fname}.{}.loza-part", Uuid::new_v4());
+        let temp_path = disk_path.with_file_name(&temp_name);
+
+        let (total_size, checksum) = {
+            let mut temp_file = tokio::fs::File::create(&temp_path)
                 .await
                 .map_err(FileError::from)
                 .map_err(file_error)?;
-            } else {
-                return Err(file_error(FileError::conflict(&clean_path)));
+            let mut hasher = Sha256::new();
+
+            let write_result: Result<(u64, String), FileError> = async {
+                let mut total_size: u64 = 0;
+                let mut stream = field;
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk
+                        .map_err(|e| FileError::new("STREAM_ERROR", &format!("Read error: {e}")))?;
+                    if !chunk.is_empty() {
+                        total_size += chunk.len() as u64;
+                        hasher.update(&chunk);
+                        temp_file.write_all(&chunk).await?;
+                    }
+                }
+                temp_file.flush().await?;
+                temp_file.sync_all().await?;
+                Ok((total_size, format!("{:x}", hasher.finalize())))
             }
+            .await;
+
+            match write_result {
+                Ok(value) => value,
+                Err(err) => {
+                    drop(temp_file);
+                    let _ = tokio::fs::remove_file(&temp_path).await;
+                    return Err(file_error(err));
+                }
+            }
+        };
+
+        // Atomic replace of the final path (rename() replaces the target on
+        // both POSIX and Windows; a directory occupying the name fails).
+        if let Err(error) = tokio::fs::rename(&temp_path, &disk_path).await {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return Err(match error.kind() {
+                std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied => {
+                    file_error(FileError::conflict(&clean_path))
+                }
+                _ => file_error(FileError::from(error)),
+            });
         }
 
-        let mut file = tokio::fs::File::create(&disk_path)
-            .await
-            .map_err(FileError::from)
-            .map_err(file_error)?;
-
-        let mut stream = field;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| file_error(FileError::new("STREAM_ERROR", &format!("Read error: {e}"))))?;
-            if !chunk.is_empty() {
-                total_size += chunk.len() as u64;
-                tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
-                    .await
-                    .map_err(FileError::from)
-                    .map_err(file_error)?;
-            }
-        }
-        tokio::io::AsyncWriteExt::flush(&mut file)
-            .await
-            .map_err(FileError::from)
-            .map_err(file_error)?;
-
-        let mime = ct.or_else(|| guess_mime(&fname).map(|s| s.to_string()));
+        // MIME: server's guess from the filename wins over the client-supplied
+        // content type, which the client could send as anything.
+        let mime = match guess_mime(&fname) {
+            Some(server) => Some(server.to_string()),
+            None => client_ct,
+        };
         let dir_name = split_parent(&clean_path)
             .map(|(_, n)| n.to_string())
-            .unwrap_or_else(|| fname.clone());
-
-        let file_id = Uuid::new_v4();
+            .unwrap_or_else(|| fname.to_string());
         let now = Utc::now().timestamp();
-        sqlx::query(
-            r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, created_at, updated_at)
-               VALUES ($1, $2, $3, $4, false, $5, $6, $7, $8)"#,
+
+        // UPSERT preserving the existing id: share links keep pointing at the
+        // same logical file, and created_at stays the original creation time.
+        let (file_id, orig_created_at): (String, i64) = sqlx::query_as(
+            r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, sha256_hex, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, false, $5, $6, $7, $8, $9)
+               ON CONFLICT (username, path) DO UPDATE
+                 SET name = EXCLUDED.name, size_bytes = EXCLUDED.size_bytes,
+                     mime_type = EXCLUDED.mime_type, sha256_hex = EXCLUDED.sha256_hex,
+                     updated_at = EXCLUDED.updated_at
+               RETURNING id::text, created_at"#,
         )
-        .bind(file_id)
+        .bind(Uuid::new_v4())
         .bind(&username)
         .bind(&clean_path)
         .bind(&dir_name)
         .bind(total_size as i64)
         .bind(mime.clone())
+        .bind(&checksum)
         .bind(now)
         .bind(now)
-        .execute(&state.pool)
+        .fetch_one(&state.pool)
         .await
-        .map_err(FileError::from)
-        .map_err(file_error)?;
+        .map_err(|error| {
+            // The file is already in place; if the DB write fails, roll it back
+            // so we never hold a file with no metadata. Any leftover is removed
+            // by the startup reconciliation.
+            let _ = tokio::fs::remove_file(&disk_path);
+            file_error(FileError::from(error))
+        })?;
 
         let file_info = FileInfo {
-            id: file_id.to_string(),
+            id: file_id,
             path: clean_path.clone(),
             name: dir_name,
             is_dir: false,
             size_bytes: total_size,
             mime_type: mime,
-            created_at: fmt_ts(now),
+            created_at: fmt_ts(orig_created_at),
             updated_at: fmt_ts(now),
+            sha256: Some(checksum),
         };
         // Broadcast file change via WebSocket for each uploaded file
         state.broadcast_push(&username, serde_json::json!(WsPush::file_created(file_info.clone())));
@@ -489,154 +572,175 @@ pub async fn upload_file(
     }
 }
 
-/// GET /files/download?path=<path>
-/// Скачивание с поддержкой HTTP Range.
-pub async fn download_file(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<FileQuery>,
-) -> Result<Response, ApiError> {
-    let username = require_username(&state, &headers).await?;
-    let path = sanitize_path(&query.path).map_err(from_file_error)?;
+// ─── Serving files (download / view / share) ──────────────────────────────
 
+pub(crate) enum Disposition {
+    Inline,
+    Attachment,
+}
+
+/// Единый стриминг-сервинг файла. Content-Length берётся с диска (а не из БД),
+/// Range применяется к фактическому размеру, в отдельных header'ах отдаётся
+/// X-Checksum-Sha256. Не экспонирует никакие внутренние пути наружу.
+pub(crate) async fn serve_file(
+    state: &AppState,
+    headers: &HeaderMap,
+    username: &str,
+    path: &str,
+    disposition: Disposition,
+    checksum_override: Option<String>,
+) -> Result<Response, ApiError> {
     let row: FileMetaRow = sqlx::query_as(
-        r#"SELECT path, name, mime_type, size_bytes FROM user_files
+        r#"SELECT path, name, mime_type, size_bytes, sha256_hex FROM user_files
            WHERE username = $1 AND path = $2 AND is_dir = false"#,
     )
-    .bind(&username)
-    .bind(&path)
+    .bind(username)
+    .bind(path)
     .fetch_optional(&state.pool)
     .await
     .map_err(FileError::from)
     .map_err(file_error)?
-    .ok_or_else(|| file_error(FileError::not_found(&path)))?;
+    .ok_or_else(|| file_error(FileError::not_found(path)))?;
 
     let name = row.name;
-    let db_mime = row.mime_type;
-    let size = row.size_bytes;
-    let content_type = db_mime
-        .or_else(|| guess_mime(&name).map(|s| s.to_string()))
+    let checksum = checksum_override.or(row.sha256_hex);
+    // Предпочитаем серверный (по расширению) тип: он же не позволяет клиенту
+    // подменить тип так, чтобы браузер исполнил inline-контент как HTML.
+    let content_type = guess_mime(&name)
+        .map(|s| s.to_string())
+        .or(row.mime_type)
         .unwrap_or_else(|| "application/octet-stream".to_string());
 
-    let disk_path = storage_path(&username, &path).await?;
+    let disk_path = storage_path(username, path).await?;
     let file = tokio::fs::File::open(&disk_path)
         .await
         .map_err(FileError::from)
         .map_err(file_error)?;
-
-    let stream = ReaderStream::new(file);
-    let body = Body::from_stream(stream);
-    let mut response = Response::new(body);
-
-    response.headers_mut().insert(
-        CONTENT_TYPE,
-        HeaderValue::from_str(&content_type).unwrap_or(HeaderValue::from_static("application/octet-stream")),
-    );
-    response.headers_mut().insert(
-        CONTENT_DISPOSITION,
-        HeaderValue::from_str(&format!(
-            "attachment; filename=\"{}\"; filename*=UTF-8''{}",
-            name,
-            percent_encode(&name)
-        )).unwrap_or_else(|_| HeaderValue::from_static("attachment")),
-    );
-    response.headers_mut().insert(ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-    response.headers_mut().insert(
-        CONTENT_LENGTH,
-        HeaderValue::from_str(&size.to_string()).unwrap_or(HeaderValue::from_static("0")),
-    );
-
-    Ok(response)
-}
-
-/// GET /files/view?path=<path>
-/// Просмотр файла (inline) с поддержкой Range для стриминга.
-pub async fn view_file(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<FileQuery>,
-) -> Result<Response, ApiError> {
-    let username = require_username(&state, &headers).await?;
-    let path = sanitize_path(&query.path).map_err(from_file_error)?;
-
-    let row: FileMetaRow = sqlx::query_as(
-        r#"SELECT path, name, mime_type, size_bytes FROM user_files
-           WHERE username = $1 AND path = $2 AND is_dir = false"#,
-    )
-    .bind(&username)
-    .bind(&path)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(FileError::from)
-    .map_err(file_error)?
-    .ok_or_else(|| file_error(FileError::not_found(&path)))?;
-
-    let name = row.name;
-    let db_mime = row.mime_type;
-    let size = row.size_bytes;
-    let content_type = db_mime
-        .or_else(|| guess_mime(&name).map(|s| s.to_string()))
-        .unwrap_or_else(|| "application/octet-stream".to_string());
-
-    let disk_path = storage_path(&username, &path).await?;
-    let mut file = tokio::fs::File::open(&disk_path)
+    let length = file
+        .metadata()
         .await
         .map_err(FileError::from)
-        .map_err(file_error)?;
+        .map_err(file_error)?
+        .len();
 
-    // Parse Range header
-    let range_header = headers.get(RANGE)
-        .and_then(|v| v.to_str().ok());
+    let disposition_value = match disposition {
+        Disposition::Inline => "inline",
+        Disposition::Attachment => "attachment",
+    };
+    let content_disposition = format!(
+        "{disposition_value}; filename=\"{}\"; filename*=UTF-8''{}",
+        name,
+        percent_encode(&name)
+    );
 
-    if let Some(rh) = range_header
-        && let Some((start, end)) = parse_range(rh, size)
-    {
-        use tokio::io::{AsyncReadExt, AsyncSeekExt};
-        file.seek(std::io::SeekFrom::Start(start))
-            .await
-            .map_err(FileError::from)
-            .map_err(file_error)?;
-        let end = end.min((size - 1) as u64);
-        let len = end - start + 1;
+    let range = headers
+        .get(RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map(|r| parse_range(r, length));
 
-        let stream = ReaderStream::with_capacity(file.take(len), 64 * 1024);
-        let body = Body::from_stream(stream);
-        let mut response = Response::new(body);
+    let mut response = match range {
+        Some(ParsedRange::Unsatisfiable) => {
+            let mut resp = Response::new(Body::empty());
+            *resp.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
+            resp.headers_mut().insert(
+                CONTENT_RANGE,
+                HeaderValue::from_str(&format!("bytes */{length}"))
+                    .unwrap_or(HeaderValue::from_static("bytes */0")),
+            );
+            resp.headers_mut()
+                .insert(CONTENT_LENGTH, HeaderValue::from_static("0"));
+            resp
+        }
+        Some(ParsedRange::Partial(start, end)) => {
+            use tokio::io::{AsyncReadExt, AsyncSeekExt};
+            let mut file = file;
+            file.seek(std::io::SeekFrom::Start(start))
+                .await
+                .map_err(FileError::from)
+                .map_err(file_error)?;
+            let len = end - start + 1;
+            let stream = ReaderStream::with_capacity(file.take(len), 64 * 1024);
+            let mut resp = Response::new(Body::from_stream(stream));
+            *resp.status_mut() = StatusCode::PARTIAL_CONTENT;
+            resp.headers_mut().insert(
+                CONTENT_RANGE,
+                HeaderValue::from_str(&format!("bytes {start}-{end}/{length}"))
+                    .unwrap_or(HeaderValue::from_static("")),
+            );
+            resp.headers_mut().insert(
+                CONTENT_LENGTH,
+                HeaderValue::from_str(&len.to_string()).unwrap_or(HeaderValue::from_static("0")),
+            );
+            resp
+        }
+        Some(ParsedRange::Full) | None => {
+            let stream = ReaderStream::new(file);
+            let mut resp = Response::new(Body::from_stream(stream));
+            resp.headers_mut().insert(
+                CONTENT_LENGTH,
+                HeaderValue::from_str(&length.to_string()).unwrap_or(HeaderValue::from_static("0")),
+            );
+            resp
+        }
+    };
 
-        response.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_str(&content_type).unwrap_or(HeaderValue::from_static("application/octet-stream")));
-        response.headers_mut().insert(ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-        response.headers_mut().insert(CONTENT_LENGTH, HeaderValue::from_str(&len.to_string()).unwrap_or(HeaderValue::from_static("0")));
-        response.headers_mut().insert(CONTENT_RANGE, HeaderValue::from_str(&format!("bytes {start}-{end}/{size}")).unwrap_or(HeaderValue::from_static("")));
-        *response.status_mut() = StatusCode::PARTIAL_CONTENT;
-        return Ok(response);
+    let headers_mut = response.headers_mut();
+    headers_mut.insert(
+        CONTENT_TYPE,
+        HeaderValue::from_str(&content_type)
+            .unwrap_or(HeaderValue::from_static("application/octet-stream")),
+    );
+    headers_mut.insert(ACCEPT_RANGES, HeaderValue::from_static("bytes"));
+    headers_mut.insert(
+        CONTENT_DISPOSITION,
+        HeaderValue::from_str(&content_disposition)
+            .unwrap_or_else(|_| HeaderValue::from_static(disposition_value)),
+    );
+    if let Some(sha) = checksum {
+        headers_mut.insert(
+            "x-checksum-sha256",
+            HeaderValue::from_str(&sha).unwrap_or(HeaderValue::from_static("")),
+        );
     }
-
-    // Full file — reuse the handle already opened above.
-    let stream = ReaderStream::new(file);
-    let body = Body::from_stream(stream);
-    let mut response = Response::new(body);
-
-    response.headers_mut().insert(CONTENT_TYPE, HeaderValue::from_str(&content_type).unwrap_or(HeaderValue::from_static("application/octet-stream")));
-    response.headers_mut().insert(ACCEPT_RANGES, HeaderValue::from_static("bytes"));
-    response.headers_mut().insert(CONTENT_LENGTH, HeaderValue::from_str(&size.to_string()).unwrap_or(HeaderValue::from_static("0")));
 
     Ok(response)
 }
 
-fn parse_range(range_header: &str, total_size: i64) -> Option<(u64, u64)> {
-    if total_size <= 0 || !range_header.starts_with("bytes=") {
-        return None;
+enum ParsedRange {
+    Full,
+    Partial(u64, u64),
+    Unsatisfiable,
+}
+
+fn parse_range(range_header: &str, total_size: u64) -> ParsedRange {
+    if total_size == 0 || !range_header.starts_with("bytes=") {
+        return ParsedRange::Full;
     }
-    let range_str = &range_header[6..];
-    let (start_str, end_str) = range_str.split_once('-')?;
-    let start: u64 = start_str.parse().ok()?;
-    let end: u64 = if end_str.is_empty() {
-        total_size as u64 - 1
-    } else {
-        end_str.parse().ok()?
+    let spec = range_header["bytes=".len()..].trim();
+    if spec == "*" {
+        return ParsedRange::Unsatisfiable;
+    }
+    let Some((start_str, end_str)) = spec.split_once('-') else {
+        return ParsedRange::Full;
     };
-    let end = end.min(total_size as u64 - 1);
-    (start <= end && start < total_size as u64).then_some((start, end))
+    let Ok(start) = start_str.trim().parse::<u64>() else {
+        return ParsedRange::Full;
+    };
+    if start >= total_size {
+        return ParsedRange::Unsatisfiable;
+    }
+    let end = if end_str.trim().is_empty() {
+        total_size - 1
+    } else {
+        match end_str.trim().parse::<u64>() {
+            Ok(end) => end.min(total_size - 1),
+            Err(_) => return ParsedRange::Full,
+        }
+    };
+    if start > end {
+        return ParsedRange::Full;
+    }
+    ParsedRange::Partial(start, end)
 }
 
 fn percent_encode(input: &str) -> String {
@@ -650,6 +754,30 @@ fn percent_encode(input: &str) -> String {
         }
     }
     result
+}
+
+/// GET /files/download?path=<path>
+/// Скачивание с поддержкой HTTP Range.
+pub async fn download_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<FileQuery>,
+) -> Result<Response, ApiError> {
+    let username = require_username(&state, &headers).await?;
+    let path = sanitize_path(&query.path).map_err(from_file_error)?;
+    serve_file(&state, &headers, &username, &path, Disposition::Attachment, None).await
+}
+
+/// GET /files/view?path=<path>
+/// Просмотр файла (inline content) с поддержкой Range для стриминга.
+pub async fn view_file(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<FileQuery>,
+) -> Result<Response, ApiError> {
+    let username = require_username(&state, &headers).await?;
+    let path = sanitize_path(&query.path).map_err(from_file_error)?;
+    serve_file(&state, &headers, &username, &path, Disposition::Inline, None).await
 }
 
 /// DELETE /files/delete?path=<path>
@@ -677,9 +805,19 @@ pub async fn delete_file(
 
     let disk_path = storage_path(&username, &path).await?;
 
-    // Delete the database records first. If the disk delete subsequently fails,
-    // the metadata is already gone — the file is effectively deleted from the
-    // user's perspective and a failed disk cleanup is logged but not fatal.
+    // Сначала диск, потом метаданные: если удаление с диска упало, строка
+    // остаётся и в UI файл всё ещё виден, а не «призрак», который 404-ит.
+    // Недоделанные половины в любом случае вычищает реконсиляция при старте.
+    match tokio::fs::symlink_metadata(&disk_path).await {
+        Ok(metadata) if metadata.is_dir() => tokio::fs::remove_dir_all(&disk_path).await,
+        Ok(_) => tokio::fs::remove_file(&disk_path).await,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+    .map_err(FileError::from)
+    .map_err(file_error)?;
+
+    // Строки файлов каскадно удaлят свои share-ссылки (FK ON DELETE CASCADE).
     sqlx::query(
         r#"DELETE FROM user_files WHERE username = $1 AND (path = $2 OR path LIKE $3)"#,
     )
@@ -688,15 +826,6 @@ pub async fn delete_file(
     .bind(format!("{path}/%"))
     .execute(&state.pool)
     .await
-    .map_err(FileError::from)
-    .map_err(file_error)?;
-
-    match tokio::fs::symlink_metadata(&disk_path).await {
-        Ok(metadata) if metadata.is_dir() => tokio::fs::remove_dir_all(&disk_path).await,
-        Ok(_) => tokio::fs::remove_file(&disk_path).await,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
     .map_err(FileError::from)
     .map_err(file_error)?;
 
@@ -844,8 +973,8 @@ pub async fn rename_file(
         return Err(file_error(FileError::invalid_path(&to)));
     }
 
-    let row: Option<(String, String, bool, i64, Option<String>, i64)> = sqlx::query_as(
-        r#"SELECT id::text, name, is_dir, size_bytes, mime_type, created_at FROM user_files
+    let row: Option<(String, String, bool, i64, Option<String>, i64, Option<String>)> = sqlx::query_as(
+        r#"SELECT id::text, name, is_dir, size_bytes, mime_type, created_at, sha256_hex FROM user_files
            WHERE username = $1 AND path = $2"#,
     )
     .bind(&username)
@@ -855,7 +984,7 @@ pub async fn rename_file(
     .map_err(FileError::from)
     .map_err(file_error)?;
 
-    let (id, _name, is_dir, size, mime, original_created_at) =
+    let (id, _name, is_dir, size, mime, original_created_at, sha256) =
         row.ok_or_else(|| file_error(FileError::not_found(&from)))?;
 
     // Conflict check
@@ -928,9 +1057,10 @@ pub async fn rename_file(
         mime_type: mime,
         created_at: fmt_ts(original_created_at),
         updated_at: fmt_ts(now),
+        sha256,
     };
 
-// Broadcast file change via WebSocket
+    // Broadcast file change via WebSocket
     state.broadcast_push(&username, serde_json::json!(WsPush::file_renamed(&from, to.clone(), is_dir, result.clone())));
 
     Ok(Json(result))
@@ -958,8 +1088,8 @@ pub async fn copy_file(
         return Err(file_error(FileError::invalid_path(&to)));
     }
 
-    let row: Option<(String, bool, i64, Option<String>)> = sqlx::query_as(
-        r#"SELECT name, is_dir, size_bytes, mime_type FROM user_files
+    let row: Option<(String, bool, i64, Option<String>, Option<String>)> = sqlx::query_as(
+        r#"SELECT name, is_dir, size_bytes, mime_type, sha256_hex FROM user_files
            WHERE username = $1 AND path = $2"#,
     )
     .bind(&username)
@@ -969,7 +1099,7 @@ pub async fn copy_file(
     .map_err(FileError::from)
     .map_err(file_error)?;
 
-    let (_name, is_dir, size, mime) =
+    let (_name, is_dir, size, mime, sha256) =
         row.ok_or_else(|| file_error(FileError::not_found(&from)))?;
 
     // Conflict check
@@ -1018,8 +1148,8 @@ pub async fn copy_file(
     // leave an orphan on disk).
     let inserted: u64 = if is_dir {
         sqlx::query(
-            r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, created_at, updated_at)
-               VALUES (gen_random_uuid(), $1, $2, $3, true, 0, $4, $5, $5)
+            r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, sha256_hex, created_at, updated_at)
+               VALUES (gen_random_uuid(), $1, $2, $3, true, 0, $4, NULL, $5, $5)
                ON CONFLICT (username, path) DO NOTHING"#,
         )
         .bind(&username)
@@ -1037,8 +1167,8 @@ pub async fn copy_file(
             .map(|(_, item_name)| item_name.to_string())
             .unwrap_or_else(|| to.clone());
         sqlx::query(
-            r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, created_at, updated_at)
-               VALUES (gen_random_uuid(), $1, $2, $3, false, $4, $5, $6, $6)
+            r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, sha256_hex, created_at, updated_at)
+               VALUES (gen_random_uuid(), $1, $2, $3, false, $4, $5, $6, $7, $7)
                ON CONFLICT (username, path) DO NOTHING"#,
         )
         .bind(&username)
@@ -1046,6 +1176,7 @@ pub async fn copy_file(
         .bind(&destination_name)
         .bind(size)
         .bind(mime.clone())
+        .bind(&sha256)
         .bind(now)
         .execute(&state.pool)
         .await
@@ -1067,10 +1198,10 @@ pub async fn copy_file(
     // Copy the directory children into fresh rows under the new path.
     if is_dir {
         sqlx::query(
-            r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, created_at, updated_at)
+            r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, sha256_hex, created_at, updated_at)
                SELECT gen_random_uuid(), $1,
                       $2 || SUBSTRING(path FROM CHAR_LENGTH($3) + 1),
-                      name, is_dir, size_bytes, mime_type, $4, $4
+                      name, is_dir, size_bytes, mime_type, sha256_hex, $4, $4
                FROM user_files
                WHERE username = $1 AND path LIKE $3
                ON CONFLICT (username, path) DO NOTHING"#,
@@ -1109,6 +1240,7 @@ pub async fn copy_file(
         mime_type: mime,
         created_at: now_str.clone(),
         updated_at: now_str,
+        sha256,
     };
 
     // Broadcast file change via WebSocket
@@ -1117,7 +1249,7 @@ pub async fn copy_file(
     Ok(Json(result))
 }
 
-async fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+async fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     tokio::fs::create_dir_all(dst).await?;
     let mut entries = tokio::fs::read_dir(src).await?;
     while let Some(entry) = entries.next_entry().await? {
@@ -1175,8 +1307,8 @@ pub async fn create_dir(
     let dir_id = Uuid::new_v4();
     let now = Utc::now().timestamp();
     sqlx::query(
-        r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, true, 0, $5, $6, $7)"#,
+        r#"INSERT INTO user_files (id, username, path, name, is_dir, size_bytes, mime_type, sha256_hex, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, true, 0, $5, NULL, $6, $7)"#,
     )
     .bind(dir_id)
     .bind(&username)
@@ -1200,6 +1332,7 @@ pub async fn create_dir(
         mime_type: Some("inode/directory".to_string()),
         created_at: ts.clone(),
         updated_at: ts,
+        sha256: None,
     };
 
     // Broadcast file change via WebSocket
@@ -1210,17 +1343,32 @@ pub async fn create_dir(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_range;
+    use super::{ParsedRange, parse_range};
 
     #[test]
     fn rejects_invalid_or_empty_ranges() {
-        assert_eq!(parse_range("bytes=0-", 0), None);
-        assert_eq!(parse_range("bytes=100-", 100), None);
-        assert_eq!(parse_range("bytes=9-2", 10), None);
+        assert!(matches!(parse_range("bytes=0-", 0), ParsedRange::Full));
+        assert!(matches!(parse_range("bytes=9-2", 10), ParsedRange::Full));
+        assert!(matches!(parse_range("bytes=1", 10), ParsedRange::Full));
+        assert!(matches!(parse_range("chunked", 10), ParsedRange::Full));
+    }
+
+    #[test]
+    fn rejects_unsatisfiable_ranges_with_416() {
+        assert!(matches!(parse_range("bytes=100-", 100), ParsedRange::Unsatisfiable));
+        assert!(matches!(parse_range("bytes=20-30", 10), ParsedRange::Unsatisfiable));
+        assert!(matches!(parse_range("bytes=*", 100), ParsedRange::Unsatisfiable));
     }
 
     #[test]
     fn clamps_open_ended_ranges() {
-        assert_eq!(parse_range("bytes=5-", 10), Some((5, 9)));
+        assert!(matches!(parse_range("bytes=5-", 10), ParsedRange::Partial(5, 9)));
+    }
+
+    #[test]
+    fn clamps_overshooting_end() {
+        assert!(matches!(parse_range("bytes=0-999", 100), ParsedRange::Partial(0, 99)));
+
+        assert!(matches!(parse_range("bytes=2-7", 10), ParsedRange::Partial(2, 7)));
     }
 }
