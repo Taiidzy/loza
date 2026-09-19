@@ -3,7 +3,7 @@ import { motion } from "framer-motion";
 import { FileInfo, ShareInfo } from "../../types/files";
 import { fileApi } from "../../api/filesService";
 import { logger } from "../../shared/utils/logger";
-import { X, Copy, Link2, Trash2, Loader, AlertCircle, CheckCircle } from "lucide-react";
+import { X, Copy, Link2, Trash2, Loader, AlertCircle, CheckCircle, Lock } from "lucide-react";
 
 interface Props {
   file: FileInfo;
@@ -17,6 +17,8 @@ export default function ShareModal({ file, onClose }: Props) {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
+  const [password, setPassword] = useState("");
+  const [passwordError, setPasswordError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -39,13 +41,20 @@ export default function ShareModal({ file, onClose }: Props) {
   useEffect(() => { load(); }, [load]);
 
   const handleCreate = async () => {
+    const trimmed = password.trim();
+    if (file.isDir && !trimmed) {
+      setPasswordError("Для папки пароль обязателен");
+      return;
+    }
+    setPasswordError(null);
     setCreating(true);
     setError(null);
     try {
-      const created = await fileApi.createShare(file.path);
+      const created = await fileApi.createShare(file.path, trimmed || undefined);
       await navigator.clipboard.writeText(created.url);
       setCopiedToken(created.share.token);
       setTimeout(() => setCopiedToken(null), 2000);
+      setPassword("");
       await load();
     } catch (e: any) {
       setError(e?.message || "Не удалось создать ссылку");
@@ -143,30 +152,70 @@ export default function ShareModal({ file, onClose }: Props) {
           </div>
         )}
 
-        <div style={{ display: "flex", gap: 8 }}>
-          <button
-            onClick={handleCreate}
-            disabled={creating}
-            style={{
-              flex: 1,
-              padding: "8px 12px",
-              borderRadius: "var(--radius-sm)",
-              background: creating ? "var(--color-accent)" : "var(--color-accent)",
-              border: "1px solid var(--color-accent-border)",
-              color: "#fff",
-              fontSize: 12,
-              fontWeight: 500,
-              cursor: creating ? "wait" : "pointer",
-              opacity: creating ? 0.7 : 1,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 6,
-            }}
-          >
-            {creating ? <Loader size={12} style={{ animation: "spin 1s linear infinite" }} /> : <Link2 size={12} />}
-            {creating ? "Создание…" : "Создать ссылку"}
-          </button>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={handleCreate}
+              disabled={creating}
+              style={{
+                flex: 1,
+                padding: "8px 12px",
+                borderRadius: "var(--radius-sm)",
+                background: creating ? "var(--color-accent)" : "var(--color-accent)",
+                border: "1px solid var(--color-accent-border)",
+                color: "#fff",
+                fontSize: 12,
+                fontWeight: 500,
+                cursor: creating ? "wait" : "pointer",
+                opacity: creating ? 0.7 : 1,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 6,
+              }}
+            >
+              {creating ? <Loader size={12} style={{ animation: "spin 1s linear infinite" }} /> : <Link2 size={12} />}
+              {creating ? "Создание…" : "Создать ссылку"}
+            </button>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => {
+                setPassword(e.target.value);
+                if (passwordError) setPasswordError(null);
+              }}
+              placeholder={
+                file.isDir ? "Пароль для доступа (обязателен)" : "Пароль для доступа (необязательно)"
+              }
+              style={{
+                width: "100%",
+                padding: "8px 10px",
+                borderRadius: "var(--radius-sm)",
+                background: "rgba(255,255,255,0.05)",
+                border: `1px solid ${passwordError ? "var(--color-error)" : "var(--color-glass-border)"}`,
+                color: "var(--color-text-primary)",
+                fontSize: 12,
+                outline: "none",
+                boxSizing: "border-box",
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !creating) {
+                  handleCreate();
+                }
+              }}
+            />
+            {passwordError ? (
+              <div style={{ fontSize: 11, color: "var(--color-error)" }}>{passwordError}</div>
+            ) : (
+              <div style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+                {file.isDir
+                  ? "Ссылкой смогут воспользоваться только те, кто знает пароль"
+                  : "Без пароля ссылку откроет любой, у кого она есть"}
+              </div>
+            )}
+          </div>
         </div>
 
         {loading ? (
@@ -193,8 +242,20 @@ export default function ShareModal({ file, onClose }: Props) {
                   fontSize: 12,
                 }}
               >
-                <div style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: s.isActive ? "var(--color-text-secondary)" : "var(--color-text-muted)" }}>
-                  {urls[s.token] ?? `/share/${s.token}`}
+                <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6, overflow: "hidden" }}>
+                  {s.hasPassword && (
+                    <Lock size={10} color="#ffb6d2" style={{ flexShrink: 0 }} />
+                  )}
+                  <span
+                    style={{
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      color: s.isActive ? "var(--color-text-secondary)" : "var(--color-text-muted)",
+                    }}
+                  >
+                    {urls[s.token] ?? `/share/${s.token}`}
+                  </span>
                 </div>
                 <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
                   <button

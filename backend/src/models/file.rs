@@ -28,8 +28,8 @@ pub struct FileInfo {
     pub sha256: Option<String>,
 }
 
-/// Информация о share-ссылке. Никогда не содержит путь к файлу — это
-/// внутренняя деталь, которую нельзя раскрывать наружу.
+/// Информация о share-ссылке. Никогда не содержит путь к файлу/директории —
+/// это внутренняя деталь, которую нельзя раскрывать наружу.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShareInfo {
@@ -38,6 +38,9 @@ pub struct ShareInfo {
     pub created_at: String,
     pub expires_at: Option<String>,
     pub is_active: bool,
+    /// Ссылка защищена паролем (пароль задаётся при создании и не может быть
+    /// изменён — только отзыв и пересоздание).
+    pub has_password: bool,
 }
 
 /// Тело запроса на создание share-ссылки.
@@ -45,6 +48,9 @@ pub struct ShareInfo {
 #[serde(rename_all = "camelCase")]
 pub struct CreateShareRequest {
     pub path: String,
+    /// Необязательный пароль. Пустой/отсутствующий — ссылка без пароля.
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 /// Тело запроса на создание директории.

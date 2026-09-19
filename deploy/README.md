@@ -71,9 +71,13 @@ deploy/update.sh
 
 Incremental update script that:
 1. `git pull` to fetch latest changes
-2. Rebuilds the Rust backend with `cargo build --release`
-3. Restarts the systemd service (`loza-server`)
+2. Rebuilds the backend image — including the `share-viewer-web` web interface
+   (`dist` inlined into the image, back end serves `/share/:token`, `/share-app/*`
+   and `/share/api/*` itself)
+3. Recreates the Compose containers (`docker compose up -d`, zero-downtime)
 4. Health-checks the API on port `3948`
+5. Verifies the share viewer responds (`/share-app/` → 200, `/share` without a
+   token → 404)
 
 ### Flags
 

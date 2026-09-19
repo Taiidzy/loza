@@ -1,0 +1,18 @@
+# Держим build context Lean: в образ бэкенда попадают только backend/ и
+# share-viewer-web/ (сборка dist происходит внутри Docker в stage web-builder).
+.git
+.gitignore
+**/node_modules
+**/target
+**/dist
+storage/
+loza-data/
+app/
+docs/
+mobile/
+deploy/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store

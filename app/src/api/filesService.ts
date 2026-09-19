@@ -84,9 +84,9 @@ export class FileApiService {
 
   // ── Shares ────────────────────────────────────────────────────────────
 
-  async createShare(path: string): Promise<CreatedShare> {
+  async createShare(path: string, password?: string): Promise<CreatedShare> {
     logger.info("files", "invoke(create_share)", { path });
-    return await invoke<CreatedShare>("create_share", { path });
+    return await invoke<CreatedShare>("create_share", { path, password: password ?? null });
   }
 
   async listShares(path?: string): Promise<ShareInfo[]> {

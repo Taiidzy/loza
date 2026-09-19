@@ -9,6 +9,7 @@ use axum::{
     routing::{delete, get, post, put},
 };
 use std::net::SocketAddr;
+use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
@@ -97,9 +98,6 @@ async fn main() {
             "/calendar/events/:id",
             put(handlers::calendar::update_event).delete(handlers::calendar::delete_event),
         )
-        // Публичные share-ссылки (без авторизации — сила в энтропии токена).
-        .route("/share/:token", get(handlers::shares::share_view))
-        .route("/share/:token/download", get(handlers::shares::share_download))
         // File API — HTTP (не WebSocket) с поддержкой потоковой передачи.
         // 500 MB лимит тела для файловых операций (загрузка файлов).
         // multipart уже стримится на диск по чанкам, лимит только для
@@ -126,8 +124,44 @@ async fn main() {
                 .layer(DefaultBodyLimit::max(500 * 1024 * 1024)),
         )
         .layer(DefaultBodyLimit::max(16 * 1024))
-        .layer(TraceLayer::new_for_http())
-        .with_state(state);
+        .layer(TraceLayer::new_for_http());
+
+    // Публичные share-ссылки. При наличии собранного share-viewer-web
+    // сервер раздаёт SPA + password-API; без него — legacy: `/share/:token`
+    // отдаёт тело файла inline. В обоих режимах `/share` (без токена) не
+    // имеет маршрута и отдаёт 404 — индекс ссылок никогда не экспонируется.
+    let app = match state.config.share_web_dir.as_ref() {
+        Some(web_dir) => app
+            .route("/share/:token", get(handlers::shares::share_page))
+            .route(
+                "/share/api/:token/meta",
+                get(handlers::shares::share_meta),
+            )
+            .route(
+                "/share/api/:token/unlock",
+                post(handlers::shares::share_unlock),
+            )
+            .route(
+                "/share/api/:token/list",
+                get(handlers::shares::share_list),
+            )
+            .route(
+                "/share/api/:token/download",
+                get(handlers::shares::share_download_public),
+            )
+            .route(
+                "/share/api/:token/preview",
+                get(handlers::shares::share_preview),
+            )
+            .nest_service("/share-app", ServeDir::new(web_dir)),
+        None => app
+            .route("/share/:token", get(handlers::shares::share_view))
+            .route(
+                "/share/:token/download",
+                get(handlers::shares::share_download),
+            ),
+    }
+    .with_state(state);
 
     tracing::info!(address = %addr, "Loza server started");
 

@@ -250,13 +250,15 @@ pub async fn get_file_info(
 
 // ─── Shares ──────────────────────────────────────────────────────────────────
 
-/// `invoke("create_share", { path })` — создаёт публичную ссылку на файл.
-/// Возвращает токен и полный URL вида `<server>/share/<token>`.
+/// `invoke("create_share", { path, password? })` — создаёт публичную ссылку
+/// на файл или директорию. Возвращает токен и полный URL вида
+/// `<server>/share/<token>`.
 #[tauri::command]
 pub async fn create_share(
     app: AppHandle,
     state: tauri::State<'_, LozaState>,
     path: String,
+    password: Option<String>,
 ) -> Result<CreatedShare, String> {
     let (token, server_url) = require_session(&app)?;
 
@@ -264,7 +266,7 @@ pub async fn create_share(
         .client
         .post(format!("{}/files/share", server_url))
         .header("x-session-token", token)
-        .json(&serde_json::json!({ "path": path }))
+        .json(&serde_json::json!({ "path": path, "password": password }))
         .send()
         .await
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;

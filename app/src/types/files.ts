@@ -17,6 +17,8 @@ export interface ShareInfo {
   createdAt: string;
   expiresAt: string | null;
   isActive: boolean;
+  /** Ссылка защищена паролем. */
+  hasPassword: boolean;
 }
 
 export interface CreatedShare {

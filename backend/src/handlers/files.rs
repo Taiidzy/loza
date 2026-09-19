@@ -53,7 +53,8 @@ fn file_error(err: FileError) -> ApiError {
         "FILE_NOT_FOUND" | "IO_NOT_FOUND" => StatusCode::NOT_FOUND,
         "PATH_EXISTS" => StatusCode::CONFLICT,
         "INVALID_PATH" => StatusCode::BAD_REQUEST,
-        "IS_DIRECTORY" | "NOT_A_DIRECTORY" | "SHARE_DIRECTORY_NOT_SUPPORTED" => {
+        "IS_DIRECTORY" | "NOT_A_DIRECTORY" | "SHARE_DIRECTORY_NOT_SUPPORTED"
+        | "SHARE_IS_DIRECTORY" | "SHARE_IS_NOT_DIRECTORY" => {
             StatusCode::UNPROCESSABLE_ENTITY
         }
         "IO_PERMISSION_DENIED" => StatusCode::FORBIDDEN,

@@ -20,12 +20,14 @@ jsonwebtoken = "9"
 dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tower-http = { version = "0.5", features = ["trace", "limit"] }
+tower-http = { version = "0.5", features = ["trace", "limit", "fs"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "migrate", "macros", "uuid"] }
 argon2 = "0.5"
 password-hash = { version = "0.5", features = ["rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
 dashmap = "6"
 futures-util = "0.3"
 bytes = "1"

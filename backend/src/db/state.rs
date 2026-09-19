@@ -21,6 +21,13 @@ pub const STORAGE_HISTORY_DAYS: usize = 7;
 const LOGIN_FAILURE_WINDOW_SECS: u64 = 15 * 60;
 const MAX_LOGIN_FAILURES: u32 = 5;
 const MAX_LOGIN_RATE_LIMIT_ENTRIES: usize = 10_000;
+/// Брутфорс-защита для публичного `POST /share/api/:token/unlock`: пароль
+/// проверяется настолько дёшево для атакующего, насколько отличается от
+/// честного клиента (одна проверка = один argon2-хеш), поэтому сетка
+/// попыток по «ip + токен» не даёт перебирать пароль бесконечно.
+const SHARE_UNLOCK_FAILURE_WINDOW_SECS: u64 = 15 * 60;
+const MAX_SHARE_UNLOCK_FAILURES: u32 = 10;
+const MAX_SHARE_UNLOCK_RATE_LIMIT_ENTRIES: usize = 10_000;
 const STORAGE_CATEGORY_CACHE_SECS: u64 = 60;
 const MAX_STATUS_WS_CONNECTIONS: usize = 20;
 const MAX_APP_WS_CONNECTIONS: usize = 50;
@@ -50,6 +57,7 @@ pub struct AppState {
     pub pool: PgPool,
     pub config: Config,
     login_attempts: Arc<Mutex<HashMap<String, LoginAttempt>>>,
+    share_unlock_attempts: Arc<Mutex<HashMap<String, LoginAttempt>>>,
     /// Общий sysinfo::System, переиспользуется между опросами (так рекомендует sysinfo).
     pub sys: Arc<Mutex<System>>,
     /// Кольцевой буфер последних замеров % загрузки CPU — источник LoadInfo.history.
@@ -73,6 +81,7 @@ impl AppState {
             pool,
             config,
             login_attempts: Arc::new(Mutex::new(HashMap::new())),
+            share_unlock_attempts: Arc::new(Mutex::new(HashMap::new())),
             sys: Arc::new(Mutex::new(System::new_all())),
             load_history: Arc::new(RwLock::new(Vec::with_capacity(LOAD_HISTORY_CAPACITY))),
             storage_history: Arc::new(RwLock::new(Vec::with_capacity(STORAGE_HISTORY_DAYS))),
@@ -167,6 +176,57 @@ impl AppState {
     pub fn clear_login_failures(&self, ip: IpAddr, username: &str) {
         if let Ok(mut attempts) = self.login_attempts.lock() {
             attempts.remove(&login_attempt_key(ip, username));
+        }
+    }
+
+    /// Возвращает true, если для данного ip+токена накоплено слишком много
+    /// неудачных попыток разблокировки и действует блокировка.
+    pub fn is_share_unlock_rate_limited(&self, ip: IpAddr, token: &str, now: u64) -> bool {
+        let Ok(attempts) = self.share_unlock_attempts.lock() else {
+            return true;
+        };
+        attempts
+            .get(&share_unlock_key(ip, token))
+            .is_some_and(|attempt| attempt.blocked_until > now)
+    }
+
+    pub fn record_share_unlock_failure(&self, ip: IpAddr, token: &str, now: u64) {
+        let Ok(mut attempts) = self.share_unlock_attempts.lock() else {
+            return;
+        };
+        if attempts.len() >= MAX_SHARE_UNLOCK_RATE_LIMIT_ENTRIES {
+            attempts.retain(|_, attempt| {
+                now.saturating_sub(attempt.window_started_at) < SHARE_UNLOCK_FAILURE_WINDOW_SECS
+                    || attempt.blocked_until > now
+            });
+            if attempts.len() >= MAX_SHARE_UNLOCK_RATE_LIMIT_ENTRIES {
+                return;
+            }
+        }
+
+        let attempt = attempts
+            .entry(share_unlock_key(ip, token))
+            .or_insert(LoginAttempt {
+                failures: 0,
+                window_started_at: now,
+                blocked_until: 0,
+            });
+        if now.saturating_sub(attempt.window_started_at) >= SHARE_UNLOCK_FAILURE_WINDOW_SECS {
+            *attempt = LoginAttempt {
+                failures: 0,
+                window_started_at: now,
+                blocked_until: 0,
+            };
+        }
+        attempt.failures += 1;
+        if attempt.failures >= MAX_SHARE_UNLOCK_FAILURES {
+            attempt.blocked_until = now + SHARE_UNLOCK_FAILURE_WINDOW_SECS;
+        }
+    }
+
+    pub fn clear_share_unlock_failures(&self, ip: IpAddr, token: &str) {
+        if let Ok(mut attempts) = self.share_unlock_attempts.lock() {
+            attempts.remove(&share_unlock_key(ip, token));
         }
     }
 
@@ -276,6 +336,10 @@ fn login_attempt_key(ip: IpAddr, username: &str) -> String {
     format!("{ip}:{}", username.chars().take(32).collect::<String>())
 }
 
+fn share_unlock_key(ip: IpAddr, token: &str) -> String {
+    format!("{ip}:{}", token.chars().take(16).collect::<String>())
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::IpAddr;
@@ -293,6 +357,7 @@ mod tests {
                 jwt_secret: "a_secure_test_secret_that_is_long_enough".to_string(),
                 port: 4242,
                 trust_proxy_headers: false,
+                share_web_dir: None,
             },
         )
     }
