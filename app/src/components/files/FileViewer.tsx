@@ -17,6 +17,12 @@ interface FileViewerProps {
   onEdited: () => void;
   /** Потоковое скачивание в каталог загрузок (как в основном меню). */
   onDownload?: (file: FileInfo) => Promise<void>;
+  /**
+   * Полноценное окно «Поделиться» (ShareModal): открывает форму создания
+   * ссылки с возможностью задать пароль. Если не передано — создаётся
+   * быстрая ссылка без пароля (legacy-поведение кнопки).
+   */
+  onShare?: (file: FileInfo) => void;
 }
 
 const TEXT_EXTENSIONS = ["txt", "md", "json", "yaml", "yml", "toml", "ini", "csv", "xml", "html", "css", "js", "ts", "jsx", "tsx", "py", "rs", "go", "c", "cpp", "h", "hpp", "sh", "log", "conf", "cfg"];
@@ -117,7 +123,7 @@ function ToolbarButton({ onClick, disabled, title, children, style }: ToolbarBut
   );
 }
 
-export default function FileViewer({ file, onClose, onEdited, onDownload }: FileViewerProps) {
+export default function FileViewer({ file, onClose, onEdited, onDownload, onShare }: FileViewerProps) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [textContent, setTextContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -246,6 +252,10 @@ export default function FileViewer({ file, onClose, onEdited, onDownload }: File
   };
 
   const handleShare = async () => {
+    if (onShare) {
+      onShare(file);
+      return;
+    }
     try {
       const created = await fileApi.createShare(file.path);
       await navigator.clipboard.writeText(created.url);

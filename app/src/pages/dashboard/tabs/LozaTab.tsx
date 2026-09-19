@@ -147,7 +147,6 @@ export default function LozaTab() {
   const [contextMenu, setContextMenu] = useState<{ item: FileInfo; x: number; y: number } | null>(null);
   const [previewFile, setPreviewFile] = useState<FileInfo | null>(null);
   const [shareTarget, setShareTarget] = useState<FileInfo | null>(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [clipboardEntry, setClipboardEntry] = useState<ClipboardEntry | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -718,8 +717,8 @@ export default function LozaTab() {
   const hasClipboard = clipboardEntry !== null;
 
   return (
-    <div className={`${styles.root} ${sidebarCollapsed ? styles.collapsed : ""}`}>
-      <aside className={styles.sidebar} style={{ display: sidebarCollapsed ? "none" : "flex" }}>
+    <div className={`${styles.root}`}>
+      <aside className={styles.sidebar} style={{ display: "flex" }}>
         <FolderTreeSidebar currentPath={currentPath} onNavigate={handleNavigate} refreshKey={currentPath} />
       </aside>
 
@@ -732,15 +731,6 @@ export default function LozaTab() {
           transition={{ duration: 0.2, delay: 0.05 }}
         >
           <div className={styles.navGroup}>
-            <motion.button
-              whileHover={{ background: "var(--color-glass-hover-strong)" }}
-              whileTap={{ scale: 0.94 }}
-              onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
-              className={styles.navBtn}
-              title={sidebarCollapsed ? "Показать боковую панель" : "Скрыть боковую панель"}
-            >
-              {sidebarCollapsed ? <FolderOpen size={15} /> : <ChevronRight size={15} style={{ transform: "rotate(180deg)" }} />}
-            </motion.button>
             <motion.button
               whileHover={{ background: "var(--color-glass-hover-strong)" }}
               whileTap={{ scale: 0.94 }}
@@ -1116,7 +1106,7 @@ export default function LozaTab() {
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <FileViewer file={previewFile} onClose={() => setPreviewFile(null)} onEdited={() => loadFiles(currentPath)} onDownload={handleDownload} />
+            <FileViewer file={previewFile} onClose={() => setPreviewFile(null)} onEdited={() => loadFiles(currentPath)} onDownload={handleDownload} onShare={(f) => { setPreviewFile(null); setShareTarget(f); }} />
           </motion.div>
         </div>
       )}
@@ -1361,13 +1351,9 @@ function ContextMenu({
         {renderItem(Copy, "Копировать", () => { onCopy(); onClose(); }, { shortcut: "⌘+C" })}
         {renderItem(Scissors, "Переместить", () => { onMove(); onClose(); }, { shortcut: "⌘+X" })}
 
-        {!item.isDir && (
-          <>
-            {renderSeparator("sep2")}
-            {renderLabel("Поделиться")}
-            {renderItem(Share2, "Поделиться ссылкой", () => { onShare(); onClose(); })}
-          </>
-        )}
+        {renderSeparator("sep2")}
+        {renderLabel("Поделиться")}
+        {renderItem(Share2, "Поделиться ссылкой", () => { onShare(); onClose(); })}
 
         {renderSeparator("sep3")}
         {renderItem(Trash2, "Удалить", () => { onDelete(); onClose(); }, { danger: true, shortcut: "⌫" })}

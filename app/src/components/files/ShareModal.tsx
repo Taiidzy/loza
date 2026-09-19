@@ -3,7 +3,10 @@ import { motion } from "framer-motion";
 import { FileInfo, ShareInfo } from "../../types/files";
 import { fileApi } from "../../api/filesService";
 import { logger } from "../../shared/utils/logger";
-import { X, Copy, Link2, Trash2, Loader, AlertCircle, CheckCircle, Lock } from "lucide-react";
+import {
+  X, Copy, Link2, Trash2, Loader, AlertCircle, CheckCircle, Lock,
+  Folder, File as FileIcon, Eye, EyeOff,
+} from "lucide-react";
 
 interface Props {
   file: FileInfo;
@@ -17,7 +20,9 @@ export default function ShareModal({ file, onClose }: Props) {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
+  const [protect, setProtect] = useState(false);
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [passwordError, setPasswordError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -42,8 +47,8 @@ export default function ShareModal({ file, onClose }: Props) {
 
   const handleCreate = async () => {
     const trimmed = password.trim();
-    if (file.isDir && !trimmed) {
-      setPasswordError("Для папки пароль обязателен");
+    if (protect && !trimmed) {
+      setPasswordError("Введите пароль для защиты ссылки");
       return;
     }
     setPasswordError(null);
@@ -51,10 +56,18 @@ export default function ShareModal({ file, onClose }: Props) {
     setError(null);
     try {
       const created = await fileApi.createShare(file.path, trimmed || undefined);
-      await navigator.clipboard.writeText(created.url);
-      setCopiedToken(created.share.token);
-      setTimeout(() => setCopiedToken(null), 2000);
+      // Копирование в буфер — вспомогательный шаг: если оно не сработает,
+      // ссылка всё равно создана и будет видна в списке ниже.
+      try {
+        await navigator.clipboard.writeText(created.url);
+        setCopiedToken(created.share.token);
+        setTimeout(() => setCopiedToken(null), 2000);
+      } catch (e) {
+        logger.warning("files", "clipboard write failed", e);
+      }
       setPassword("");
+      setProtect(false);
+      setShowPassword(false);
       await load();
     } catch (e: any) {
       setError(e?.message || "Не удалось создать ссылку");
@@ -110,8 +123,8 @@ export default function ShareModal({ file, onClose }: Props) {
           border: "1px solid var(--color-glass-border)",
           borderRadius: "var(--radius-md)",
           padding: "18px 22px",
-          minWidth: 340,
-          maxWidth: 440,
+          minWidth: 360,
+          maxWidth: 460,
           maxHeight: "70vh",
           boxShadow: "0 20px 50px rgba(0,0,0,0.5)",
           zIndex: 2001,
@@ -145,6 +158,40 @@ export default function ShareModal({ file, onClose }: Props) {
           </button>
         </div>
 
+        {/* Что именно расшаривается */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "8px 10px",
+            borderRadius: "var(--radius-sm)",
+            background: "rgba(255,255,255,0.04)",
+            border: "1px solid var(--color-glass-border)",
+            fontSize: 12,
+          }}
+        >
+          {file.isDir ? (
+            <Folder size={14} color="var(--color-accent)" style={{ flexShrink: 0 }} />
+          ) : (
+            <FileIcon size={14} color="var(--color-text-secondary)" style={{ flexShrink: 0 }} />
+          )}
+          <span style={{ fontWeight: 600, color: "var(--color-text-primary)", flexShrink: 0 }}>
+            {file.isDir ? "Папка" : "Файл"}
+          </span>
+          <span
+            style={{
+              color: "var(--color-text-muted)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title={file.path}
+          >
+            {file.name}
+          </span>
+        </div>
+
         {error && (
           <div style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 10px", borderRadius: "var(--radius-sm)", background: "rgba(255,60,60,0.1)", color: "var(--color-error)", fontSize: 12 }}>
             <AlertCircle size={13} style={{ marginTop: 2, flexShrink: 0 }} />
@@ -152,7 +199,8 @@ export default function ShareModal({ file, onClose }: Props) {
           </div>
         )}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {/* Кнопка создания */}
           <div style={{ display: "flex", gap: 8 }}>
             <button
               onClick={handleCreate}
@@ -178,41 +226,119 @@ export default function ShareModal({ file, onClose }: Props) {
               {creating ? "Создание…" : "Создать ссылку"}
             </button>
           </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => {
-                setPassword(e.target.value);
-                if (passwordError) setPasswordError(null);
-              }}
-              placeholder={
-                file.isDir ? "Пароль для доступа (обязателен)" : "Пароль для доступа (необязательно)"
-              }
+
+          {/* Защита паролем */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <label
               style={{
-                width: "100%",
-                padding: "8px 10px",
-                borderRadius: "var(--radius-sm)",
-                background: "rgba(255,255,255,0.05)",
-                border: `1px solid ${passwordError ? "var(--color-error)" : "var(--color-glass-border)"}`,
-                color: "var(--color-text-primary)",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                cursor: "pointer",
                 fontSize: 12,
-                outline: "none",
-                boxSizing: "border-box",
+                color: "var(--color-text-secondary)",
+                userSelect: "none",
               }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !creating) {
-                  handleCreate();
-                }
-              }}
-            />
-            {passwordError ? (
-              <div style={{ fontSize: 11, color: "var(--color-error)" }}>{passwordError}</div>
-            ) : (
-              <div style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
-                {file.isDir
-                  ? "Ссылкой смогут воспользоваться только те, кто знает пароль"
-                  : "Без пароля ссылку откроет любой, у кого она есть"}
+            >
+              <button
+                type="button"
+                role="switch"
+                aria-checked={protect}
+                onClick={() => {
+                  setProtect(!protect);
+                  setPasswordError(null);
+                  if (protect) {
+                    setPassword("");
+                    setShowPassword(false);
+                  }
+                }}
+                style={{
+                  width: 32,
+                  height: 18,
+                  borderRadius: 9,
+                  border: "1px solid var(--color-glass-border)",
+                  background: protect ? "var(--color-accent)" : "rgba(255,255,255,0.08)",
+                  cursor: "pointer",
+                  padding: 0,
+                  position: "relative",
+                  transition: "all 0.15s",
+                  flexShrink: 0,
+                }}
+              >
+                <span
+                  style={{
+                    position: "absolute",
+                    top: 1,
+                    left: 1,
+                    width: 14,
+                    height: 14,
+                    borderRadius: 7,
+                    background: "#fff",
+                    transform: protect ? "translateX(14px)" : "translateX(0)",
+                    transition: "transform 0.15s",
+                  }}
+                />
+              </button>
+              <Lock size={12} color={protect ? "var(--color-accent)" : "var(--color-text-muted)"} style={{ flexShrink: 0 }} />
+              <span>Защитить паролем</span>
+            </label>
+
+            {protect && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => {
+                      setPassword(e.target.value);
+                      if (passwordError) setPasswordError(null);
+                    }}
+                    placeholder="Пароль для доступа к ссылке"
+                    style={{
+                      width: "100%",
+                      padding: "8px 32px 8px 10px",
+                      borderRadius: "var(--radius-sm)",
+                      background: "rgba(255,255,255,0.05)",
+                      border: `1px solid ${passwordError ? "var(--color-error)" : "var(--color-glass-border)"}`,
+                      color: "var(--color-text-primary)",
+                      fontSize: 12,
+                      outline: "none",
+                      boxSizing: "border-box",
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !creating) {
+                        handleCreate();
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    title={showPassword ? "Скрыть пароль" : "Показать пароль"}
+                    style={{
+                      position: "absolute",
+                      right: 4,
+                      width: 24,
+                      height: 24,
+                      borderRadius: "var(--radius-sm)",
+                      background: "transparent",
+                      border: "none",
+                      color: "var(--color-text-muted)",
+                      cursor: "pointer",
+                      display: "grid",
+                      placeItems: "center",
+                    }}
+                  >
+                    {showPassword ? <EyeOff size={12} /> : <Eye size={12} />}
+                  </button>
+                </div>
+                {passwordError ? (
+                  <div style={{ fontSize: 11, color: "var(--color-error)" }}>{passwordError}</div>
+                ) : (
+                  <div style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+                    Ссылкой смогут воспользоваться только те, кто знает пароль
+                  </div>
+                )}
               </div>
             )}
           </div>

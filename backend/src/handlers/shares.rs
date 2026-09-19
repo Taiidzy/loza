@@ -71,6 +71,22 @@ fn wrong_password() -> ApiError {
     error_response(StatusCode::UNAUTHORIZED, "WRONG_PASSWORD", "Wrong password")
 }
 
+/// В legacy-режиме (когда веб-интерфейс не раздаётся) `/share/:token`
+/// отдаёт тело файла сразу. Парольная ссылка в этом режиме не должна
+/// отдавать содержимое — проверять пароль здесь негде (unlock-API и SPA
+/// существуют только в полноценном режиме). Иначе пароль превращается в
+/// декорацию, которую можно обойти простым `GET /share/<token>`.
+fn legacy_password_guard(row: &ShareRow) -> Result<(), ApiError> {
+    if row.password_hash.is_some() {
+        return Err(error_response(
+            StatusCode::UNAUTHORIZED,
+            "SHARE_PASSWORD_REQUIRED",
+            "This share link is password-protected",
+        ));
+    }
+    Ok(())
+}
+
 fn internal(message: &str) -> ApiError {
     error_response(StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR", message)
 }
@@ -707,6 +723,7 @@ pub async fn share_view(
     if !row.active_at(Utc::now().timestamp()) {
         return Err(share_not_found());
     }
+    legacy_password_guard(&row)?;
     files::serve_file(
         &state,
         &headers,
@@ -728,6 +745,7 @@ pub async fn share_download(
     if !row.active_at(Utc::now().timestamp()) {
         return Err(share_not_found());
     }
+    legacy_password_guard(&row)?;
     files::serve_file(
         &state,
         &headers,

@@ -62,6 +62,10 @@ pub struct ShareInfo {
     pub created_at: String,
     pub expires_at: Option<String>,
     pub is_active: bool,
+    /// Ссылка защищена паролем. `default` — чтобы десктоп-клиент не падал
+    /// при ответе старого backend, не знающего это поле.
+    #[serde(default)]
+    pub has_password: bool,
 }
 
 /// Ответ `create_share`: сама ссылка + готовый к передаче URL.
