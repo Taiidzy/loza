@@ -47,18 +47,6 @@ pub struct CreateShareRequest {
     pub path: String,
 }
 
-/// Общедоступное описание разделённого файла (GET /share/:token).
-/// Намеренно не содержит путь/владельца — только имя, размер, MIME и чексумму.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SharePublicInfo {
-    pub name: String,
-    pub size_bytes: u64,
-    pub mime_type: Option<String>,
-    pub sha256: Option<String>,
-    pub created_at: String,
-}
-
 /// Тело запроса на создание директории.
 #[derive(Debug, Deserialize)]
 pub struct CreateDirRequest {

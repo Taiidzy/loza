@@ -15,6 +15,8 @@ interface FileViewerProps {
   file: FileInfo;
   onClose: () => void;
   onEdited: () => void;
+  /** Потоковое скачивание в каталог загрузок (как в основном меню). */
+  onDownload?: (file: FileInfo) => Promise<void>;
 }
 
 const TEXT_EXTENSIONS = ["txt", "md", "json", "yaml", "yml", "toml", "ini", "csv", "xml", "html", "css", "js", "ts", "jsx", "tsx", "py", "rs", "go", "c", "cpp", "h", "hpp", "sh", "log", "conf", "cfg"];
@@ -115,7 +117,7 @@ function ToolbarButton({ onClick, disabled, title, children, style }: ToolbarBut
   );
 }
 
-export default function FileViewer({ file, onClose, onEdited }: FileViewerProps) {
+export default function FileViewer({ file, onClose, onEdited, onDownload }: FileViewerProps) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [textContent, setTextContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -217,6 +219,14 @@ export default function FileViewer({ file, onClose, onEdited }: FileViewerProps)
   };
 
   const handleDownload = async () => {
+    // Основной путь — потоковое скачивание в Downloads (как в основном меню):
+    // не держит файл в памяти WebView и показывает прогресс в очереди.
+    if (onDownload) {
+      onDownload(file).catch((e: any) => logger.error("files", "Download failed", e));
+      return;
+    }
+
+    // In-memory fallback (не-Tauri окружение): блоб + нативный диалог сохранения.
     try {
       const bytes = await fileApi.downloadFile(file.path);
       const blob = blobFromBytes(bytes, mt || "application/octet-stream");

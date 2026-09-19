@@ -7,7 +7,7 @@ pub mod user;
 pub use event::{CalendarEvent, CalendarEventDraft, Recurrence};
 pub use file::{
     BatchItemResult, BatchOperation, BatchRequest, BatchResponse, CopyRequest, CreateDirRequest,
-    CreateShareRequest, FileInfo, FileError, MoveRequest, ShareInfo, SharePublicInfo, fmt_ts,
+    CreateShareRequest, FileInfo, FileError, MoveRequest, ShareInfo, fmt_ts,
     guess_mime, sanitize_path, split_parent,
 };
 pub use session::Session;

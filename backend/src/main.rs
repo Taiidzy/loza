@@ -98,7 +98,7 @@ async fn main() {
             put(handlers::calendar::update_event).delete(handlers::calendar::delete_event),
         )
         // Публичные share-ссылки (без авторизации — сила в энтропии токена).
-        .route("/share/:token", get(handlers::shares::share_info))
+        .route("/share/:token", get(handlers::shares::share_view))
         .route("/share/:token/download", get(handlers::shares::share_download))
         // File API — HTTP (не WebSocket) с поддержкой потоковой передачи.
         // 500 MB лимит тела для файловых операций (загрузка файлов).

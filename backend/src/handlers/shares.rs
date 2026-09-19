@@ -6,14 +6,15 @@
 //!   не нужна.
 //! - Ссылка привязана к файлу по id: переименование/перемещение не ломает её,
 //!   а удаление файла каскадно отзывает (FK ON DELETE CASCADE).
-//! - Публичные ответы не содержат ни пути файла, ни имени владельца — только
-//!   имя файла, размер, MIME и чексумму.
+//! - Публичные ответы не содержат ни пути файла, ни имени владельца: `/share/:token`
+//!   отдаёт само тело файла inline (браузер показывает картинку/PDF/текст),
+//!   `/share/:token/download` — с принудительным скачиванием.
 //! - expire/revoke делают ссылку бесполезной немедленно (проверка
 //!   `is_active` и `expires_at` при каждом обращении).
 
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::Json;
+use axum::response::{Json, Response};
 use chrono::Utc;
 use rand_core::{OsRng, RngCore};
 use serde::Deserialize;
@@ -22,9 +23,7 @@ use sha2::{Digest, Sha256};
 use crate::db::AppState;
 use crate::handlers::auth::ErrorResponse;
 use crate::handlers::files::{self, Disposition, from_file_error, require_username};
-use crate::models::{
-    CreateShareRequest, FileError, ShareInfo, SharePublicInfo, fmt_ts, sanitize_path,
-};
+use crate::models::{CreateShareRequest, FileError, ShareInfo, fmt_ts, sanitize_path};
 
 type ApiError = (StatusCode, Json<ErrorResponse>);
 
@@ -200,14 +199,17 @@ pub async fn revoke_share(
 }
 
 /// GET /share/:token  (public, no auth)
-/// Метаданные разделённого файла. Не раскрывает путь/владельца.
-pub async fn share_info(
+/// Инлайновая отдача самого файла: браузер показывает картинку/PDF/текст
+/// прямо по ссылке, а не JSON-метаданные. Путь и владелец наружу не уходят.
+/// Range поддерживается, поэтому видео/PDF стримятся.
+pub async fn share_view(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(token): Path<String>,
-) -> Result<Json<SharePublicInfo>, ApiError> {
+) -> Result<Response, ApiError> {
     let now = Utc::now().timestamp();
-    let row: Option<(String, i64, Option<String>, Option<String>, i64)> = sqlx::query_as::<_, (String, i64, Option<String>, Option<String>, i64)>(
-        r#"SELECT f.name, f.size_bytes, f.mime_type, f.sha256_hex, f.created_at
+    let row: Option<(String, String, Option<String>)> = sqlx::query_as::<_, (String, String, Option<String>)>(
+        r#"SELECT f.username, f.path, f.sha256_hex
            FROM file_shares s
            JOIN user_files f ON f.id = s.file_id
            WHERE s.token = $1 AND s.is_active
@@ -220,16 +222,10 @@ pub async fn share_info(
     .map_err(FileError::from)
     .map_err(from_file_error)?;
 
-    let (name, size_bytes, mime_type, sha256, created_at) =
+    let (username, path, sha256) =
         row.ok_or_else(|| from_file_error(FileError::not_found("share")))?;
 
-    Ok(Json(SharePublicInfo {
-        name,
-        size_bytes: size_bytes.max(0) as u64,
-        mime_type,
-        sha256,
-        created_at: fmt_ts(created_at),
-    }))
+    files::serve_file(&state, &headers, &username, &path, Disposition::Inline, sha256).await
 }
 
 /// GET /share/:token/download  (public, no auth)

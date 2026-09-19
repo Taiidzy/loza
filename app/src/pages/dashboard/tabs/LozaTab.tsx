@@ -1116,7 +1116,7 @@ export default function LozaTab() {
             }}
             onClick={(e) => e.stopPropagation()}
           >
-            <FileViewer file={previewFile} onClose={() => setPreviewFile(null)} onEdited={() => loadFiles(currentPath)} />
+            <FileViewer file={previewFile} onClose={() => setPreviewFile(null)} onEdited={() => loadFiles(currentPath)} onDownload={handleDownload} />
           </motion.div>
         </div>
       )}
