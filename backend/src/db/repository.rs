@@ -40,16 +40,21 @@ pub async fn find_user(pool: &PgPool, username: &str) -> Result<Option<User>, sq
         .map(|row| row.map(user_from_row))
 }
 
-pub async fn create_user(pool: &PgPool, user: &User) -> Result<(), sqlx::Error> {
-    sqlx::query("INSERT INTO users (username, password_hash, display_name, role, quota_bytes) VALUES ($1, $2, $3, $4, $5)")
-        .bind(&user.username)
-        .bind(&user.password_hash)
-        .bind(&user.display_name)
-        .bind(&user.role)
-        .bind(user.quota_bytes.map(|value| value as i64))
-        .execute(pool)
-        .await
-        .map(|_| ())
+/// Creates a user if one with the same username does not already exist.
+/// Returns `true` if a new row was inserted, `false` if it already existed
+/// (e.g. a concurrent bootstrap raced ahead of us).
+pub async fn create_user(pool: &PgPool, user: &User) -> Result<bool, sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO users (username, password_hash, display_name, role, quota_bytes) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (username) DO NOTHING",
+    )
+    .bind(&user.username)
+    .bind(&user.password_hash)
+    .bind(&user.display_name)
+    .bind(&user.role)
+    .bind(user.quota_bytes.map(|value| value as i64))
+    .execute(pool)
+    .await
+    .map(|result| result.rows_affected() == 1)
 }
 
 fn session_from_row(row: sqlx::postgres::PgRow) -> Session {

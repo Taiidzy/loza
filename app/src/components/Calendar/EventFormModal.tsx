@@ -53,6 +53,8 @@ function buildInitialState(selectedDate: Dayjs, existingEvent: CalendarEvent | n
  */
 export default function EventFormModal({ isOpen, selectedDate, existingEvent, onSave, onClose }: EventFormModalProps) {
   const [form, setForm] = useState(() => buildInitialState(selectedDate, existingEvent));
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   // Пересобираем состояние формы при каждом открытии модалки (а также если
   // родитель меняет selectedDate/existingEvent, пока она уже открыта) —
@@ -64,25 +66,53 @@ export default function EventFormModal({ isOpen, selectedDate, existingEvent, on
   useEffect(() => {
     if (isOpen) {
       setForm(buildInitialState(selectedDate, existingEvent));
+      setSaving(false);
+      setSaveError(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, selectedDateKey, existingEvent?.id]);
 
-  const canSave = form.title.trim().length > 0;
+  // Escape-закрытие на уровне window — так работает, даже пока фокус ещё не
+  // внутри модалки (инлайн onKeyDown на контейнере нет, т.к. тот не фокусируется).
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !saving) onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose, saving]);
 
-  const handleSave = () => {
-    if (!canSave) return;
-    onSave({
-      title: form.title.trim(),
-      startDate: form.startDate,
-      endDate: form.isMultiDay ? form.endDate : form.startDate,
-      startTime: form.isAllDay ? null : form.startTime,
-      endTime: form.isAllDay ? null : form.endTime,
-      color: form.color,
-      recurrence: form.recurrence,
-      isMultiDay: form.isMultiDay,
-      isAllDay: form.isAllDay,
-    });
+  const timeError =
+    !form.isAllDay && form.startDate === form.endDate && Boolean(form.startTime && form.endTime)
+      ? form.endTime <= form.startTime
+        ? 'Время окончания должно быть позже времени начала'
+        : null
+      : null;
+
+  const canSave = form.title.trim().length > 0 && !saving && timeError === null;
+
+  const handleSave = async () => {
+    if (!canSave || saving) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onSave({
+        title: form.title.trim(),
+        startDate: form.startDate,
+        endDate: form.isMultiDay ? form.endDate : form.startDate,
+        startTime: form.isAllDay ? null : form.startTime,
+        endTime: form.isAllDay ? null : form.endTime,
+        color: form.color,
+        recurrence: form.recurrence,
+        isMultiDay: form.isMultiDay,
+        isAllDay: form.isAllDay,
+      });
+      // Родитель сам закрывает модалку после успешного сохранения.
+    } catch (err) {
+      setSaving(false);
+      setSaveError(err instanceof Error ? err.message : 'Не удалось сохранить событие');
+    }
   };
 
   return (
@@ -97,12 +127,15 @@ export default function EventFormModal({ isOpen, selectedDate, existingEvent, on
           onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
         >
           <motion.div
+            role="dialog"
+            aria-modal="true"
+            aria-label={existingEvent ? 'Редактировать событие' : 'Новое событие'}
+            tabIndex={-1}
             className={styles.modal}
             initial={{ opacity: 0, y: 12, scale: 0.97 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 8, scale: 0.98 }}
             transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-            onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}
           >
             <div className={styles.modalHeader}>
               <h3 className={styles.modalTitle}>{existingEvent ? 'Редактировать событие' : 'Новое событие'}</h3>
@@ -220,12 +253,15 @@ export default function EventFormModal({ isOpen, selectedDate, existingEvent, on
                 ))}
               </div>
 
+              {timeError && <div className={styles.formError}>{timeError}</div>}
+              {saveError && <div className={styles.formError}>{saveError}</div>}
+
               <div className={styles.actions}>
-                <button type="button" onClick={onClose} className={styles.secondaryButton}>
+                <button type="button" onClick={onClose} disabled={saving} className={styles.secondaryButton}>
                   Отмена
                 </button>
                 <button type="button" disabled={!canSave} onClick={handleSave} className={styles.primaryButton}>
-                  Сохранить
+                  {saving ? 'Сохранение…' : 'Сохранить'}
                 </button>
               </div>
             </div>

@@ -4,6 +4,10 @@ pub struct Config {
     pub jwt_secret: String,
     pub port: u16,
     pub trust_proxy_headers: bool,
+    /// Директория со сборочными артефактами share-viewer-web (dist),
+    /// если приложение раздаётся этим сервером. None — режим legacy:
+    /// `/share/:token` отдаёт тело файла, а не веб-интерфейс.
+    pub share_web_dir: Option<std::path::PathBuf>,
 }
 
 impl Config {
@@ -24,14 +28,50 @@ impl Config {
             .parse::<u16>()
             .map_err(|_| "PORT must be a valid TCP port".to_string())?;
         let trust_proxy_headers = optional_bool("TRUST_PROXY_HEADERS", false)?;
+        let share_web_dir = resolve_share_web_dir();
 
         Ok(Self {
             database_url,
             jwt_secret,
             port,
             trust_proxy_headers,
+            share_web_dir,
         })
     }
+}
+
+/// Ищет собранный `share-viewer-web`:
+/// 1) явный `SHARE_WEB_DIR` (если указан, но не существует — возвращается
+///    None с предупреждением, сервер работает в legacy-режиме);
+/// 2) типовые относительные пути от рабочей директории сервера.
+fn resolve_share_web_dir() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+
+    if let Ok(dir) = std::env::var("SHARE_WEB_DIR") {
+        let path = PathBuf::from(dir);
+        if path.join("index.html").is_file() {
+            return Some(path);
+        }
+        tracing::warn!(
+            path = %path.display(),
+            "SHARE_WEB_DIR does not contain index.html; falling back to legacy /share behavior"
+        );
+        return None;
+    }
+
+    if let Ok(cwd) = std::env::current_dir() {
+        for candidate in [
+            "share-viewer-web/dist",
+            "../share-viewer-web/dist",
+            "backend/../share-viewer-web/dist",
+        ] {
+            let path = cwd.join(candidate);
+            if path.join("index.html").is_file() {
+                return Some(path);
+            }
+        }
+    }
+    None
 }
 
 fn optional_bool(name: &str, default: bool) -> Result<bool, String> {

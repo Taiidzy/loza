@@ -9,13 +9,13 @@
 
 import Foundation
 
-enum RecurrenceDTO: String, Codable, CaseIterable {
+enum RecurrenceDTO: String, Codable, CaseIterable, Sendable {
     case none, daily, weekly, monthly, yearly
 }
 
 /// Mirrors CalendarEvent (has `id`). Used for GET responses and as the
 /// PUT body (server-side `update_event` takes the full event back).
-struct CalendarEventDTO: Codable, Identifiable, Equatable {
+struct CalendarEventDTO: Codable, Identifiable, Equatable, Sendable {
     let id: String
     var title: String
     var startDate: String   // "YYYY-MM-DD"
@@ -29,7 +29,7 @@ struct CalendarEventDTO: Codable, Identifiable, Equatable {
 }
 
 /// Mirrors CalendarEventDraft (no `id` — server assigns one on create).
-struct CalendarEventDraftDTO: Codable {
+struct CalendarEventDraftDTO: Codable, Sendable {
     var title: String
     var startDate: String
     var endDate: String

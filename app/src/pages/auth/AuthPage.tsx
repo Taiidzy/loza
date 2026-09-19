@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { useNavigate } from "react-router-dom";
 import { authLogin } from "../../api/auth";
@@ -46,6 +46,19 @@ export default function AuthPage() {
   const [loginState, setLoginState] = useState<LoginState>("idle");
   const [errorMsg, setErrorMsg] = useState("");
   const [confirmingChange, setConfirmingChange] = useState(false);
+  // Таймер сброса ошибки: храним id, чтобы при новой отправке формы старый
+  // setTimeout не выстрелил позже и не сбросил актуальное состояние формы.
+  const errorResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearErrorResetTimer = () => {
+    if (errorResetTimerRef.current !== null) {
+      clearTimeout(errorResetTimerRef.current);
+      errorResetTimerRef.current = null;
+    }
+  };
+
+  // Сбрасываем таймер при размонтировании страницы.
+  useEffect(() => clearErrorResetTimer, []);
 
   const handleChangeServer = async () => {
     await clearServerUrl();
@@ -54,11 +67,12 @@ export default function AuthPage() {
 
   const handleSubmit = async () => {
     if (loginState === "loading") return;
+    clearErrorResetTimer();
 
     if (!username.trim() || !password) {
       setErrorMsg("Заполните все поля");
       setLoginState("error");
-      setTimeout(() => setLoginState("idle"), 2000);
+      errorResetTimerRef.current = setTimeout(() => setLoginState("idle"), 2000);
       return;
     }
 
@@ -76,7 +90,7 @@ export default function AuthPage() {
     } catch (err: unknown) {
       setErrorMsg(resolveErrorMessage(err));
       setLoginState("error");
-      setTimeout(() => setLoginState("idle"), 3000);
+      errorResetTimerRef.current = setTimeout(() => setLoginState("idle"), 3000);
     }
   };
 
@@ -174,6 +188,8 @@ export default function AuthPage() {
                       type="button"
                       onClick={() => setShowPassword((v) => !v)}
                       className={`${styles.eyeButton} ${showPassword ? styles.active : ""}`}
+                      aria-label={showPassword ? "Скрыть пароль" : "Показать пароль"}
+                      aria-pressed={showPassword}
                     >
                       <EyeIcon open={showPassword} />
                     </button>

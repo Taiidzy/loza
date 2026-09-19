@@ -144,16 +144,16 @@ final class StatusSocket: ObservableObject {
             // task. dispatchRequest is @MainActor-isolated (same as this
             // class), so it accesses pendingRequests safely on the main actor
             // while this continuation stays suspended.
-            Task { [weak self] in
+            Task { @MainActor [weak self] in
                 await self?.dispatchRequest(id: id, text: requestText)
             }
             // 10s timeout guard: if no response arrives (and the send didn't
             // already fail), resolve with a timeout error. The removeValue
             // is atomic on the main actor — whichever resolves first
             // (response/error/timeout) wins; the others find nil and no-op.
-            Task { [weak self] in
+            Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: REQUEST_TIMEOUT_NANOS)
-                await self?.expireRequest(id: id)
+                self?.expireRequest(id: id)
             }
         }
     }
@@ -203,10 +203,10 @@ final class StatusSocket: ObservableObject {
 
     private func connectLoop() {
         listenTask?.cancel()
-        listenTask = Task { [weak self] in
-            await self?.runOnce()
-            await self?.scheduleReconnect()
-        }
+            listenTask = Task { @MainActor [weak self] in
+                await self?.runOnce()
+                self?.scheduleReconnect()
+            }
     }
 
     /// Called after runOnce returns (disconnected); schedules a 3s backoff
@@ -214,9 +214,9 @@ final class StatusSocket: ObservableObject {
     private func scheduleReconnect() {
         guard shouldRun else { return }
         isConnected = false
-        reconnectTask = Task { [weak self] in
+        reconnectTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 3_000_000_000)
-            await self?.retryConnect()
+            self?.retryConnect()
         }
     }
 
@@ -227,9 +227,9 @@ final class StatusSocket: ObservableObject {
     }
 
     private func runOnce() async {
-        guard let baseURL = await ServerConfig.shared.baseURL,
-              let token = await SessionStore.shared.session?.token,
-              let wsURL = ServerConfig.webSocketURL(base: baseURL, path: "/ws/app") else {
+        guard let baseURL = ServerConfig.shared.baseURL,
+            let token = SessionStore.shared.session?.token,
+            let wsURL = ServerConfig.webSocketURL(base: baseURL, path: "/ws/app") else {
             connectionError = "Требуется авторизация"
             return
         }
@@ -373,10 +373,10 @@ final class StatusSocket: ObservableObject {
 
 // ─── Wire DTOs ────────────────────────────────────────────────────────────────
 
-struct EmptyParams: Encodable {}
+struct EmptyParams: Encodable, Sendable {}
 
 /// Only the `id` field is needed for delete push notifications.
-private struct DeleteParamsDTO: Decodable {
+private struct DeleteParamsDTO: Decodable, Sendable {
     let id: String
 }
 

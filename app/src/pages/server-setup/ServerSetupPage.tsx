@@ -5,7 +5,7 @@ import { CheckIcon } from "../../shared/icons/Icons";
 import ParticlesBackground from "../auth/ParticlesBackground";
 import styles from "../auth/AuthPage.module.css";
 
-type SetupState = "idle" | "loading" | "success" | "error";
+type SetupState = "idle" | "loading" | "success" | "saved" | "error";
 
 /**
  * Первый экран флоу входа: ввод адреса Loza-сервера. Раньше адрес был
@@ -23,6 +23,7 @@ export default function ServerSetupPage({ onConfigured }: { onConfigured: () => 
   const [input, setInput] = useState("");
   const [state, setState] = useState<SetupState>("idle");
   const [errorMsg, setErrorMsg] = useState("");
+  const [noticeMsg, setNoticeMsg] = useState("");
 
   const handleSubmit = async () => {
     if (state === "loading") return;
@@ -34,6 +35,7 @@ export default function ServerSetupPage({ onConfigured }: { onConfigured: () => 
 
     setState("loading");
     setErrorMsg("");
+    setNoticeMsg("");
 
     try {
       // set_server_url сам нормализует адрес (добавляет схему, убирает
@@ -43,12 +45,18 @@ export default function ServerSetupPage({ onConfigured }: { onConfigured: () => 
 
       // Не блокируем переход, если сервер временно недоступен — адрес
       // мог быть введён верно, а NAS/сервер просто ещё не проснулся.
-      // Логин на следующем экране в любом случае даст понятную ошибку,
-      // если адрес действительно неверный.
-      await checkServerHealth(normalized);
+      // Но и не показываем ложный зелёный "Готово": вместо этого честно
+      // сообщаем об отсутствии ответа и всё равно идём на экран логина.
+      const healthy = await checkServerHealth(normalized);
 
-      setState("success");
-      setTimeout(onConfigured, 500);
+      if (healthy) {
+        setState("success");
+        setTimeout(onConfigured, 500);
+      } else {
+        setState("saved");
+        setNoticeMsg("Адрес сохранён, но сервер пока не отвечает. Вы сможете войти, когда он станет доступен.");
+        setTimeout(onConfigured, 1300);
+      }
     } catch (err: unknown) {
       const raw = typeof err === "string" ? err : "Некорректный адрес сервера";
       showError(raw.includes("INVALID_URL") ? "Некорректный адрес сервера" : raw);
@@ -148,6 +156,19 @@ export default function ServerSetupPage({ onConfigured }: { onConfigured: () => 
               </motion.div>
             )}
 
+            {noticeMsg && state !== "error" && (
+              <motion.div
+                className={styles.errorMessage}
+                style={{ color: "rgba(255,255,255,0.55)" }}
+                initial={{ opacity: 0, y: -4, height: 0 }}
+                animate={{ opacity: 1, y: 0, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                transition={{ duration: 0.2 }}
+              >
+                {noticeMsg}
+              </motion.div>
+            )}
+
             <motion.div
               className={styles.submitWrap}
               initial={{ opacity: 0, y: 8 }}
@@ -156,7 +177,7 @@ export default function ServerSetupPage({ onConfigured }: { onConfigured: () => 
             >
               <motion.button
                 onClick={handleSubmit}
-                disabled={state === "loading"}
+                disabled={state === "loading" || state === "saved"}
                 whileHover={{ scale: state === "loading" ? 1 : 1.013 }}
                 whileTap={{ scale: state === "loading" ? 1 : 0.974 }}
                 transition={{ type: "spring", stiffness: 440, damping: 22 }}

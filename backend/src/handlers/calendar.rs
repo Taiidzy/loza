@@ -84,6 +84,7 @@ pub async fn require_username(
         .map(|(claims, _)| claims.sub)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn validate_event(
     title: &str,
     start_date: &str,
@@ -228,6 +229,26 @@ pub async fn update_event(
     Ok(Json(updated))
 }
 
+pub async fn delete_event(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let username = require_username(&state, &headers).await?;
+    if !repository::delete_event(&state.pool, &username, &id)
+        .await
+        .map_err(database_error)?
+    {
+        return Err(api_error_from_calendar(CalendarError::not_found(&id)));
+    }
+
+    let payload = WsPush::event_deleted(&id);
+    let json = serde_json::to_string(&payload).unwrap_or_default();
+    state.broadcast_to_user(&username, axum::extract::ws::Message::Text(json));
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::validate_event;
@@ -278,24 +299,4 @@ mod tests {
             .is_ok()
         );
     }
-}
-
-pub async fn delete_event(
-    State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
-    Path(id): Path<String>,
-) -> Result<StatusCode, ApiError> {
-    let username = require_username(&state, &headers).await?;
-    if !repository::delete_event(&state.pool, &username, &id)
-        .await
-        .map_err(database_error)?
-    {
-        return Err(api_error_from_calendar(CalendarError::not_found(&id)));
-    }
-
-    let payload = WsPush::event_deleted(&id);
-    let json = serde_json::to_string(&payload).unwrap_or_default();
-    state.broadcast_to_user(&username, axum::extract::ws::Message::Text(json));
-
-    Ok(StatusCode::NO_CONTENT)
 }

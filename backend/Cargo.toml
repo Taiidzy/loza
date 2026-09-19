@@ -8,8 +8,9 @@ name = "loza-server"
 path = "src/main.rs"
 
 [dependencies]
-axum = { version = "0.7", features = ["ws"] }
+axum = { version = "0.7", features = ["ws", "multipart"] }
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
@@ -19,11 +20,26 @@ jsonwebtoken = "9"
 dotenvy = "0.15"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tower-http = { version = "0.5", features = ["trace"] }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "migrate", "macros"] }
+tower-http = { version = "0.5", features = ["trace", "limit", "fs"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "migrate", "macros", "uuid"] }
 argon2 = "0.5"
 password-hash = { version = "0.5", features = ["rand_core"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
 dashmap = "6"
 futures-util = "0.3"
+bytes = "1"
+mime = "0.3"
+
+# Workaround: rustc (aarch64-apple-darwin) in release mode emits the proc-macro
+# dylib with a LINKEDIT string pool that macOS 27 dyld rejects as mis-aligned
+# ("mis-aligned LINKEDIT string pool"). Emitting debuginfo shifts the layout and
+# fixes the alignment. Only build-time macro crates are affected — they never
+# link into the final binary, so this does not bloat the release artifact.
+[profile.release.package.sqlx-macros]
+debug = 1
+
+[profile.release.package.sqlx-macros-core]
+debug = 1

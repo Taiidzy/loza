@@ -1,137 +1,80 @@
-import { useState, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, useLayoutEffect } from "react";
+import { motion, AnimatePresence } from "motion/react";
 import styles from "./LozaTab.module.css";
-import {
-  Folder, File, FileText, Image as ImageIcon, Film, Music, Archive, Code2,
-  Search, ChevronRight, ChevronLeft, Home, Grid3x3, List, Download, Star,
-  Clock, Trash2
-} from "lucide-react";
-import { ServerStatus } from "../../../types/serverStatus";
+import { FileInfo } from "../../../types/files";
+import { fileApi } from "../../../api/filesService";
+import { logger } from "../../../shared/utils/logger";
 import { formatBytes } from "../../../shared/utils/serverStorage";
+import {
+  Folder, File as FileIcon, FileText, Image as ImageIcon, Film, Music, Archive, Code2,
+  Search, ChevronRight, Home, Grid3x3, List, Upload, Download,
+  MoreVertical, FolderPlus, Edit3, Copy, Trash2, Plus,
+  ArrowLeft, ArrowRight, ArrowUp, RefreshCw,
+  Eye, Share2, FolderOpen, Scissors, ClipboardPaste,
+} from "lucide-react";
+import { useOperationQueue } from "../../../components/files/OperationQueue";
+import OperationQueueList from "../../../components/files/OperationQueue";
+import FileViewer from "../../../components/files/FileViewer";
+import ShareModal from "../../../components/files/ShareModal";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 
-/* ---------- Типы ---------- */
-type FileType = "folder" | "image" | "document" | "video" | "audio" | "archive" | "code" | "file";
-type Section = "files" | "recent" | "starred" | "downloads" | "trash";
+const SECONDARY = "var(--color-text-secondary)";
+const PRIMARY = "var(--color-text-primary)";
+const MUTED = "var(--color-text-muted)";
 
-interface FileNode {
-  id: string;
-  name: string;
-  type: FileType;
-  size?: string;
-  modified: string;
-  ts?: number;
-  children?: FileNode[];
-  starred?: boolean;
-  color?: string;
-}
+const FILE_CHANGE_EVENT = "file-change";
 
-/* ---------- Мок-данные ---------- */
-const MOCK_FS: FileNode = {
-  id: "root", name: "Мой диск", type: "folder", modified: "сегодня",
-  children: [
-    {
-      id: "docs", name: "Документы", type: "folder", modified: "2 ч назад", color: "#60a5fa",
-      children: [
-        { id: "d1", name: "Отчёт Q3.pdf", type: "document", size: "2.4 МБ", modified: "вчера", ts: 88, starred: true },
-        { id: "d2", name: "Договор аренды.docx", type: "document", size: "156 КБ", modified: "3 дня назад", ts: 70 },
-        { id: "d3", name: "Заметки.md", type: "code", size: "12 КБ", modified: "сегодня", ts: 96 },
-        {
-          id: "d4", name: "Архив 2023", type: "folder", modified: "месяц назад", color: "#a78bfa",
-          children: [
-            { id: "d4-1", name: "scan_001.pdf", type: "document", size: "890 КБ", modified: "12.01.2023", ts: 10 },
-            { id: "d4-2", name: "scan_002.pdf", type: "document", size: "1.1 МБ", modified: "12.01.2023", ts: 11 },
-          ],
-        },
-      ],
-    },
-    {
-      id: "pics", name: "Изображения", type: "folder", modified: "вчера", color: "#f472b6",
-      children: [
-        { id: "p1", name: "vacation_01.jpg", type: "image", size: "3.2 МБ", modified: "вчера", ts: 86 },
-        { id: "p2", name: "vacation_02.jpg", type: "image", size: "2.8 МБ", modified: "вчера", ts: 85 },
-        { id: "p3", name: "screenshot.png", type: "image", size: "540 КБ", modified: "сегодня", ts: 99 },
-        { id: "p4", name: "avatar.webp", type: "image", size: "84 КБ", modified: "неделю назад", ts: 55 },
-      ],
-    },
-    {
-      id: "vid", name: "Видео", type: "folder", modified: "неделю назад", color: "#fb923c",
-      children: [
-        { id: "v1", name: "demo.mp4", type: "video", size: "124 МБ", modified: "неделю назад", ts: 52 },
-        { id: "v2", name: "tutorial.mov", type: "video", size: "312 МБ", modified: "2 недели назад", ts: 40 },
-      ],
-    },
-    {
-      id: "music", name: "Музыка", type: "folder", modified: "месяц назад", color: "#34d399",
-      children: [
-        { id: "m1", name: "track_01.mp3", type: "audio", size: "5.2 МБ", modified: "месяц назад", ts: 25 },
-        { id: "m2", name: "ambient.flac", type: "audio", size: "28 МБ", modified: "месяц назад", ts: 24 },
-      ],
-    },
-    {
-      id: "proj", name: "Проекты", type: "folder", modified: "сегодня", color: "#fbbf24",
-      children: [
-        {
-          id: "pr1", name: "loza-app", type: "folder", modified: "сегодня", color: "#22d3ee",
-          children: [
-            { id: "pr1-1", name: "index.tsx", type: "code", size: "8 КБ", modified: "сегодня", ts: 100 },
-            { id: "pr1-2", name: "styles.css", type: "code", size: "3 КБ", modified: "вчера", ts: 84 },
-            { id: "pr1-3", name: "package.json", type: "code", size: "1 КБ", modified: "сегодня", ts: 98 },
-          ],
-        },
-        { id: "pr2", name: "landing.zip", type: "archive", size: "18 МБ", modified: "3 дня назад", ts: 68 },
-      ],
-    },
-    { id: "f1", name: "readme.txt", type: "file", size: "2 КБ", modified: "сегодня", ts: 97, starred: true },
-  ],
+const iconFor = (file: FileInfo): any => {
+  if (file.isDir) return Folder;
+  const ext = file.name.split(".").pop()?.toLowerCase() || "";
+  if (["jpg","jpeg","png","gif","webp","bmp","svg","avif"].includes(ext)) return ImageIcon;
+  if (["mp4","webm","mov","avi","mkv"].includes(ext)) return Film;
+  if (["mp3","wav","ogg","flac","m4a"].includes(ext)) return Music;
+  if (["zip","tar","gz","7z","rar"].includes(ext)) return Archive;
+  if (["txt","md","json","yaml","yml","toml","ini","csv","xml","html","css","js","ts","jsx","tsx","py","rs","go","c","cpp","h","hpp","sh","log"].includes(ext)) return Code2;
+  if (["pdf","doc","docx","xls","xlsx","ppt","pptx"].includes(ext)) return FileText;
+  return FileIcon;
 };
 
-const SECTIONS: Record<Exclude<Section, "files">, { label: string; icon: any }> = {
-  recent: { label: "Недавние", icon: Clock },
-  starred: { label: "Избранное", icon: Star },
-  downloads: { label: "Загрузки", icon: Download },
-  trash: { label: "Корзина", icon: Trash2 },
+const getExtension = (name: string): string => {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0 || dot === name.length - 1) return "";
+  return name.slice(dot + 1).toLowerCase();
 };
 
-const QUICK_ORDER: Exclude<Section, "files">[] = ["recent", "starred", "downloads", "trash"];
+const colorFor = (file: FileInfo): string => {
+  if (file.isDir) return "var(--color-accent)";
+  const ext = getExtension(file.name);
+  const map: Record<string, string> = {
+    jpg:"#f472b6",jpeg:"#f472b6",png:"#f472b6",gif:"#f472b6",webp:"#f472b6",avif:"#f472b6",svg:"#f472b6",
+    mp4:"#fb923c",webm:"#fb923c",mov:"#fb923c",avi:"#fb923c",mkv:"#fb923c",
+    mp3:"#34d39f",wav:"#34d39f",ogg:"#34d39f",flac:"#34d39f",m4a:"#34d39f",
+    zip:"#fbbf24",gz:"#fbbf24",tar:"#fbbf24","7z":"#fbbf24",rar:"#fbbf24",
+    pdf:"#ef4444",json:"#f9a8d4",md:"#34d39f",rs:"#ea5818",go:"#00add8",
+    py:"#3776ab",js:"#f7df1e",ts:"#f7df1e",jsx:"#f7df1e",tsx:"#f7df1e",
+    html:"#e34c26",htm:"#e34c26",css:"#1572b6",xml:"#f472b6",
+  };
+  return map[ext] || "#94a3b8";
+};
 
-/* ---------- Утилиты ---------- */
-const iconFor = (type: FileType) => {
-  switch (type) {
-    case "folder": return Folder;
-    case "image": return ImageIcon;
-    case "video": return Film;
-    case "audio": return Music;
-    case "document": return FileText;
-    case "archive": return Archive;
-    case "code": return Code2;
-    default: return File;
+const formatTimeAgo = (iso: string): string => {
+  try {
+    const d = new Date(iso);
+    const diff = Date.now() - d.getTime();
+    const m = Math.floor(diff / 60000);
+    const h = Math.floor(diff / 3600000);
+    const days = Math.floor(diff / 86400000);
+    if (m < 1) return "только что";
+    if (m < 60) return `${m} мин назад`;
+    if (h < 24) return `${h} ч назад`;
+    if (days < 7) return `${days} дн назад`;
+    return d.toLocaleDateString("ru-RU");
+  } catch {
+    return iso;
   }
 };
-
-const colorFor = (type: FileType, custom?: string) => {
-  if (custom) return custom;
-  switch (type) {
-    case "folder": return "#60a5fa";
-    case "image": return "#f472b6";
-    case "video": return "#fb923c";
-    case "audio": return "#34d399";
-    case "document": return "#a78bfa";
-    case "archive": return "#fbbf24";
-    case "code": return "#22d3ee";
-    default: return "#94a3b8";
-  }
-};
-
-const collectFiles = (node: FileNode, acc: FileNode[] = []): FileNode[] => {
-  for (const c of node.children ?? []) {
-    if (c.type === "folder") collectFiles(c, acc);
-    else acc.push(c);
-  }
-  return acc;
-};
-
-const ALL_FILES = collectFiles(MOCK_FS);
-const RECENT = [...ALL_FILES].sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0)).slice(0, 8);
-const DOWNLOADS = ALL_FILES.filter((f) => ["archive", "video", "audio"].includes(f.type));
 
 const plural = (n: number, one: string, few: string, many: string) => {
   const m10 = n % 10, m100 = n % 100;
@@ -140,480 +83,1583 @@ const plural = (n: number, one: string, few: string, many: string) => {
   return many;
 };
 
-const MUTED = "var(--color-text-muted)";
-const SECONDARY = "var(--color-text-secondary)";
+function SkeletonGrid({ count = 6 }: { count?: number }) {
+  return (
+    <div className={styles.grid}>
+      {Array.from({ length: count }).map((_, i) => (
+        <div key={i} className={styles.gridItem}>
+          <div className={styles.gridThumb} style={{ "--thumb-color": "#64748b" } as any}>
+            <div style={{ width: 24, height: 24, opacity: 0.3 }} />
+          </div>
+          <div style={{ height: 12, background: "var(--color-glass-surface)", borderRadius: 4, width: "80%", margin: "4px auto" }} />
+          <div style={{ height: 10, background: "var(--color-glass-surface)", borderRadius: 4, width: "50%", margin: "2px auto" }} />
+        </div>
+      ))}
+    </div>
+  );
+}
 
-/* ---------- Компонент ---------- */
-export default function LozaTab({ status }: { status: ServerStatus | null }) {
-  const [currentPath, setCurrentPath] = useState<string[]>(["root"]);
-  const [section, setSection] = useState<Section>("files");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+function buildBreadcrumbs(currentPath: string): { name: string; path: string }[] {
+  const crumbs: { name: string; path: string }[] = [{ name: "Мой диск", path: "" }];
+  if (currentPath) {
+    const parts = currentPath.split("/").filter(Boolean);
+    let acc = "";
+    for (const part of parts) {
+      acc = acc ? `${acc}/${part}` : part;
+      crumbs.push({ name: part, path: acc });
+    }
+  }
+  return crumbs;
+}
+
+// ── Clipboard manager for move/copy ──────────────────────────────────────
+
+type ClipboardEntry = { operation: "move" | "copy"; paths: string[] };
+
+function validItemName(name: string): boolean {
+  return Boolean(name) && name !== "." && name !== ".." && !/[\\/\0]/.test(name);
+}
+
+function topLevelPaths(files: FileInfo[]): string[] {
+  return files
+    .map((file) => file.path)
+    .sort((a, b) => a.length - b.length)
+    .filter((path, index, paths) => !paths.slice(0, index).some((parent) => path.startsWith(`${parent}/`)));
+}
+
+export default function LozaTab() {
+  const [currentPath, setCurrentPath] = useState("");
+  const [files, setFiles] = useState<FileInfo[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [search, setSearch] = useState("");
-  const [collapsed, setCollapsed] = useState(false);
-  const [starredIds, setStarredIds] = useState<Set<string>>(
-    () => new Set(ALL_FILES.filter((f) => f.starred).map((f) => f.id))
-  );
+  const [searchResults, setSearchResults] = useState<FileInfo[] | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchNonce, setSearchNonce] = useState(0);
+  const [dragOver, setDragOver] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [canGoBack, setCanGoBack] = useState(false);
+  const [canGoForward, setCanGoForward] = useState(false);
+  const [showNewMenu, setShowNewMenu] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<FileInfo | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [contextMenu, setContextMenu] = useState<{ item: FileInfo; x: number; y: number } | null>(null);
+  const [previewFile, setPreviewFile] = useState<FileInfo | null>(null);
+  const [shareTarget, setShareTarget] = useState<FileInfo | null>(null);
+  const [clipboardEntry, setClipboardEntry] = useState<ClipboardEntry | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const newMenuButtonRef = useRef<HTMLDivElement>(null);
+  const [newMenuPos, setNewMenuPos] = useState<{ top: number; left: number } | null>(null);
 
-  const storage = status!.storage;
-  const usedPercent = storage.totalBytes > 0 ? Math.min(100, Math.round((storage.usedBytes / storage.totalBytes) * 100)) : 0;
+  const [inputModal, setInputModal] = useState<{
+    type: "folder" | "file";
+    title: string;
+    placeholder: string;
+    onConfirm: (name: string) => void;
+  } | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  const findNode = (path: string[]): FileNode => {
-    let node = MOCK_FS;
-    for (let i = 1; i < path.length; i++) {
-      const child = node.children?.find((c) => c.id === path[i]);
-      if (!child) break;
-      node = child;
+  const navHistoryRef = useRef<string[]>([""]);
+  const navIndexRef = useRef(0);
+  const loadRequestRef = useRef(0);
+  const searchRequestRef = useRef(0);
+  const currentPathRef = useRef(currentPath);
+  const clipboardRef = useRef<ClipboardEntry | null>(null);
+  currentPathRef.current = currentPath;
+
+  const { operations, uploadFile, uploadPath, downloadFile, cancelOperation, removeOperation, retry } = useOperationQueue();
+
+  // ── Navigation history with React state ──────────────────────────────
+
+  const updateNavButtons = useCallback(() => {
+    setCanGoBack(navIndexRef.current > 0);
+    setCanGoForward(navIndexRef.current < navHistoryRef.current.length - 1);
+  }, []);
+
+  const pushHistory = useCallback((path: string) => {
+    navHistoryRef.current = navHistoryRef.current.slice(0, navIndexRef.current + 1);
+    navHistoryRef.current.push(path);
+    navIndexRef.current = navHistoryRef.current.length - 1;
+    updateNavButtons();
+  }, [updateNavButtons]);
+
+  const goBack = () => {
+    if (navIndexRef.current > 0) {
+      navIndexRef.current -= 1;
+      handleNavigate(navHistoryRef.current[navIndexRef.current], false);
     }
-    return node;
   };
 
-  const currentNode = useMemo(() => findNode(currentPath), [currentPath]);
-
-  const baseItems = useMemo(() => {
-    switch (section) {
-      case "recent": return RECENT;
-      case "starred": return ALL_FILES.filter((f) => starredIds.has(f.id));
-      case "downloads": return DOWNLOADS;
-      case "trash": return [];
-      default: return currentNode.children ?? [];
+  const goForward = () => {
+    if (navIndexRef.current < navHistoryRef.current.length - 1) {
+      navIndexRef.current += 1;
+      handleNavigate(navHistoryRef.current[navIndexRef.current], false);
     }
-  }, [section, currentNode, starredIds]);
+  };
 
-  const items = useMemo(() => {
-    if (!search.trim()) return baseItems;
-    const q = search.toLowerCase();
-    return baseItems.filter((c) => c.name.toLowerCase().includes(q));
-  }, [baseItems, search]);
+  const goUp = () => {
+    if (currentPath) {
+      const parent = currentPath.substring(0, currentPath.lastIndexOf("/"));
+      handleNavigate(parent);
+    }
+  };
 
-  const toggleStar = (id: string) =>
-    setStarredIds((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
+  // ── Global keyboard shortcuts ─�───────────────────────────────────────
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      let handled = false;
+      if (inputModal) {
+        setInputModal(null);
+        handled = true;
+      } else if (showNewMenu) {
+        setShowNewMenu(false);
+        handled = true;
+      } else if (contextMenu) {
+        setContextMenu(null);
+        handled = true;
+      } else if (renameTarget) {
+        setRenameTarget(null);
+        setRenameValue("");
+        handled = true;
+      } else if (previewFile) {
+        setPreviewFile(null);
+        handled = true;
+      }
+      // Если Escape закрыл какое-то окно — не даём bubble-слушателю ниже
+      // одновременно сбросить выделение файлов (неожиданное действие).
+      if (handled) e.preventDefault();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [inputModal, showNewMenu, contextMenu, renameTarget, previewFile]);
+
+  // Close new menu on window resize
+  useEffect(() => {
+    const onResize = () => { if (showNewMenu) setShowNewMenu(false); };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [showNewMenu]);
+
+  // ── Load files ────────────────────────────────────────────────────────
+
+  const loadFiles = useCallback(async (path: string) => {
+    const requestId = ++loadRequestRef.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await fileApi.listFiles(path);
+      if (requestId !== loadRequestRef.current || currentPathRef.current !== path) return;
+      setFiles(result);
+      setSelectedIds((previous) => new Set(
+        [...previous].filter((id) => result.some((file) => file.id === id)),
+      ));
+    } catch (e: any) {
+      if (requestId !== loadRequestRef.current || currentPathRef.current !== path) return;
+      const msg = e?.message || "Failed to load files";
+      setError(msg);
+      logger.error("files", "loadFiles error", e);
+    } finally {
+      if (requestId === loadRequestRef.current) setLoading(false);
+    }
+  }, []);
+
+  // File operations are HTTP-authoritative; WebSocket pushes are only an
+  // invalidation signal. Reloading from the server avoids duplicate local
+  // optimistic state and handles messages without a single `path` (rename).
+  useEffect(() => {
+    let refreshTimer: number | undefined;
+    const unlisten = listen(FILE_CHANGE_EVENT, () => {
+      window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => loadFiles(currentPath), 100);
     });
+    return () => {
+      window.clearTimeout(refreshTimer);
+      void unlisten.then((stop) => stop());
+    };
+  }, [currentPath, loadFiles]);
 
-  const select = (id: string) => {
-    setSelectedId(id);
+  useEffect(() => {
+    loadFiles(currentPath);
+  }, [loadFiles, currentPath]);
+
+  // ── Search with debounce ─────────────────────────────────────────────
+
+  useEffect(() => {
+    if (!search.trim()) {
+      searchRequestRef.current += 1;
+      setSearchResults(null);
+      setSearchError(null);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      const requestId = ++searchRequestRef.current;
+      setSearchResults(null);
+      try {
+        const results = await fileApi.searchFiles(search, currentPath);
+        if (requestId !== searchRequestRef.current) return;
+        setSearchResults(results);
+        setSearchError(null);
+      } catch (e: any) {
+        if (requestId !== searchRequestRef.current) return;
+        logger.error("files", "Search failed", e);
+        // Не показываем «ничего не найдено» при сетевой ошибке — иначе
+        // пользователь решает, что файлов не существует, хотя сервер просто
+        // не ответил.
+        setSearchResults(null);
+        setSearchError("Не удалось выполнить поиск. Проверьте соединение с сервером.");
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [search, currentPath, searchNonce]);
+
+  useEffect(() => {
+    updateNavButtons();
+  }, [currentPath, updateNavButtons]);
+
+  const breadcrumbs = buildBreadcrumbs(currentPath);
+
+  useLayoutEffect(() => {
+    if (showNewMenu && newMenuButtonRef.current) {
+      const rect = newMenuButtonRef.current.getBoundingClientRect();
+      const menuWidth = 180;
+      const menuHeight = 80;
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      
+      let left = rect.left;
+      let top = rect.bottom + 8;
+      
+      if (left + menuWidth > viewportWidth - 16) {
+        left = viewportWidth - menuWidth - 16;
+      }
+      if (left < 16) left = 16;
+      if (top + menuHeight > viewportHeight - 16) {
+        top = rect.top - menuHeight - 8;
+      }
+      if (top < 16) top = 16;
+      
+      setNewMenuPos({ top, left });
+    } else {
+      setNewMenuPos(null);
+    }
+  }, [showNewMenu]);
+
+  // ── Filtering & sorting ───────────────────────────────────────────────
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return files;
+    const q = search.toLowerCase();
+    return files.filter((f) => f.name.toLowerCase().includes(q));
+  }, [files, search]);
+
+  const sorted = useMemo(() => {
+    const source = searchResults !== null ? searchResults : filtered;
+    return [...source].sort((a, b) => {
+      if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+  }, [filtered, searchResults]);
+
+  // ── Navigation ───────────────────────────────────────────────────────
+
+  const handleNavigate = useCallback((path: string, addToHistory = true) => {
+    if (path === currentPath) return;
+    if (addToHistory) pushHistory(path);
+    setCurrentPath(path);
+    setSearch("");
+    setSearchResults(null);
+    setShowNewMenu(false);
+    setContextMenu(null);
+    setRenameTarget(null);
+    setPreviewFile(null);
+    setSelectedIds(new Set());
+    setError(null);
+  }, [currentPath, pushHistory]);
+
+  // ── Selection ──────────────────────────────────────────────────────────
+
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const handleContextMenu = (e: React.MouseEvent, item: FileInfo) => {
+    e.preventDefault();
+    if (!selectedIds.has(item.id)) setSelectedIds(new Set([item.id]));
+    setContextMenu({ item, x: e.clientX, y: e.clientY });
   };
 
-  const navigate = (node: FileNode) => {
-    if (node.type === "folder" && section === "files") {
-      setCurrentPath([...currentPath, node.id]);
-      setSelectedId(null);
-      setSearch("");
+  const handleSelection = (file: FileInfo, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const id = file.id;
+
+    if (e.ctrlKey || e.metaKey) {
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    } else if (e.shiftKey && selectedIds.size > 0) {
+      // Find the last selected index and select range
+      const sortedIds = sorted.map((f) => f.id);
+      const lastSelectedId = Array.from(selectedIds).pop() || id;
+      const lastIndex = sortedIds.indexOf(lastSelectedId);
+      const currentIndex = sortedIds.indexOf(id);
+
+      if (lastIndex >= 0 && currentIndex >= 0) {
+        const [start, end] = [Math.min(lastIndex, currentIndex), Math.max(lastIndex, currentIndex)];
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          for (let i = start; i <= end; i++) {
+            next.add(sortedIds[i]);
+          }
+          return next;
+        });
+      }
     } else {
-      select(node.id);
+      setSelectedIds(new Set([id]));
     }
   };
 
-  const goTo = (index: number) => {
-    setCurrentPath(currentPath.slice(0, index + 1));
-    setSelectedId(null);
-    setSearch("");
+  // ── File operations ───────────────────────────────────────────────────
+
+  const handleDoubleClick = (file: FileInfo) => {
+    if (file.isDir) {
+      handleNavigate(file.path);
+    } else {
+      setPreviewFile(file);
+    }
   };
 
-  const switchSection = (s: Section) => {
-    setSection(s);
-    setSelectedId(null);
-    setSearch("");
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.currentTarget.classList.remove(styles.dragOver);
+    const items = e.dataTransfer.files;
+    if (!items || items.length === 0) return;
+    for (let i = 0; i < items.length; i++) {
+      const f = items[i];
+      if (f.type.startsWith("directory/")) continue;
+      try {
+        await uploadFile({ path: currentPath, filename: f.name, file: f as File });
+      } catch (e: any) {
+        logger.error("files", "Upload failed", e);
+      }
+    }
+    loadFiles(currentPath);
   };
 
-  const sectionTitle = section === "files" ? currentNode.name : SECTIONS[section].label;
-
-  const counts: Record<string, number> = {
-    recent: RECENT.length,
-    starred: starredIds.size,
-    downloads: DOWNLOADS.length,
-    trash: 0,
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.currentTarget.classList.add(styles.dragOver);
   };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.currentTarget.classList.remove(styles.dragOver);
+  };
+
+  // Drag&drop из Finder/Explorer: OS передаёт абсолютные пути, содержимое
+  // которых WebView прочитать не может — загрузку выполняет Rust (`upload_paths`).
+  const handleDropPaths = async (paths: string[]) => {
+    if (paths.length === 0) return;
+    try {
+      const results = await fileApi.uploadPaths(paths, currentPath);
+      await loadFiles(currentPath);
+      const failed = results.filter((result) => !result.success);
+      if (failed.length) {
+        setError(`Не удалось загрузить: ${failed.map((result) => result.filename).join(", ")}`);
+      }
+    } catch (e: any) {
+      setError(e?.message || "Не удалось загрузить файлы");
+      logger.error("files", "Drop paths upload failed", e);
+    }
+  };
+
+  // Keep the latest closure behind a ref so the Tauri subscription is created
+  // exactly once while still seeing current state (currentPath, loadFiles…).
+  const dropHandlerRef = useRef(handleDropPaths);
+  dropHandlerRef.current = handleDropPaths;
+
+  // Нативный диалог выбора файлов: отдаёт OS-пути, которые Rust стримит на
+  // сервер (`upload_file_path`). Это заменяет `<input type=file>`, где весь
+  // файл сначала материализуется в памяти WebView-движка (OOM на больших).
+  const handleOpenUploadDialog = async () => {
+    try {
+      const picked = await openDialog({ multiple: true, directory: false, title: "Загрузить файлы" });
+      if (!picked) return;
+      const list = (Array.isArray(picked) ? picked : [picked]).filter((p): p is string => typeof p === "string");
+      for (const osPath of list) {
+        try {
+          await uploadPath({ osPath, destination: currentPath });
+        } catch (e: any) {
+          logger.error("files", "Upload failed", e);
+        }
+      }
+      loadFiles(currentPath);
+    } catch (e: any) {
+      setError(e?.message || "Не удалось открыть выбор файлов");
+    }
+  };
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    getCurrentWebview()
+      .onDragDropEvent((event) => {
+        if (disposed) return;
+        const payload = event.payload;
+        if (payload.type === "enter" || payload.type === "over") {
+          setDragOver(true);
+        } else if (payload.type === "leave") {
+          setDragOver(false);
+        } else if (payload.type === "drop") {
+          setDragOver(false);
+          void dropHandlerRef.current(payload.paths);
+        }
+      })
+      .then((stop) => {
+        if (disposed) stop();
+        else unlisten = stop;
+      })
+      .catch((e: any) => logger.error("files", "onDragDropEvent subscribe failed", e));
+    return () => {
+      disposed = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  const handleDeleteSelected = async () => {
+    if (selectedIds.size === 0) return;
+    const selected = sorted.filter((f) => selectedIds.has(f.id));
+    const names = selected.map((f) => f.name).join(", ");
+    if (!confirm(`Удалить ${selected.length} элемент(ов): ${names}?`)) return;
+    try {
+      const report = await fileApi.mutateFiles("delete", topLevelPaths(selected));
+      const failed = report.results
+        .filter((result) => !result.success)
+        .map((result) => result.path.split("/").pop() || result.path);
+      clearSelection();
+      await loadFiles(currentPath);
+      if (failed.length) setError(`Не удалось удалить: ${failed.join(", ")}`);
+    } catch (error: any) {
+      setError(error?.message || "Не удалось удалить выбранные элементы");
+    }
+  };
+
+  const doRename = async () => {
+    if (!renameTarget) return;
+    const newName = renameValue.trim();
+    if (!newName || newName === renameTarget.name) { setRenameTarget(null); return; }
+    if (!validItemName(newName)) {
+      setError("Имя не может содержать /, \\ или быть . / ..");
+      return;
+    }
+
+    const parentPath = renameTarget.path.substring(0, renameTarget.path.lastIndexOf("/"));
+    const newPath = parentPath ? `${parentPath}/${newName}` : newName;
+
+    try {
+      await fileApi.renameFile(renameTarget.path, newPath);
+      loadFiles(currentPath);
+    } catch (e: any) {
+      setError(e.message || "Failed to rename");
+    } finally {
+      setRenameTarget(null);
+      setRenameValue("");
+    }
+  };
+
+  const handleMkdir = async (name: string) => {
+    if (!name.trim()) return;
+    const trimmedName = name.trim();
+    if (!validItemName(trimmedName)) {
+      setError("Имя не может содержать /, \\ или быть . / ..");
+      return;
+    }
+    const fullPath = currentPath ? `${currentPath}/${trimmedName}` : trimmedName;
+    try {
+      await fileApi.createDir(fullPath);
+      loadFiles(currentPath);
+      setShowNewMenu(false);
+    } catch (e: any) {
+      setError(e.message || "Failed to create directory");
+    }
+  };
+
+  const handleDownload = async (file: FileInfo) => {
+    if (file.isDir) return;
+    await downloadFile({ path: file.path, filename: file.name, sizeBytes: file.sizeBytes });
+  };
+
+  const handleDownloadSelected = async () => {
+    if (selectedIds.size === 0) return;
+    const selected = sorted.filter((f) => selectedIds.has(f.id) && !f.isDir);
+    for (const file of selected) {
+      await downloadFile({ path: file.path, filename: file.name, sizeBytes: file.sizeBytes });
+    }
+  };
+
+  const handleOpen = (file: FileInfo) => {
+    if (file.isDir) {
+      handleNavigate(file.path);
+    } else {
+      setPreviewFile(file);
+    }
+  };
+
+  const handlePreviewFile = (file: FileInfo) => {
+    setPreviewFile(file);
+  };
+
+  // ── Move / Copy ───────────────────────────────────────────────────────
+
+  const putInClipboard = (operation: ClipboardEntry["operation"], selected: FileInfo[]) => {
+    if (selected.length === 0) return;
+    const next = {
+      operation,
+      paths: topLevelPaths(selected),
+    };
+    clipboardRef.current = next;
+    setClipboardEntry(next);
+    setContextMenu(null);
+    clearSelection();
+  };
+
+  const handleCut = () => putInClipboard("move", sorted.filter((f) => selectedIds.has(f.id)));
+
+  const handleCopy = () => putInClipboard("copy", sorted.filter((f) => selectedIds.has(f.id)));
+
+  const handlePaste = async () => {
+    const entry = clipboardRef.current;
+    if (!entry) return;
+    try {
+      const report = await fileApi.mutateFiles(entry.operation, entry.paths, currentPath);
+      const failures = report.results.filter((result) => !result.success);
+      const completed = report.results.length - failures.length;
+
+      // A copy may remain useful for repeated pastes. A cut is cleared only if
+      // every actionable item reached the server, so partial failures are never
+      // silently lost.
+      if (entry.operation === "move" && failures.length === 0) {
+        clipboardRef.current = null;
+        setClipboardEntry(null);
+      }
+      await loadFiles(currentPath);
+      if (failures.length) setError(`Вставлено: ${completed}. Ошибки: ${failures.map((result) => `${result.path}: ${result.error}`).join("; ")}`);
+    } catch (error: any) {
+      setError(error?.message || "Не удалось вставить элементы");
+    }
+  };
+
+  useEffect(() => {
+    const onShortcut = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const editing = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
+      const command = event.metaKey || event.ctrlKey;
+      if (command && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+      if (editing) return;
+      if (command && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        setSelectedIds(new Set(sorted.map((file) => file.id)));
+      } else if (command && event.key.toLowerCase() === "c") {
+        event.preventDefault();
+        handleCopy();
+      } else if (command && event.key.toLowerCase() === "x") {
+        event.preventDefault();
+        handleCut();
+      } else if (command && event.key.toLowerCase() === "v") {
+        event.preventDefault();
+        void handlePaste();
+      } else if ((event.key === "Delete" || event.key === "Backspace") && selectedIds.size) {
+        event.preventDefault();
+        void handleDeleteSelected();
+      } else if (event.key === "Escape" && !event.defaultPrevented) {
+        clearSelection();
+      }
+    };
+    window.addEventListener("keydown", onShortcut);
+    return () => window.removeEventListener("keydown", onShortcut);
+  }, [sorted, selectedIds, handleCopy, handleCut, handlePaste, handleDeleteSelected]);
+
+  const handleNewFile = async (type: "folder" | "file") => {
+    setShowNewMenu(false);
+    if (type === "folder") {
+      setInputModal({ type: "folder", title: "Создать папку", placeholder: "Имя папки", onConfirm: handleMkdir });
+    } else {
+      setInputModal({ type: "file", title: "Создать файл", placeholder: "Имя файла", onConfirm: createEmptyFile });
+    }
+  };
+
+  const createEmptyFile = async (name: string) => {
+    const trimmedName = name.trim();
+    if (!trimmedName) return;
+    if (!validItemName(trimmedName)) {
+      setError("Имя не может содержать /, \\ или быть . / ..");
+      return;
+    }
+    try {
+      const emptyFile = new File([], trimmedName, { type: "text/plain" });
+      await uploadFile({ path: currentPath, filename: trimmedName, file: emptyFile });
+      loadFiles(currentPath);
+    } catch (e: any) {
+      setError(e.message || "Failed to create file");
+    }
+  };
+
+  const hasClipboard = clipboardEntry !== null;
 
   return (
-    <div
-      className={styles.root}
-      style={{
-        gridTemplateColumns: collapsed ? "68px 1fr" : "260px 1fr",
-        transition: "grid-template-columns 0.25s var(--ease-standard)",
-      }}
-    >
-      {/* ---------- Sidebar ---------- */}
-      <aside className={styles.sidebar}>
-        <div className={styles.userBadge}>
-          <button
-            className={styles.toggleBtn}
-            onClick={() => setCollapsed((v) => !v)}
-            title={collapsed ? "Развернуть панель" : "Свернуть панель"}
-          >
-            <ChevronLeft
-              size={16}
-              style={{ transform: collapsed ? "rotate(180deg)" : "none", transition: "transform 0.25s" }}
-            />
-          </button>
-        </div>
-        <nav className={styles.nav} style={{ overflowY: "auto" }}>
-          {!collapsed && <div className={styles.navLabel}>Быстрый доступ</div>}
-          {QUICK_ORDER.map((id) => {
-            const q = SECTIONS[id];
-            return (
-              <button
-                key={id}
-                title={q.label}
-                className={`${styles.navItem} ${section === id ? styles.active : ""}`}
-                style={collapsed ? { justifyContent: "center", padding: "10px 0" } : undefined}
-                onClick={() => switchSection(id)}
-              >
-                <q.icon size={16} />
-                {!collapsed && (
-                  <>
-                    <span>{q.label}</span>
-                    {counts[id] > 0 && (
-                      <span style={{ marginLeft: "auto", fontSize: 10, color: MUTED }}>{counts[id]}</span>
-                    )}
-                  </>
-                )}
-              </button>
-            );
-          })}
-          {!collapsed && (
-            <>
-              <div className={`${styles.navLabel} ${styles.navLabelTop}`}>Папки</div>
-              <Tree
-                node={MOCK_FS}
-                path={["root"]}
-                currentPath={section === "files" ? currentPath : []}
-                onNavigate={(path) => {
-                  setSection("files");
-                  setCurrentPath(path);
-                  setSelectedId(null);
-                  setSearch("");
-                }}
-              />
-            </>
-          )}
-        </nav>
-        <div className={styles.storage}>
-          {!collapsed && (
-            <>
-              <div className={styles.storageRow}>
-                <span>Хранилище</span>
-                <span className={styles.storagePct}>{usedPercent}%</span>
-              </div>
-              <div className={styles.storageSegments}>
-                {storage.categories.map(category => (
-                  <div
-                    key={category.id}
-                    className={styles.storageSegment}
-                    style={{
-                      flex: category.bytes,
-                      background: category.color,
-                    }}
-                  />
-                ))}
-              </div>
-              {/* Tooltip вынесен из storageSegments, чтобы не обрезаться из-за overflow: hidden */}
-              <div className={styles.storageTooltip}>
-                <strong>
-                  {formatBytes(storage.usedBytes)}
-                  {" / "}
-                  {formatBytes(storage.totalBytes)}
-                </strong>
-                {storage.categories.map(cat => (
-                  <div
-                    key={cat.id}
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      marginTop: 6,
-                    }}
-                  >
-                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <span
-                        style={{
-                          width: 8,
-                          height: 8,
-                          borderRadius: 999,
-                          background: cat.color,
-                        }}
-                      />
-                      {cat.label}
-                    </span>
-                    <span>{formatBytes(cat.bytes)}</span>
-                  </div>
-                ))}
-              </div>
-              <div className={styles.storageSub}>
-                {formatBytes(storage.usedBytes)} из {formatBytes(storage.totalBytes)}
-              </div>
-            </>
-          )}
-        </div>
+    <div className={`${styles.root}`}>
+      <aside className={styles.sidebar} style={{ display: "flex" }}>
+        <FolderTreeSidebar currentPath={currentPath} onNavigate={handleNavigate} refreshKey={currentPath} />
       </aside>
 
-      {/* ---------- Main ---------- */}
       <main className={styles.main}>
-        {/* Toolbar */}
-        <div className={styles.toolbar}>
-          <div className={styles.breadcrumbs}>
-            {section === "files" ? (
-              currentPath.map((id, idx) => {
-                const node = findNode(currentPath.slice(0, idx + 1));
-                return (
-                  <div key={id} className={styles.crumb}>
+        {/* ── Finder-like toolbar ────────────────────────── */}
+        <motion.div
+          className={styles.toolbarFinder}
+          initial={{ opacity: 0, y: -8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.2, delay: 0.05 }}
+        >
+          <div className={styles.navGroup}>
+            <motion.button
+              whileHover={{ background: "var(--color-glass-hover-strong)" }}
+              whileTap={{ scale: 0.94 }}
+              onClick={goBack}
+              disabled={!canGoBack}
+              className={styles.navBtn}
+              title="Назад"
+            >
+              <ArrowLeft size={15} />
+            </motion.button>
+            <motion.button
+              whileHover={{ background: "var(--color-glass-hover-strong)" }}
+              whileTap={{ scale: 0.94 }}
+              onClick={goForward}
+              disabled={!canGoForward}
+              className={styles.navBtn}
+              title="Вперёд"
+            >
+              <ArrowRight size={15} />
+            </motion.button>
+            <motion.button
+              whileHover={{ background: "var(--color-glass-hover-strong)" }}
+              whileTap={{ scale: 0.94 }}
+              onClick={goUp}
+              disabled={!currentPath}
+              className={styles.navBtn}
+              title="Вверх"
+            >
+              <ArrowUp size={15} />
+            </motion.button>
+            <motion.button
+              whileHover={{ background: "var(--color-glass-hover-strong)" }}
+              whileTap={{ scale: 0.94 }}
+              onClick={() => loadFiles(currentPath)}
+              className={styles.navBtn}
+              title="Обновить"
+            >
+              <RefreshCw size={15} />
+            </motion.button>
+          </div>
+
+          {/* Breadcrumbs - scrollable container */}
+          <div className={styles.breadcrumbsContainer}>
+            <div className={styles.breadcrumbs}>
+              <AnimatePresence mode="wait">
+                {breadcrumbs.map((crumb, idx) => (
+                  <motion.div
+                    key={idx}
+                    className={styles.crumb}
+                    initial={{ opacity: 0, x: -6 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 6 }}
+                    transition={{ duration: 0.15, delay: idx * 0.03 }}
+                  >
                     {idx > 0 && <ChevronRight size={14} className={styles.crumbSep} />}
                     <button
-                      onClick={() => goTo(idx)}
-                      className={`${styles.crumbBtn} ${idx === currentPath.length - 1 ? styles.crumbActive : ""}`}
+                      onClick={() => handleNavigate(crumb.path)}
+                      className={`${styles.crumbBtn} ${idx === breadcrumbs.length - 1 ? styles.crumbActive : ""}`}
+                      title={crumb.path || "Мой диск"}
                     >
-                      {idx === 0 ? <Home size={14} /> : null}
-                      {node.name}
+                      {idx === 0 && <Home size={14} />}
+                      {crumb.name}
                     </button>
-                  </div>
-                );
-              })
-            ) : (
+                  </motion.div>
+                ))}
+              </AnimatePresence>
+            </div>
+          </div>
+
+          <div className={styles.toolbarRight}>
+            {selectedIds.size > 0 && (
               <>
-                <div className={styles.crumb}>
-                  <button className={styles.crumbBtn} onClick={() => switchSection("files")}>
-                    <Home size={14} /> Мой диск
-                  </button>
-                </div>
-                <div className={styles.crumb}>
-                  <ChevronRight size={14} className={styles.crumbSep} />
-                  <span className={`${styles.crumbBtn} ${styles.crumbActive}`}>{sectionTitle}</span>
-                </div>
+                <motion.button
+                  whileHover={{ background: "var(--color-glass-hover-strong)" }}
+                  whileTap={{ scale: 0.94 }}
+                  onClick={handleCut}
+                  className={styles.navBtn}
+                  title="Вырезать"
+                >
+                  <Scissors size={15} />
+                </motion.button>
+                <motion.button
+                  whileHover={{ background: "var(--color-glass-hover-strong)" }}
+                  whileTap={{ scale: 0.94 }}
+                  onClick={handleCopy}
+                  className={styles.navBtn}
+                  title="Копировать"
+                >
+                  <Copy size={15} />
+                </motion.button>
+                <motion.button
+                  whileHover={{ background: "var(--color-glass-hover-strong)" }}
+                  whileTap={{ scale: 0.94 }}
+                  onClick={handleDownloadSelected}
+                  className={styles.navBtn}
+                  title="Скачать выбранное"
+                >
+                  <Download size={15} />
+                </motion.button>
+                <motion.button
+                  whileHover={{ background: "rgba(255,100,100,0.12)" }}
+                  whileTap={{ scale: 0.94 }}
+                  onClick={handleDeleteSelected}
+                  className={styles.navBtn}
+                  title="Удалить выбранное"
+                >
+                  <Trash2 size={15} style={{ color: "var(--color-error)" }} />
+                </motion.button>
               </>
             )}
-          </div>
-          <div className={styles.toolbarRight}>
-            <div className={styles.search}>
-              <Search size={14} className={styles.searchIcon} />
-              <input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={section === "files" ? "Поиск в текущей папке…" : "Поиск файлов…"}
-                className={styles.searchInput}
-              />
+            <motion.button
+              whileHover={hasClipboard ? { background: "var(--color-glass-hover-strong)" } : undefined}
+              whileTap={hasClipboard ? { scale: 0.94 } : undefined}
+              onClick={handlePaste}
+              disabled={!hasClipboard}
+              className={styles.navBtn}
+              title={clipboardEntry ? `Вставить (${clipboardEntry.paths.length})` : "Вставить"}
+            >
+              <ClipboardPaste size={15} />
+            </motion.button>
+            <div style={{ position: "relative", display: "inline-block" }}>
+              <div ref={newMenuButtonRef} style={{ display: "inline-block" }}>
+                <motion.button
+                  whileHover={{ background: "var(--color-glass-hover-strong)" }}
+                  whileTap={{ scale: 0.94 }}
+                  onClick={() => setShowNewMenu(!showNewMenu)}
+                  className={styles.navBtn}
+                  title="Создать"
+                >
+                  <Plus size={15} />
+                </motion.button>
+              </div>
+              {showNewMenu && newMenuPos && (
+                <>
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.9, y: -4 }}
+                    animate={{ opacity: 1, scale: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.9, y: -4 }}
+                    transition={{ duration: 0.15, ease: "easeOut" }}
+                    style={{
+                      position: "fixed",
+                      top: newMenuPos.top,
+                      left: newMenuPos.left,
+                      background: "var(--color-glass-surface)",
+                      border: "1px solid var(--color-glass-border)",
+                      borderRadius: "var(--radius-sm)",
+                      padding: "6px",
+                      minWidth: 150,
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 2,
+                      boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+                      zIndex: 100,
+                      backdropFilter: "var(--glass-blur)",
+                      WebkitBackdropFilter: "var(--glass-blur)",
+                    }}
+                  >
+                    <motion.button
+                      whileHover={{ background: "var(--color-glass-hover)" }}
+                      onClick={() => handleNewFile("folder")}
+                      style={{ padding: "6px 10px", textAlign: "left", fontSize: 12, background: "transparent", border: "none", color: PRIMARY, cursor: "pointer", borderRadius: "var(--radius-sm)", display: "flex", alignItems: "center", gap: 6 }}
+                    >
+                      <FolderPlus size={12} /> Папка
+                    </motion.button>
+                    <motion.button
+                      whileHover={{ background: "var(--color-glass-hover)" }}
+                      onClick={() => handleNewFile("file")}
+                      style={{ padding: "6px 10px", textAlign: "left", fontSize: 12, background: "transparent", border: "none", color: PRIMARY, cursor: "pointer", borderRadius: "var(--radius-sm)", display: "flex", alignItems: "center", gap: 6 }}
+                    >
+                      <FileText size={12} /> Файл
+                    </motion.button>
+                  </motion.div>
+                  <div style={{ position: "fixed", inset: 0, zIndex: 1 }} onClick={() => setShowNewMenu(false)} />
+                </>
+              )}
             </div>
+
+            <motion.button
+              whileHover={{ background: "var(--color-glass-hover-strong)" }}
+              whileTap={{ scale: 0.94 }}
+              onClick={() => void handleOpenUploadDialog()}
+              className={styles.navBtn}
+              title="Загрузить файлы"
+            >
+              <Upload size={15} />
+            </motion.button>
+
             <div className={styles.viewToggle}>
-              <button
+              <motion.button
+                whileHover={viewMode === "grid" ? undefined : { background: "var(--color-glass-hover-strong)" }}
+                whileTap={viewMode === "grid" ? undefined : { scale: 0.92 }}
                 className={`${styles.viewBtn} ${viewMode === "grid" ? styles.viewBtnActive : ""}`}
                 onClick={() => setViewMode("grid")}
                 title="Сетка"
               >
                 <Grid3x3 size={15} />
-              </button>
-              <button
+              </motion.button>
+              <motion.button
+                whileHover={viewMode === "list" ? undefined : { background: "var(--color-glass-hover-strong)" }}
+                whileTap={viewMode === "list" ? undefined : { scale: 0.92 }}
                 className={`${styles.viewBtn} ${viewMode === "list" ? styles.viewBtnActive : ""}`}
                 onClick={() => setViewMode("list")}
                 title="Список"
               >
                 <List size={15} />
-              </button>
+              </motion.button>
             </div>
-          </div>
-        </div>
 
-        {/* Body */}
-        <div className={styles.body}>
-          <div className={styles.cardLabel}>
-            {sectionTitle} · {items.length} {plural(items.length, "элемент", "элемента", "элементов")}
+            <div className={styles.search}>
+              <Search size={14} className={styles.searchIcon} />
+              <input
+                ref={searchInputRef}
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Поиск…"
+                className={styles.searchInput}
+              />
+            </div>
           </div>
-          {items.length === 0 ? (
-            <EmptyState
-              title={
-                search ? "Ничего не найдено"
-                : section === "trash" ? "Корзина пуста"
-                : section === "starred" ? "Нет избранных файлов"
-                : "Папка пуста"
-              }
-              sub={
-                search ? `По запросу «${search}» ничего нет`
-                : section === "trash" ? "Удалённые файлы будут появляться здесь"
-                : section === "starred" ? "Отметьте файл звёздочкой — он появится здесь"
-                : "Здесь пока нет файлов"
-              }
-            />
+        </motion.div>
+
+        <div className={`${styles.body} ${dragOver ? styles.dragOver : ""}`} onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave}>
+          <AnimatePresence>
+            {error && (
+              <motion.div
+                className={styles.errorBanner}
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18 }}
+              >
+                <span>{error}</span>
+                <button className={styles.errorRetryButton} onClick={() => loadFiles(currentPath)}>Повторить</button>
+              </motion.div>
+            )}
+
+            {searchError && !error && (
+              <motion.div
+                className={styles.errorBanner}
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                transition={{ duration: 0.18 }}
+              >
+                <span>{searchError}</span>
+                <button className={styles.errorRetryButton} onClick={() => setSearchNonce((n) => n + 1)}>Повторить</button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <motion.div
+            className={styles.cardLabel}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.2, delay: 0.05 }}
+          >
+            {breadcrumbs[breadcrumbs.length - 1]?.name || "Мой диск"} · {sorted.length} {plural(sorted.length, "элемент", "элемента", "элементов")}
+          </motion.div>
+
+          {loading ? (
+            <SkeletonGrid count={6} />
+          ) : sorted.length === 0 ? (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2 }}>
+              <EmptyState title={search ? "Ничего не найдено" : "Папка пуста"} sub={search ? `По запросу «${search}» ничего нет` : "Здесь пока нет файлов"} />
+            </motion.div>
           ) : viewMode === "grid" ? (
-            <div className={styles.panel}>
-              <div className={styles.grid}>
-                {items.map((item) => (
-                  <GridItem
+            <AnimatePresence mode="popLayout">
+              <motion.div className={styles.grid} layout>
+                {sorted.map((item, _i) => (
+                  <motion.div
                     key={item.id}
-                    item={item}
-                    selected={selectedId === item.id}
-                    starred={starredIds.has(item.id)}
-                    onClick={() => select(item.id)}
-                    onOpen={() => navigate(item)}
-                  />
+                    layoutId={item.id}
+                    initial={{ opacity: 0, scale: 0.96 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.96 }}
+                    transition={{ duration: 0.18, ease: "easeOut" }}
+                    style={{ willChange: "transform, opacity" }}
+                  >
+                    <GridItem item={item} selected={selectedIds.has(item.id)}
+                      onClick={(e) => handleSelection(item, e)}
+                      onDoubleClick={() => handleDoubleClick(item)}
+                      onContextMenu={(e) => handleContextMenu(e, item)}
+                      onView={() => setPreviewFile(item)} />
+                  </motion.div>
                 ))}
-              </div>
-            </div>
+              </motion.div>
+            </AnimatePresence>
           ) : (
-            <div className={styles.list}>
-              <div className={styles.listHead}>
-                <div>Имя</div>
-                <div>Изменён</div>
-                <div>Размер</div>
-                <div />
-              </div>
-              {items.map((item) => (
-                <ListItem
-                  key={item.id}
-                  item={item}
-                  selected={selectedId === item.id}
-                  starred={starredIds.has(item.id)}
-                  onClick={() => select(item.id)}
-                  onOpen={() => navigate(item)}
-                  onStar={() => toggleStar(item.id)}
-                />
-              ))}
-            </div>
+            <AnimatePresence mode="popLayout">
+              <motion.div className={styles.list} layout>
+                <div className={styles.listHead}>
+                  <div>Имя</div>
+                  <div>Изменён</div>
+                  <div>Размер</div>
+                  <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                    <MoreVertical size={14} style={{ color: MUTED }} />
+                  </div>
+                </div>
+                {sorted.map((item) => (
+                  <motion.div
+                    key={item.id}
+                    layoutId={item.id}
+                    initial={{ opacity: 0, x: -8 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 8 }}
+                    transition={{ duration: 0.15, ease: "easeOut" }}
+                    style={{ willChange: "transform, opacity" }}
+                  >
+                    <ListItem item={item} selected={selectedIds.has(item.id)}
+                      onClick={(e) => handleSelection(item, e)}
+                      onDoubleClick={() => handleDoubleClick(item)}
+                      onContextMenu={(e) => handleContextMenu(e, item)}
+                      onView={() => setPreviewFile(item)} />
+                  </motion.div>
+                ))}
+              </motion.div>
+            </AnimatePresence>
           )}
+
+          <input ref={fileInputRef} type="file" multiple style={{ display: "none" }}
+            onChange={async (e) => {
+              const fs = Array.from(e.target.files || []);
+              for (const f of fs) {
+                try { await uploadFile({ path: currentPath, filename: f.name, file: f }); }
+                catch (e: any) { logger.error("files", "Upload failed", e); }
+              }
+              loadFiles(currentPath);
+              e.target.value = "";
+            }} />
+        </div>
+        <div className={styles.statusBar}>
+          <span className={styles.statusPath} title={currentPath || "Мой диск"}>
+            {currentPath || "Мой диск"}
+          </span>
+          <span className={styles.statusItem}>
+            {selectedIds.size > 0
+              ? <><span className={styles.statusAccent}>{selectedIds.size}</span> выбрано</>
+              : <><span className={styles.statusAccent}>{files.length}</span> {plural(files.length, "элемент", "элемента", "элементов")}</>}
+          </span>
         </div>
       </main>
+
+      {previewFile && (
+        <div
+          style={{
+            position: "fixed", inset: 0,
+            backgroundColor: "rgba(0,0,0,0.5)",
+            zIndex: 5000,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: "24px",
+          }}
+          onClick={() => setPreviewFile(null)}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            transition={{ duration: 0.15, ease: "easeOut" }}
+            style={{
+              width: "min(90vw, 800px)",
+              height: "min(90vh, 600px)",
+              maxWidth: "90vw",
+              maxHeight: "90vh",
+              background: "var(--color-glass-surface)",
+              border: "1px solid var(--color-glass-border)",
+              borderRadius: "var(--radius-lg)",
+              boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <FileViewer file={previewFile} onClose={() => setPreviewFile(null)} onEdited={() => loadFiles(currentPath)} onDownload={handleDownload} onShare={(f) => { setPreviewFile(null); setShareTarget(f); }} />
+          </motion.div>
+        </div>
+      )}
+
+      {contextMenu && (
+        <ContextMenu
+          item={contextMenu.item} x={contextMenu.x} y={contextMenu.y}
+          onClose={() => setContextMenu(null)}
+          onRename={() => { setRenameTarget(contextMenu.item); setRenameValue(contextMenu.item.name); setContextMenu(null); }}
+          onDownload={() => handleDownload(contextMenu.item)}
+          onDelete={handleDeleteSelected}
+          onOpen={() => handleOpen(contextMenu.item)}
+          onPreview={() => handlePreviewFile(contextMenu.item)}
+          onShare={() => setShareTarget(contextMenu.item)}
+          onMove={handleCut}
+          onCopy={handleCopy}
+        />
+      )}
+
+      {shareTarget && (
+        <ShareModal file={shareTarget} onClose={() => { setShareTarget(null); loadFiles(currentPath); }} />
+      )}
+
+      {renameTarget && (
+        <>
+          <div style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.5)", zIndex: 1999 }} onClick={() => setRenameTarget(null)} />
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            transition={{ duration: 0.15 }}
+            style={{
+              position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
+              background: "var(--color-glass-surface)", border: "1px solid var(--color-glass-border)",
+              borderRadius: "var(--radius-md)", padding: "18px 22px", minWidth: 320,
+              boxShadow: "0 20px 50px rgba(0,0,0,0.5)", zIndex: 2000,
+            }}
+          >
+            <h3 style={{ fontSize: 13, fontWeight: 600, color: PRIMARY, marginBottom: 12 }}>Переименовать</h3>
+            <input type="text" value={renameValue} onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") doRename(); if (e.key === "Escape") setRenameTarget(null); }}
+              style={{
+                width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)",
+                background: "rgba(0,0,0,0.3)", border: "1px solid var(--color-glass-border)",
+                color: PRIMARY, fontSize: 13, marginBottom: 14, outline: "none",
+              }} autoFocus />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setRenameTarget(null)} style={{
+                padding: "6px 14px", borderRadius: "var(--radius-sm)",
+                background: "var(--color-glass-surface)", border: "1px solid var(--color-glass-border)",
+                color: SECONDARY, fontSize: 12, cursor: "pointer", transition: "all 0.15s",
+              }}>Отмена</button>
+              <button onClick={doRename} style={{
+                padding: "6px 14px", borderRadius: "var(--radius-sm)",
+                background: "var(--color-accent)", border: "1px solid var(--color-accent-border)",
+                color: "#fff", fontSize: 12, cursor: "pointer", fontWeight: 500,
+              }}>Готово</button>
+            </div>
+          </motion.div>
+        </>
+      )}
+
+      {inputModal && (
+        <>
+          <div style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.5)", zIndex: 1999 }} onClick={() => setInputModal(null)} />
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.95 }}
+            transition={{ duration: 0.15 }}
+            style={{
+              position: "fixed", top: "50%", left: "50%", transform: "translate(-50%, -50%)",
+              background: "var(--color-glass-surface)", border: "1px solid var(--color-glass-border)",
+              borderRadius: "var(--radius-md)", padding: "18px 22px", minWidth: 320,
+              boxShadow: "0 20px 50px rgba(0,0,0,0.5)", zIndex: 2000,
+            }}
+          >
+            <h3 style={{ fontSize: 13, fontWeight: 600, color: PRIMARY, marginBottom: 12 }}>{inputModal.title}</h3>
+            <input ref={inputRef} type="text" placeholder={inputModal.placeholder}
+              onKeyDown={(e) => { if (e.key === "Enter") { inputModal.onConfirm(inputRef.current?.value || ""); setInputModal(null); } if (e.key === "Escape") setInputModal(null); }}
+              style={{
+                width: "100%", padding: "8px 10px", borderRadius: "var(--radius-sm)",
+                background: "rgba(0,0,0,0.3)", border: "1px solid var(--color-glass-border)",
+                color: PRIMARY, fontSize: 13, marginBottom: 14, outline: "none",
+              }} autoFocus />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setInputModal(null)} style={{
+                padding: "6px 14px", borderRadius: "var(--radius-sm)",
+                background: "var(--color-glass-surface)", border: "1px solid var(--color-glass-border)",
+                color: SECONDARY, fontSize: 12, cursor: "pointer", transition: "all 0.15s",
+              }}>Отмена</button>
+              <button onClick={() => { inputModal.onConfirm(inputRef.current?.value || ""); setInputModal(null); }} style={{
+                padding: "6px 14px", borderRadius: "var(--radius-sm)",
+                background: "var(--color-accent)", border: "1px solid var(--color-accent-border)",
+                color: "#fff", fontSize: 12, cursor: "pointer", fontWeight: 500,
+              }}>Готово</button>
+            </div>
+          </motion.div>
+        </>
+      )}
+
+      <OperationQueueList operations={operations} onCancel={cancelOperation} onClose={removeOperation} onRetry={retry} />
     </div>
   );
 }
 
-/* ---------- Дерево папок ---------- */
-function Tree({
-  node, path, currentPath, onNavigate, depth = 0,
-}: {
-  node: FileNode;
-  path: string[];
-  currentPath: string[];
-  onNavigate: (path: string[]) => void;
-  depth?: number;
-}) {
-  const folders = (node.children ?? []).filter((c) => c.type === "folder");
-  if (folders.length === 0 && depth > 0) return null;
+function EmptyState({ title, sub }: { title: string; sub: string }) {
+  return (
+    <motion.div
+      className={styles.panel}
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
+      transition={{ duration: 0.2 }}
+      style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "44px 20px" }}
+    >
+      <motion.div initial={{ scale: 0.9 }} animate={{ scale: 1 }} transition={{ duration: 0.2, delay: 0.05 }}>
+        <Folder size={42} strokeWidth={1.1} style={{ color: MUTED }} />
+      </motion.div>
+      <motion.div style={{ fontSize: 13, fontWeight: 600, color: SECONDARY, marginTop: 6 }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2, delay: 0.07 }}>{title}</motion.div>
+      <motion.div style={{ fontSize: 12, color: MUTED }} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2, delay: 0.09 }}>{sub}</motion.div>
+    </motion.div>
+  );
+}
 
-  const isActive =
-    currentPath.length === path.length && currentPath.every((p, i) => p === path[i]);
-  const isAncestor =
-    currentPath.length > path.length && path.every((p, i) => currentPath[i] === p);
+function ContextMenu({
+  item, x, y, onClose, onRename, onDownload, onDelete,
+  onOpen, onPreview, onShare, onMove, onCopy,
+}: {
+  item: FileInfo; x: number; y: number;
+  onClose: () => void; onRename: () => void;
+  onDownload: () => void; onDelete: () => void;
+  onOpen: () => void; onPreview: () => void;
+  onShare: () => void; onMove: () => void; onCopy: () => void;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menuRect, setMenuRect] = useState<DOMRect | null>(null);
+
+  useLayoutEffect(() => {
+    if (menuRef.current) {
+      setMenuRect(menuRef.current.getBoundingClientRect());
+    }
+  }, []);
+
+  const popupStyle: React.CSSProperties = {
+    position: "fixed",
+    top: menuRect
+      ? Math.min(y, window.innerHeight - menuRect.height - 16)
+      : Math.min(y, window.innerHeight - 320),
+    left: menuRect
+      ? Math.min(x, window.innerWidth - menuRect.width - 16)
+      : Math.min(x, window.innerWidth - 240),
+    background: "var(--color-glass-surface)",
+    border: "1px solid var(--color-glass-border)",
+    borderRadius: "var(--radius-sm)",
+    padding: "4px",
+    minWidth: 200,
+    maxWidth: 260,
+    maxHeight: 480,
+    overflow: "hidden",
+    boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
+    zIndex: 2000,
+    backdropFilter: "blur(12px)",
+    WebkitBackdropFilter: "blur(12px)",
+  };
+
+  const itemStyle = (opts?: { danger?: boolean; shortcut?: string }): React.CSSProperties => ({
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    width: "100%",
+    padding: "6px 10px",
+    textAlign: "left",
+    fontSize: 12,
+    background: "transparent",
+    border: "none",
+    color: opts?.danger ? "var(--color-error)" : "var(--color-text-primary)",
+    cursor: "pointer",
+    borderRadius: "4px",
+    transition: "all 0.12s",
+  });
+
+  const IconWrapper = ({ icon: Icon, color }: { icon: any; color?: string }) =>
+    <div style={{ width: 16, height: 16, display: "grid", placeItems: "center", flexShrink: 0, color: color || "var(--color-text-secondary)" }}>
+      <Icon size={11} strokeWidth={1.6} />
+    </div>;
+
+  const renderItem = (
+    icon: any, label: string, onClick: () => void,
+    opts?: { danger?: boolean; disabled?: boolean; shortcut?: string; submenu?: string },
+  ) => (
+    <motion.button
+      key={label}
+      whileHover={!opts?.disabled ? {
+        background: opts?.danger ? "rgba(255,100,100,0.12)" : "var(--color-glass-hover)",
+        x: 3,
+      } : {}}
+      onClick={() => { onClick(); if (!opts?.submenu) onClose(); }}
+      disabled={opts?.disabled}
+      style={itemStyle({ danger: opts?.danger })}
+    >
+      <IconWrapper icon={icon} color={opts?.danger ? "var(--color-error)" : undefined} />
+      <span>{label}</span>
+      {opts?.shortcut && (
+        <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--color-text-muted)", fontFamily: "ui-monospace, monospace" }}>
+          {opts.shortcut}
+        </span>
+      )}
+      {opts?.submenu && <ChevronRight size={10} style={{ marginLeft: "auto", color: "var(--color-text-muted)" }} />}
+    </motion.button>
+  );
+
+  const renderSeparator = (key: string) => (
+    <div key={key} style={{ height: 1, background: "var(--color-surface-border)", margin: "4px 0" }} />
+  );
+
+  const renderLabel = (text: string) => (
+    <div style={{ padding: "4px 10px", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--color-text-muted)", fontWeight: 600 }}>
+      {text}
+    </div>
+  );
 
   return (
-    <div>
-      {depth > 0 && (
-        <button
-          onClick={() => onNavigate(path)}
-          className={`${styles.treeItem} ${isActive ? styles.treeItemActive : ""} ${isAncestor ? styles.treeItemAncestor : ""}`}
-          style={{ paddingLeft: `${12 + (depth - 1) * 14}px` }}
-        >
-          <Folder size={14} style={{ color: node.color ?? "#60a5fa" }} />
-          <span className={styles.treeLabel}>{node.name}</span>
-        </button>
-      )}
-      <div>
-        {folders.map((f) => (
-          <Tree
-            key={f.id}
-            node={f}
-            path={[...path, f.id]}
-            currentPath={currentPath}
-            onNavigate={onNavigate}
-            depth={depth + 1}
-          />
-        ))}
-      </div>
-    </div>
+    <>
+      <motion.div
+        ref={menuRef}
+        style={popupStyle}
+        initial={{ opacity: 0, scale: 0.92, y: -4 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.92, y: -4 }}
+        transition={{ duration: 0.12, ease: "easeOut" }}
+      >
+        {renderLabel("Действия")}
+        {renderItem(FolderOpen, "Открыть", () => { if (item.isDir) onOpen(); else onClose(); })}
+        {!item.isDir && renderItem(Eye, "Просмотр", () => { onPreview(); onClose(); }, { shortcut: "Пробел" })}
+        {!item.isDir && renderItem(Download, "Скачать", () => { onDownload(); onClose(); }, { shortcut: "⌘+S" })}
+
+        {renderSeparator("sep1")}
+
+        {renderLabel("Правка")}
+        {renderItem(Edit3, "Переименовать", () => { onRename(); onClose(); }, { shortcut: "⌘+R" })}
+        {renderItem(Copy, "Копировать", () => { onCopy(); onClose(); }, { shortcut: "⌘+C" })}
+        {renderItem(Scissors, "Переместить", () => { onMove(); onClose(); }, { shortcut: "⌘+X" })}
+
+        {renderSeparator("sep2")}
+        {renderLabel("Поделиться")}
+        {renderItem(Share2, "Поделиться ссылкой", () => { onShare(); onClose(); })}
+
+        {renderSeparator("sep3")}
+        {renderItem(Trash2, "Удалить", () => { onDelete(); onClose(); }, { danger: true, shortcut: "⌫" })}
+      </motion.div>
+      <div style={{ position: "fixed", inset: 0, zIndex: 100 }} onClick={onClose} />
+    </>
   );
 }
 
-/* ---------- Элемент сетки ---------- */
+/* ─── Folder tree sidebar ────────────────────────────────────────────── */
+
+interface TreeNode {
+  id: string; name: string; isDir: boolean;
+  children: TreeNode[]; hasChildren: boolean; loaded: boolean;
+}
+
+const FolderTreeSidebar: React.FC<{
+  currentPath: string;
+  onNavigate: (path: string) => void;
+  refreshKey: string;
+}> = ({ currentPath, onNavigate, refreshKey }) => {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [rootNodes, setRootNodes] = useState<TreeNode[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  const loadDir = useCallback(async (path: string): Promise<TreeNode[]> => {
+    try {
+      const files = await fileApi.listFiles(path);
+      return files.map((f) => ({
+        id: f.path, name: f.name, isDir: f.isDir,
+        children: [], hasChildren: f.isDir, loaded: false,
+      }));
+    } catch (e) {
+      logger.error("files", "Tree load error", e);
+      return [];
+    }
+  }, []);
+
+  const loadRoot = useCallback(async () => {
+    setLoading(true);
+    const nodes = await loadDir("");
+    setRootNodes(nodes);
+    setLoading(false);
+  }, [loadDir]);
+
+  useEffect(() => { loadRoot(); }, [refreshKey, loadRoot]);
+
+  const toggleExpand = useCallback(async (node: TreeNode, fullPath: string) => {
+    if (!node.isDir) return;
+    const key = fullPath;
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+    if (!node.loaded) {
+      const children = await loadDir(fullPath);
+      const updateNodes = (nodes: TreeNode[]): TreeNode[] => nodes.map((candidate) => {
+        if (candidate.id === fullPath) return { ...candidate, children, loaded: true };
+        return candidate.children.length > 0
+          ? { ...candidate, children: updateNodes(candidate.children) }
+          : candidate;
+      });
+      setRootNodes(updateNodes);
+    }
+  }, [loadDir]);
+
+  const renderTree = (nodes: TreeNode[], depth = 0) =>
+    nodes.map((node) => {
+      const fullPath = node.id;
+      const isDir = node.isDir;
+      const isExpanded = expanded.has(fullPath);
+      const isActive = currentPath === fullPath;
+      return (
+        <div key={fullPath}>
+          <button
+            onClick={() => {
+              if (isDir) {
+                onNavigate(fullPath);
+                void toggleExpand(node, fullPath);
+              }
+            }}
+            style={{
+              display: "flex", alignItems: "center", gap: 8,
+              paddingLeft: `${10 + depth * 14}px`, paddingRight: 10,
+              height: 30, borderRadius: "var(--radius-sm)",
+              background: isActive ? "var(--color-accent-soft)" : "transparent",
+              border: "1px solid transparent",
+              color: isActive ? "var(--color-accent)" : "var(--color-text-secondary)",
+              cursor: "pointer", fontSize: 12, width: "100%", textAlign: "left",
+              transition: "background 0.15s, color 0.15s",
+            }}
+            onMouseEnter={(e) => { if (!isActive) { e.currentTarget.style.background = "var(--color-glass-hover)"; e.currentTarget.style.color = "var(--color-text-primary)"; } }}
+            onMouseLeave={(e) => { if (!isActive) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "var(--color-text-secondary)"; } }}
+          >
+            {isDir && (
+              <ChevronRight size={12} style={{
+                transition: "transform 0.15s",
+                transform: isExpanded ? "rotate(90deg)" : "none",
+                color: isActive ? "var(--color-accent)" : "var(--color-text-muted)",
+              }} />
+            )}
+            <Folder size={13} style={{ color: "var(--color-accent)" }} />
+            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.name}</span>
+          </button>
+          {isDir && isExpanded && node.children.length > 0 && (
+            <div>{renderTree(node.children, depth + 1)}</div>
+          )}
+        </div>
+      );
+    });
+
+  return (
+    <div style={{ flex: 1, overflowY: "auto", padding: "12px 0" }}>
+      <div style={{ padding: "0 12px 8px 12px", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.08em", color: MUTED, fontWeight: 600 }}>
+        Папки
+      </div>
+      {loading ? (
+        <div style={{ padding: "8px 12px", fontSize: 12, color: MUTED }}>Загрузка…</div>
+      ) : (
+        renderTree(rootNodes, 0)
+      )}
+    </div>
+  );
+};
+
+/* ─── Grid item ───────────────────────────────────────────────────────── */
+
 function GridItem({
-  item, selected, starred, onClick, onOpen,
+  item, selected, onClick, onDoubleClick, onContextMenu, onView,
 }: {
-  item: FileNode;
-  selected: boolean;
-  starred: boolean;
-  onClick: () => void;
-  onOpen: () => void;
+  item: FileInfo; selected: boolean;
+  onClick: (e: React.MouseEvent) => void; onDoubleClick: () => void;
+  onContextMenu: (e: React.MouseEvent) => void; onView: () => void;
 }) {
-  const Icon = iconFor(item.type);
-  const color = colorFor(item.type, item.color);
+  const Icon = iconFor(item);
+  const color = colorFor(item);
+  const isPreviewable = !item.isDir && (
+    item.mimeType?.startsWith("image/") ||
+    item.mimeType?.startsWith("video/") ||
+    item.mimeType?.startsWith("audio/") ||
+    item.mimeType?.startsWith("text/") ||
+    item.mimeType === "application/pdf" ||
+    item.mimeType === "application/json"
+  );
 
   return (
     <div
       className={`${styles.gridItem} ${selected ? styles.gridItemSelected : ""}`}
       onClick={onClick}
-      onDoubleClick={onOpen}
+      onDoubleClick={onDoubleClick}
+      onContextMenu={onContextMenu}
+      tabIndex={0}
+      role="button"
+      aria-selected={selected}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          e.stopPropagation();
+          onClick(e as unknown as React.MouseEvent);
+        }
+      }}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 8,
+        textAlign: "center",
+        position: "relative",
+        overflow: "hidden",
+      }}
     >
-      <div className={styles.gridThumb} style={{ "--thumb-color": color } as React.CSSProperties}>
-        <Icon size={30} strokeWidth={1.4} />
-        {starred && <Star size={12} className={styles.gridStar} fill="currentColor" />}
+      <div
+        className={styles.gridThumb}
+        style={{
+          width: 72, height: 72, borderRadius: "var(--radius-md)",
+          "--thumb-color": color,
+          display: "grid",
+          placeItems: "center",
+          position: "relative",
+          transition: "transform 0.15s, box-shadow 0.15s",
+        } as React.CSSProperties}
+      >
+        <Icon size={34} strokeWidth={1.3} />
+        {item.isDir && item.sizeBytes > 0 && (
+          <span
+            className={styles.typeBadge}
+            style={{ background: "var(--color-accent-soft)", color: "var(--color-accent)" }}
+          >
+            {item.sizeBytes}
+          </span>
+        )}
       </div>
-      <div className={styles.gridName} title={item.name}>{item.name}</div>
-      <div className={styles.gridMeta}>{item.size ?? `${item.children?.length ?? 0} эл.`}</div>
+      <div className={styles.gridName} title={item.name} style={{ fontSize: 13, width: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {item.name}
+      </div>
+      <div className={styles.gridMeta} style={{ fontSize: 11 }}>
+        {item.isDir ? `${item.sizeBytes || 0} эл.` : formatBytes(item.sizeBytes)}
+      </div>
+      {!item.isDir && isPreviewable && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onView(); }}
+          className={styles.gridPreviewBtn}
+          title="Просмотр"
+          style={{
+            opacity: 1,
+            transform: "scale(1)",
+            transition: "opacity 0.15s, transform 0.15s",
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.12)"; e.currentTarget.style.transform = "scale(1.08)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(0,0,0,0.3)"; e.currentTarget.style.transform = "scale(1)"; }}
+          onMouseDown={(e) => { e.currentTarget.style.transform = "scale(0.9)"; }}
+          onMouseUp={(e) => { e.currentTarget.style.transform = "scale(1.08)"; }}
+        >
+          <FileText size={11} />
+        </button>
+      )}
     </div>
   );
 }
 
-/* ---------- Элемент списка ---------- */
+/* ─── List item ───────────────────────────────────────────────────────── */
+
 function ListItem({
-  item, selected, starred, onClick, onOpen, onStar,
+  item, selected, onClick, onDoubleClick, onContextMenu, onView,
 }: {
-  item: FileNode;
-  selected: boolean;
-  starred: boolean;
-  onClick: () => void;
-  onOpen: () => void;
-  onStar: () => void;
+  item: FileInfo; selected: boolean;
+  onClick: (e: React.MouseEvent) => void; onDoubleClick: () => void;
+  onContextMenu: (e: React.MouseEvent) => void; onView: () => void;
 }) {
-  const Icon = iconFor(item.type);
-  const color = colorFor(item.type, item.color);
+  const Icon = iconFor(item);
+  const color = colorFor(item);
 
   return (
     <div
       className={`${styles.listRow} ${selected ? styles.listRowSelected : ""}`}
       onClick={onClick}
-      onDoubleClick={onOpen}
+      onDoubleClick={onDoubleClick}
+      onContextMenu={onContextMenu}
+      tabIndex={0}
+      role="button"
+      aria-selected={selected}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          e.stopPropagation();
+          onClick(e as unknown as React.MouseEvent);
+        }
+      }}
+      style={{
+        display: "grid",
+        gridTemplateColumns: "1fr 120px 100px 40px",
+        padding: "10px 14px",
+        fontSize: 13,
+        alignItems: "center",
+        cursor: "pointer",
+        borderBottom: "1px solid var(--color-glass-border)",
+        background: selected ? "var(--color-accent-soft)" : "var(--color-glass-surface)",
+        transition: "background 0.15s",
+      }}
+      onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = "var(--color-glass-hover)"; }}
+      onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = "var(--color-glass-surface)"; }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-        <div
+        <motion.div
           style={{
             width: 28, height: 28, borderRadius: 8, flexShrink: 0,
             display: "grid", placeItems: "center", color,
             background: `color-mix(in srgb, ${color} 14%, transparent)`,
           }}
+          whileHover={{ scale: 1.08 }}
+          transition={{ duration: 0.12 }}
         >
           <Icon size={15} strokeWidth={1.6} />
-        </div>
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        </motion.div>
+        <span
+          style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: PRIMARY }}
+          title={item.name}
+        >
           {item.name}
         </span>
+        {item.isDir && (
+          <span style={{ fontSize: 11, color: MUTED, marginLeft: 6 }}>(директория)</span>
+        )}
       </div>
-      <div style={{ color: SECONDARY }}>{item.modified}</div>
-      <div style={{ color: SECONDARY }}>{item.size ?? `${item.children?.length ?? 0} эл.`}</div>
-      <div>
-        <button
-          className={styles.viewBtn}
-          style={{ width: 26, height: 24 }}
-          title="Избранное"
-          onClick={(e) => { e.stopPropagation(); onStar(); }}
-        >
-          <Star
-            size={13}
-            fill={starred ? "currentColor" : "none"}
-            style={{ color: starred ? "var(--color-warning)" : undefined }}
-          />
-        </button>
+      <div style={{ color: SECONDARY, fontSize: 12 }}>{formatTimeAgo(item.updatedAt)}</div>
+      <div style={{ color: SECONDARY, fontSize: 12 }}>
+        {item.isDir ? "—" : formatBytes(item.sizeBytes)}
       </div>
-    </div>
-  );
-}
-
-/* ---------- Пустое состояние ---------- */
-function EmptyState({ title, sub }: { title: string; sub: string }) {
-  return (
-    <div
-      className={styles.panel}
-      style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, padding: "44px 20px" }}
-    >
-      <Folder size={42} strokeWidth={1.1} style={{ color: MUTED }} />
-      <div style={{ fontSize: 13, fontWeight: 600, color: SECONDARY, marginTop: 6 }}>{title}</div>
-      <div style={{ fontSize: 12, color: MUTED }}>{sub}</div>
+      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        {!item.isDir && (
+          <motion.button
+            onClick={(e) => { e.stopPropagation(); onView(); }}
+            style={{
+              width: 24, height: 22, borderRadius: "var(--radius-sm)",
+              background: "transparent", border: "1px solid var(--color-surface-border)",
+              color: "var(--color-text-secondary)", cursor: "pointer",
+              display: "grid", placeItems: "center",
+            }}
+            whileHover={{ background: "var(--color-glass-hover)", color: PRIMARY }}
+            title="Просмотр"
+          >
+            <FileText size={11} />
+          </motion.button>
+        )}
+      </div>
     </div>
   );
 }

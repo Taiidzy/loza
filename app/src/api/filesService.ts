@@ -1,0 +1,173 @@
+import { invoke } from "@tauri-apps/api/core";
+import { BatchOperation, BatchResponse, CreatedShare, FileInfo, MoveRequest, CopyRequest, PathUploadResult, ShareInfo } from "../types/files";
+import { logger } from "../shared/utils/logger";
+
+/**
+ * Tauri deserializes binary command results as a typed-array view. Copy exactly
+ * that view into a fresh ArrayBuffer before creating a Blob: its backing store
+ * may otherwise be a SharedArrayBuffer or include bytes outside the view.
+ */
+export function blobFromBytes(bytes: Uint8Array, type = "application/octet-stream"): Blob {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return new Blob([buffer], { type });
+}
+
+function toUint8Array(payload: unknown): Uint8Array {
+  if (payload instanceof Uint8Array) return payload;
+  if (Array.isArray(payload) && payload.every((value) => Number.isInteger(value) && value >= 0 && value <= 255)) {
+    return Uint8Array.from(payload);
+  }
+  throw new Error("PARSE_ERROR: the file response did not contain binary data");
+}
+
+export class FileApiService {
+  // ── List & Info ──────────────────────────────────────────────────────
+
+  async listFiles(path: string): Promise<FileInfo[]> {
+    logger.info("files", "invoke(list_files)", { path });
+    return await invoke<FileInfo[]>("list_files", { path });
+  }
+
+  async searchFiles(query: string, path: string = ""): Promise<FileInfo[]> {
+    logger.info("files", "invoke(search_files)", { query, path });
+    return await invoke<FileInfo[]>("search_files", { query, path });
+  }
+
+  async getFileInfo(path: string): Promise<FileInfo> {
+    logger.info("files", "invoke(get_file_info)", { path });
+    return await invoke<FileInfo>("get_file_info", { path });
+  }
+
+  // ── Upload ───────────────────────────────────────────────────────────
+
+  async uploadFile(
+    path: string,
+    filename: string,
+    data: Uint8Array,
+    overwrite = false,
+    progressId?: string
+  ): Promise<FileInfo> {
+    logger.info("files", "invoke(upload_file)", { path, filename, size: data.byteLength, overwrite });
+    return await invoke<FileInfo>("upload_file", {
+      path,
+      filename,
+      data,
+      overwrite,
+      progressId,
+    });
+  }
+
+  async uploadPaths(paths: string[], destination?: string): Promise<PathUploadResult[]> {
+    logger.info("files", "invoke(upload_paths)", { count: paths.length, destination });
+    return await invoke<PathUploadResult[]>("upload_paths", {
+      paths,
+      destination: destination ?? null,
+    });
+  }
+
+  /** Стриминговый upload одного файла по абсолютному OS-пути (диалог выбора). */
+  async uploadFilePath(
+    osPath: string,
+    destination: string,
+    progressId: string,
+    overwrite = false
+  ): Promise<FileInfo> {
+    logger.info("files", "invoke(upload_file_path)", { osPath, destination, overwrite });
+    return await invoke<FileInfo>("upload_file_path", {
+      osPath,
+      destination,
+      progressId,
+      overwrite,
+    });
+  }
+
+  // ── Shares ────────────────────────────────────────────────────────────
+
+  async createShare(path: string, password?: string): Promise<CreatedShare> {
+    logger.info("files", "invoke(create_share)", { path });
+    return await invoke<CreatedShare>("create_share", { path, password: password ?? null });
+  }
+
+  async listShares(path?: string): Promise<ShareInfo[]> {
+    logger.info("files", "invoke(list_shares)", { path: path || "" });
+    return await invoke<ShareInfo[]>("list_shares", { path: path ?? null });
+  }
+
+  async revokeShare(token: string): Promise<void> {
+    logger.info("files", "invoke(revoke_share)", { token });
+    return await invoke<void>("revoke_share", { token });
+  }
+
+  async getShareUrl(token: string): Promise<string> {
+    logger.info("files", "invoke(get_share_url)", { token });
+    return await invoke<string>("get_share_url", { token });
+  }
+
+  async cancelTransfer(progressId: string): Promise<boolean> {
+    logger.info("files", "invoke(cancel_transfer)", { progressId });
+    return await invoke<boolean>("cancel_transfer", { progressId });
+  }
+
+  // ── Download ─────────────────────────────────────────────────────────
+
+  async downloadFile(path: string, progressId?: string): Promise<Uint8Array> {
+    logger.info("files", "invoke(download_file)", { path });
+    // Tauri may deserialize Rust Vec<u8> as either a Uint8Array or a JSON
+    // number array depending on the WebView bridge. Normalize both forms.
+    return toUint8Array(await invoke<unknown>("download_file", { path, progressId }));
+  }
+
+  async downloadFileToDownloads(path: string, filename: string, progressId?: string): Promise<string> {
+    logger.info("files", "invoke(download_file_to_downloads)", { path, filename });
+    return await invoke<string>("download_file_to_downloads", { path, filename, progressId });
+  }
+
+  // ── View (in-memory for preview) ─────────────────────────────────────
+
+  async viewFile(path: string): Promise<Blob> {
+    const bytes = await this.downloadFile(path);
+    return blobFromBytes(bytes);
+  }
+
+  // ── Delete ────────────────────────────────────────────────────────────
+
+  async deleteFile(path: string): Promise<void> {
+    logger.info("files", "invoke(delete_file)", { path });
+    await invoke<void>("delete_file", { path });
+  }
+
+  // ── Rename / Move / Copy ──────────────────────────────────────────────
+
+  async renameFile(from: string, to: string): Promise<FileInfo> {
+    logger.info("files", "invoke(rename_file)", { from, to });
+    const req: MoveRequest = { from, to };
+    return await invoke<FileInfo>("rename_file", { req });
+  }
+
+  async moveFile(from: string, to: string): Promise<FileInfo> {
+    logger.info("files", "invoke(move_file)", { from, to });
+    const req: MoveRequest = { from, to };
+    return await invoke<FileInfo>("move_file", { req });
+  }
+
+  async copyFile(from: string, to: string): Promise<FileInfo> {
+    logger.info("files", "invoke(copy_file)", { from, to });
+    const req: CopyRequest = { from, to };
+    return await invoke<FileInfo>("copy_file", { req });
+  }
+
+  // ── Mkdir ─────────────────────────────────────────────────────────────
+
+  async createDir(path: string): Promise<FileInfo> {
+    logger.info("files", "invoke(create_dir)", { path });
+    return await invoke<FileInfo>("create_dir", { path });
+  }
+
+  async mutateFiles(operation: BatchOperation, paths: string[], destination?: string): Promise<BatchResponse> {
+    logger.info("files", "invoke(mutate_files)", { operation, count: paths.length, destination });
+    return await invoke<BatchResponse>("mutate_files", { operation, paths, destination: destination ?? null });
+  }
+}
+
+export const fileApi = new FileApiService();

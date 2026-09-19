@@ -6,9 +6,10 @@ mod models;
 use axum::{
     Router,
     extract::DefaultBodyLimit,
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
 };
 use std::net::SocketAddr;
+use tower_http::services::ServeDir;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 
@@ -74,6 +75,12 @@ async fn main() {
     });
     let state = AppState::new(pool, config);
 
+    // Реконсиляция «БД ⇄ диск» — стартует в фоне, не блокируя сервер.
+    let reconcile_pool = state.pool.clone();
+    tokio::spawn(async move {
+        db::consistency::reconcile_storage(&reconcile_pool).await;
+    });
+
     let app = Router::new()
         .route("/health", get(handlers::auth::health))
         .route("/auth/login", post(handlers::auth::login))
@@ -91,9 +98,70 @@ async fn main() {
             "/calendar/events/:id",
             put(handlers::calendar::update_event).delete(handlers::calendar::delete_event),
         )
+        // File API — HTTP (не WebSocket) с поддержкой потоковой передачи.
+        // 500 MB лимит тела для файловых операций (загрузка файлов).
+        // multipart уже стримится на диск по чанкам, лимит только для
+        // защиты от злоупотреблений.
+        .nest(
+            "/files",
+            Router::new()
+                .route("/list", get(handlers::files::list_files))
+                .route("/search", get(handlers::files::search_files))
+                .route("/info", get(handlers::files::file_info))
+                .route("/upload", post(handlers::files::upload_file))
+                .route("/download", get(handlers::files::download_file))
+                .route("/view", get(handlers::files::view_file))
+                .route("/delete", delete(handlers::files::delete_file))
+                .route("/rename", post(handlers::files::rename_file))
+                .route("/move", post(handlers::files::move_file))
+                .route("/copy", post(handlers::files::copy_file))
+                .route("/batch", post(handlers::files::batch_files))
+                .route("/mkdir", post(handlers::files::create_dir))
+                // Управление share-ссылками (auth).
+                .route("/share", post(handlers::shares::create_share))
+                .route("/shares", get(handlers::shares::list_shares))
+                .route("/share/revoke", delete(handlers::shares::revoke_share))
+                .layer(DefaultBodyLimit::max(500 * 1024 * 1024)),
+        )
         .layer(DefaultBodyLimit::max(16 * 1024))
-        .layer(TraceLayer::new_for_http())
-        .with_state(state);
+        .layer(TraceLayer::new_for_http());
+
+    // Публичные share-ссылки. При наличии собранного share-viewer-web
+    // сервер раздаёт SPA + password-API; без него — legacy: `/share/:token`
+    // отдаёт тело файла inline. В обоих режимах `/share` (без токена) не
+    // имеет маршрута и отдаёт 404 — индекс ссылок никогда не экспонируется.
+    let app = match state.config.share_web_dir.as_ref() {
+        Some(web_dir) => app
+            .route("/share/:token", get(handlers::shares::share_page))
+            .route(
+                "/share/api/:token/meta",
+                get(handlers::shares::share_meta),
+            )
+            .route(
+                "/share/api/:token/unlock",
+                post(handlers::shares::share_unlock),
+            )
+            .route(
+                "/share/api/:token/list",
+                get(handlers::shares::share_list),
+            )
+            .route(
+                "/share/api/:token/download",
+                get(handlers::shares::share_download_public),
+            )
+            .route(
+                "/share/api/:token/preview",
+                get(handlers::shares::share_preview),
+            )
+            .nest_service("/share-app", ServeDir::new(web_dir)),
+        None => app
+            .route("/share/:token", get(handlers::shares::share_view))
+            .route(
+                "/share/:token/download",
+                get(handlers::shares::share_download),
+            ),
+    }
+    .with_state(state);
 
     tracing::info!(address = %addr, "Loza server started");
 

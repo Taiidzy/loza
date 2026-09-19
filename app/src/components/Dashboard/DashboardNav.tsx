@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import styles from "../../pages/dashboard/DashboardPage.module.css";
 
 /** Разделы дашборда, доступные через сайдбар/таббар. */
-export type DashboardSection = "dashboard" | "activity" | "loza" | "settings";
+export type DashboardSection = "dashboard" | "activity" | "loza" | "shares" | "settings";
 
 interface NavEntryProps {
   icon: ReactNode;
@@ -14,7 +14,7 @@ interface NavEntryProps {
 /** Пункт навигации в боковой панели (десктоп). */
 export function NavItem({ icon, label, active, onClick }: NavEntryProps) {
   return (
-    <button onClick={onClick} className={`${styles.navItem} ${active ? styles.active : ""}`}>
+    <button onClick={onClick} className={`${styles.navItem} ${active ? styles.active : ""}`} aria-current={active ? "page" : undefined}>
       {icon}
       {label}
     </button>
@@ -24,7 +24,7 @@ export function NavItem({ icon, label, active, onClick }: NavEntryProps) {
 /** Пункт навигации в нижнем таббаре (мобильный). */
 export function TabItem({ icon, label, active, onClick }: NavEntryProps) {
   return (
-    <button onClick={onClick} className={`${styles.tabItem} ${active ? styles.active : ""}`}>
+    <button onClick={onClick} className={`${styles.tabItem} ${active ? styles.active : ""}`} aria-current={active ? "page" : undefined}>
       {icon}
       {label}
     </button>

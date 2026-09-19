@@ -16,13 +16,13 @@
 
 import Foundation
 
-struct ActivityEventDTO: Decodable {
+struct ActivityEventDTO: Decodable, Sendable {
     let time: String
     let msg: String
     let type: String // "info" | "ok" | "warn" | "error"
 }
 
-struct ClientInfoDTO: Decodable {
+struct ClientInfoDTO: Decodable, Sendable {
     let id: String
     let name: String
     let device: String
@@ -30,27 +30,27 @@ struct ClientInfoDTO: Decodable {
     let lastSeen: String // ISO8601
 }
 
-struct StorageCategoryDTO: Decodable {
+struct StorageCategoryDTO: Decodable, Sendable {
     let id: String
     let label: String
     let bytes: UInt64
     let color: String // "#rrggbb"
 }
 
-struct StorageInfoDTO: Decodable {
+struct StorageInfoDTO: Decodable, Sendable {
     let totalBytes: UInt64
     let usedBytes: UInt64
     let categories: [StorageCategoryDTO]
     let history7d: [Double]
 }
 
-struct LoadInfoDTO: Decodable {
+struct LoadInfoDTO: Decodable, Sendable {
     let cpuPercent: Double
     let memPercent: Double
     let history: [Double]
 }
 
-struct ServerStatusDTO: Decodable {
+struct ServerStatusDTO: Decodable, Sendable {
     let clients: [ClientInfoDTO]
     let storage: StorageInfoDTO
     let load: LoadInfoDTO

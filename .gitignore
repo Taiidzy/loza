@@ -13,12 +13,16 @@ app/node_modules/
 app/dist/
 app/dist-ssr/
 
+share-viewer-web/node_modules/
+share-viewer-web/dist/
+
 app/src-tauri/target/
 app/src-tauri/gen/schemas/
 
 backend/target/
 backend/.env
 backend/storage/
+storage/
 
 loza-data/
 mobile/ios/Loza.xcodeproj/project.xcworkspace/xcuserdata/

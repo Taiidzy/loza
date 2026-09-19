@@ -19,7 +19,7 @@ export default function Activity({}) {
   // CRUD-колбэки и открывают модальные окна вместо инлайн-редактирования.
   const startDate = currentDate.startOf("month").startOf("week");
   const endDate = currentDate.endOf("month").endOf("week");
-  const { events, isLoading, createEvent, updateEvent, deleteEvent, getEventsForDay, eventSlots, upcoming } =
+  const { events, isLoading, error, createEvent, updateEvent, deleteEvent, getEventsForDay, eventSlots, upcoming, reload } =
     useCalendarEvents(startDate, endDate);
 
   const selectedDayEvents: ExpandedCalendarEvent[] = selectedDate
@@ -33,8 +33,10 @@ export default function Activity({}) {
   const [agendaModal, setAgendaModal] = useState<
     { kind: "none" } | { kind: "details"; event: ExpandedCalendarEvent } | { kind: "edit"; event: ExpandedCalendarEvent }
   >({ kind: "none" });
+  const [agendaError, setAgendaError] = useState<string | null>(null);
 
   const handleAgendaSelect = (evt: ExpandedCalendarEvent) => {
+    setAgendaError(null);
     setAgendaModal({ kind: "details", event: evt });
   };
 
@@ -44,8 +46,19 @@ export default function Activity({}) {
   const handleAgendaDelete = async (evt: ExpandedCalendarEvent) => {
     const original = agendaOriginalEvent(evt);
     if (!original) return;
-    await deleteEvent(original.id);
-    setAgendaModal({ kind: "none" });
+    if (evt.recurrence !== 'none') {
+      const confirmed = window.confirm(
+        'Это повторяющееся событие. Будут удалены ВСЕ его вхождения, а не только это. Продолжить?'
+      );
+      if (!confirmed) return;
+    }
+    try {
+      await deleteEvent(original.id);
+      setAgendaModal({ kind: "none" });
+      setAgendaError(null);
+    } catch (err) {
+      setAgendaError(err instanceof Error ? err.message : "Не удалось удалить событие");
+    }
   };
 
   return (
@@ -66,6 +79,8 @@ export default function Activity({}) {
             eventSlots={eventSlots}
             isLoading={isLoading}
             hasAnyEvents={events.length > 0}
+            error={error}
+            onRetry={reload}
           />
         </div>
 
@@ -97,7 +112,11 @@ export default function Activity({}) {
       {/* Модалки для событий, открытых из agenda-панели */}
       <EventDetailsModal
         event={agendaModal.kind === "details" ? agendaModal.event : null}
-        onEdit={() => agendaModal.kind === "details" && setAgendaModal({ kind: "edit", event: agendaModal.event })}
+        error={agendaModal.kind === "details" ? agendaError : null}
+        onEdit={() => {
+          setAgendaError(null);
+          if (agendaModal.kind === "details") setAgendaModal({ kind: "edit", event: agendaModal.event });
+        }}
         onDelete={() => agendaModal.kind === "details" && handleAgendaDelete(agendaModal.event)}
         onClose={() => setAgendaModal({ kind: "none" })}
       />

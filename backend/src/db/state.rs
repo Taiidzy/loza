@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use dashmap::DashMap;
 use sqlx::PgPool;
 use sysinfo::System;
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
 
 use crate::config::Config;
@@ -21,13 +21,29 @@ pub const STORAGE_HISTORY_DAYS: usize = 7;
 const LOGIN_FAILURE_WINDOW_SECS: u64 = 15 * 60;
 const MAX_LOGIN_FAILURES: u32 = 5;
 const MAX_LOGIN_RATE_LIMIT_ENTRIES: usize = 10_000;
+/// Брутфорс-защита для публичного `POST /share/api/:token/unlock`: пароль
+/// проверяется настолько дёшево для атакующего, насколько отличается от
+/// честного клиента (одна проверка = один argon2-хеш), поэтому сетка
+/// попыток по «ip + токен» не даёт перебирать пароль бесконечно.
+const SHARE_UNLOCK_FAILURE_WINDOW_SECS: u64 = 15 * 60;
+const MAX_SHARE_UNLOCK_FAILURES: u32 = 10;
+const MAX_SHARE_UNLOCK_RATE_LIMIT_ENTRIES: usize = 10_000;
 const STORAGE_CATEGORY_CACHE_SECS: u64 = 60;
 const MAX_STATUS_WS_CONNECTIONS: usize = 20;
 const MAX_APP_WS_CONNECTIONS: usize = 50;
+/// Сколько push-сообщений буферизуется на соединение, прежде чем новые push
+/// начнут отбрасываться. Push'и — fire-and-forget уведомления (клиент при
+/// необходимости перезагружает состояние), поэтому при отстающем/медленном
+/// клиенте лучше уронить сообщение, чем бесконечно копить память.
+/// Размер рассчитан так, чтобы даже самый большой /files/batch (до 1000
+/// операций, каждая с одним push) помещался в буфер без потерь.
+const WS_PUSH_CHANNEL_CAPACITY: usize = 1024;
 
 type WsMessage = axum::extract::ws::Message;
-type WsClientEntry = (Uuid, UnboundedSender<WsMessage>);
+type WsClientEntry = (Uuid, Sender<WsMessage>);
 pub type ClientRegistry = Arc<DashMap<String, Vec<WsClientEntry>>>;
+
+type StorageCategoryCache = (u64, Vec<StorageCategory>);
 
 #[derive(Clone, Copy)]
 struct LoginAttempt {
@@ -41,13 +57,14 @@ pub struct AppState {
     pub pool: PgPool,
     pub config: Config,
     login_attempts: Arc<Mutex<HashMap<String, LoginAttempt>>>,
+    share_unlock_attempts: Arc<Mutex<HashMap<String, LoginAttempt>>>,
     /// Общий sysinfo::System, переиспользуется между опросами (так рекомендует sysinfo).
     pub sys: Arc<Mutex<System>>,
     /// Кольцевой буфер последних замеров % загрузки CPU — источник LoadInfo.history.
     pub load_history: Arc<RwLock<Vec<f32>>>,
     /// Дневные замеры % занятости диска — источник StorageInfo.history7d.
     pub storage_history: Arc<RwLock<Vec<f32>>>,
-    storage_categories: Arc<Mutex<Option<(u64, Vec<StorageCategory>)>>>,
+    storage_categories: Arc<Mutex<Option<StorageCategoryCache>>>,
     status_ws_connections: Arc<AtomicUsize>,
     app_ws_connections: Arc<AtomicUsize>,
     /// username → list of (connection_id, sender) for broadcasting events.
@@ -64,6 +81,7 @@ impl AppState {
             pool,
             config,
             login_attempts: Arc::new(Mutex::new(HashMap::new())),
+            share_unlock_attempts: Arc::new(Mutex::new(HashMap::new())),
             sys: Arc::new(Mutex::new(System::new_all())),
             load_history: Arc::new(RwLock::new(Vec::with_capacity(LOAD_HISTORY_CAPACITY))),
             storage_history: Arc::new(RwLock::new(Vec::with_capacity(STORAGE_HISTORY_DAYS))),
@@ -161,6 +179,57 @@ impl AppState {
         }
     }
 
+    /// Возвращает true, если для данного ip+токена накоплено слишком много
+    /// неудачных попыток разблокировки и действует блокировка.
+    pub fn is_share_unlock_rate_limited(&self, ip: IpAddr, token: &str, now: u64) -> bool {
+        let Ok(attempts) = self.share_unlock_attempts.lock() else {
+            return true;
+        };
+        attempts
+            .get(&share_unlock_key(ip, token))
+            .is_some_and(|attempt| attempt.blocked_until > now)
+    }
+
+    pub fn record_share_unlock_failure(&self, ip: IpAddr, token: &str, now: u64) {
+        let Ok(mut attempts) = self.share_unlock_attempts.lock() else {
+            return;
+        };
+        if attempts.len() >= MAX_SHARE_UNLOCK_RATE_LIMIT_ENTRIES {
+            attempts.retain(|_, attempt| {
+                now.saturating_sub(attempt.window_started_at) < SHARE_UNLOCK_FAILURE_WINDOW_SECS
+                    || attempt.blocked_until > now
+            });
+            if attempts.len() >= MAX_SHARE_UNLOCK_RATE_LIMIT_ENTRIES {
+                return;
+            }
+        }
+
+        let attempt = attempts
+            .entry(share_unlock_key(ip, token))
+            .or_insert(LoginAttempt {
+                failures: 0,
+                window_started_at: now,
+                blocked_until: 0,
+            });
+        if now.saturating_sub(attempt.window_started_at) >= SHARE_UNLOCK_FAILURE_WINDOW_SECS {
+            *attempt = LoginAttempt {
+                failures: 0,
+                window_started_at: now,
+                blocked_until: 0,
+            };
+        }
+        attempt.failures += 1;
+        if attempt.failures >= MAX_SHARE_UNLOCK_FAILURES {
+            attempt.blocked_until = now + SHARE_UNLOCK_FAILURE_WINDOW_SECS;
+        }
+    }
+
+    pub fn clear_share_unlock_failures(&self, ip: IpAddr, token: &str) {
+        if let Ok(mut attempts) = self.share_unlock_attempts.lock() {
+            attempts.remove(&share_unlock_key(ip, token));
+        }
+    }
+
     pub fn storage_categories(&self, now: u64) -> Vec<StorageCategory> {
         let Ok(mut cached) = self.storage_categories.lock() else {
             return Vec::new();
@@ -220,9 +289,9 @@ impl AppState {
         self.app_ws_connections.fetch_sub(1, Ordering::AcqRel);
     }
 
-    pub fn register_ws_client(&self, username: &str) -> (Uuid, tokio::sync::mpsc::UnboundedReceiver<WsMessage>) {
+    pub fn register_ws_client(&self, username: &str) -> (Uuid, tokio::sync::mpsc::Receiver<WsMessage>) {
         let conn_id = Uuid::new_v4();
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, rx) = tokio::sync::mpsc::channel(WS_PUSH_CHANNEL_CAPACITY);
         self.ws_clients
             .entry(username.to_string())
             .or_default()
@@ -242,14 +311,33 @@ impl AppState {
     pub fn broadcast_to_user(&self, username: &str, message: WsMessage) {
         if let Some(clients) = self.ws_clients.get(username) {
             for (_id, tx) in clients.iter() {
-                let _ = tx.send(message.clone());
+                // try_send: если клиент не успевает читать push-сообщения,
+                // пропускаем уведомление вместо блокировки продюсера или
+                // неограниченного роста очереди.
+                let _ = tx.try_send(message.clone());
             }
         }
+    }
+
+    /// Broadcast a push message to all connections of a given user.
+    pub fn broadcast_push(&self, username: &str, push: serde_json::Value) {
+        let json = match serde_json::to_string(&push) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to serialize file push message");
+                return;
+            }
+        };
+        self.broadcast_to_user(username, WsMessage::Text(json));
     }
 }
 
 fn login_attempt_key(ip: IpAddr, username: &str) -> String {
     format!("{ip}:{}", username.chars().take(32).collect::<String>())
+}
+
+fn share_unlock_key(ip: IpAddr, token: &str) -> String {
+    format!("{ip}:{}", token.chars().take(16).collect::<String>())
 }
 
 #[cfg(test)]
@@ -269,6 +357,7 @@ mod tests {
                 jwt_secret: "a_secure_test_secret_that_is_long_enough".to_string(),
                 port: 4242,
                 trust_proxy_headers: false,
+                share_web_dir: None,
             },
         )
     }

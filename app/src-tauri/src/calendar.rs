@@ -19,6 +19,16 @@ use tauri::AppHandle;
 use crate::server_config;
 use crate::session_store;
 use crate::LozaState;
+use crate::ws_client::ERR_WS_NOT_INITIALIZED;
+
+/// Whether it is safe to retry a mutating operation over HTTP after a WS
+/// failure. Only a "WebSocket client is not initialized" failure guarantees
+/// the request never reached the server. Timeouts and disconnects are
+/// ambiguous (the server may already have applied the mutation), so retrying
+/// over HTTP could double-execute it.
+fn ws_safe_to_fallback(err: &str) -> bool {
+    err == ERR_WS_NOT_INITIALIZED
+}
 
 // ─── Types (mirror backend/src/models/event.rs) ───────────────────────────────
 
@@ -77,10 +87,18 @@ struct ServerErrorResponse {
     code: String,
 }
 
-fn describe_error(body: Option<ServerErrorResponse>, fallback: &str) -> String {
-    match body {
-        Some(e) => format!("{}: {}", e.code, e.error),
-        None => fallback.to_string(),
+/// Reads a non-success HTTP response body and produces a descriptive error.
+/// Tries to parse as `ServerErrorResponse`; if that fails, includes the
+/// HTTP status code and raw body text so diagnostics are never lost.
+async fn describe_http_error(resp: reqwest::Response, operation: &str) -> String {
+    let status = resp.status();
+    let body = resp.text().await.unwrap_or_default();
+    match serde_json::from_str::<ServerErrorResponse>(&body) {
+        Ok(e) => format!("{}: {}", e.code, e.error),
+        Err(_) => {
+            let reason = status.canonical_reason().unwrap_or("Unknown");
+            format!("HTTP {} {} ({}) — body: {}", status.as_u16(), reason, operation, body)
+        }
     }
 }
 
@@ -108,8 +126,7 @@ async fn http_get_events(
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
 
     if !resp.status().is_success() {
-        let err = resp.json::<ServerErrorResponse>().await.ok();
-        return Err(describe_error(err, "UNKNOWN: Failed to load events"));
+        return Err(describe_http_error(resp, "load events").await);
     }
 
     resp.json::<Vec<CalendarEvent>>()
@@ -133,8 +150,7 @@ async fn http_create_event(
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
 
     if !resp.status().is_success() {
-        let err = resp.json::<ServerErrorResponse>().await.ok();
-        return Err(describe_error(err, "UNKNOWN: Failed to create event"));
+        return Err(describe_http_error(resp, "create event").await);
     }
 
     resp.json::<CalendarEvent>()
@@ -158,8 +174,7 @@ async fn http_update_event(
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
 
     if !resp.status().is_success() {
-        let err = resp.json::<ServerErrorResponse>().await.ok();
-        return Err(describe_error(err, "UNKNOWN: Failed to update event"));
+        return Err(describe_http_error(resp, "update event").await);
     }
 
     resp.json::<CalendarEvent>()
@@ -182,8 +197,7 @@ async fn http_delete_event(
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
 
     if !resp.status().is_success() {
-        let err = resp.json::<ServerErrorResponse>().await.ok();
-        return Err(describe_error(err, "UNKNOWN: Failed to delete event"));
+        return Err(describe_http_error(resp, "delete event").await);
     }
 
     Ok(())
@@ -231,12 +245,17 @@ pub async fn create_calendar_event(
 
     let ws_result = state.ws.send_request("calendar.create", params).await;
 
-    if let Ok(result) = ws_result {
-        return serde_json::from_value::<CalendarEvent>(result)
-            .map_err(|e| format!("PARSE_ERROR: {}", e));
+    match ws_result {
+        Ok(result) => {
+            return serde_json::from_value::<CalendarEvent>(result)
+                .map_err(|e| format!("PARSE_ERROR: {}", e));
+        }
+        Err(err) if ws_safe_to_fallback(&err) => {
+            tracing::debug!("[desktop.calendar] WS not initialized, falling back to HTTP");
+        }
+        Err(err) => return Err(err),
     }
 
-    tracing::debug!("[desktop.calendar] WS failed, falling back to HTTP");
     http_create_event(&state, &token, &server_url, &draft).await
 }
 
@@ -256,12 +275,17 @@ pub async fn update_calendar_event(
 
     let ws_result = state.ws.send_request("calendar.update", params).await;
 
-    if let Ok(result) = ws_result {
-        return serde_json::from_value::<CalendarEvent>(result)
-            .map_err(|e| format!("PARSE_ERROR: {}", e));
+    match ws_result {
+        Ok(result) => {
+            return serde_json::from_value::<CalendarEvent>(result)
+                .map_err(|e| format!("PARSE_ERROR: {}", e));
+        }
+        Err(err) if ws_safe_to_fallback(&err) => {
+            tracing::debug!("[desktop.calendar] WS not initialized, falling back to HTTP");
+        }
+        Err(err) => return Err(err),
     }
 
-    tracing::debug!("[desktop.calendar] WS failed, falling back to HTTP");
     http_update_event(&state, &token, &server_url, &event).await
 }
 
@@ -281,7 +305,10 @@ pub async fn delete_calendar_event(
 
     match ws_result {
         Ok(_) => return Ok(()),
-        Err(e) => tracing::debug!("[desktop.calendar] WS failed: {}, falling back to HTTP", e),
+        Err(err) if ws_safe_to_fallback(&err) => {
+            tracing::debug!("[desktop.calendar] WS not initialized, falling back to HTTP");
+        }
+        Err(err) => return Err(err),
     }
 
     http_delete_event(&state, &token, &server_url, &id).await

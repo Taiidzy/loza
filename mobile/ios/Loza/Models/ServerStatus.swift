@@ -136,10 +136,10 @@ enum ServerStatusService {
     /// on mobile we simply poll (see DashboardView's pollTimer), which is
     /// simpler and battery-friendlier for a foregrounded screen.
     static func fetch() async throws -> ServerStatus {
-        guard let baseURL = await ServerConfig.shared.baseURL else {
+        guard let baseURL = ServerConfig.shared.baseURL else {
             throw AuthError.noServerConfigured
         }
-        guard let token = await SessionStore.shared.session?.token else {
+        guard let token = SessionStore.shared.session?.token else {
             throw AuthError.invalidCredentials
         }
         let dto = try await LozaAPIClient.shared.fetchStatus(baseURL: baseURL, token: token)

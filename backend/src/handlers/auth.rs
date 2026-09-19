@@ -219,10 +219,14 @@ pub async fn bootstrap_admin(pool: &sqlx::PgPool) -> Result<(), String> {
         role: ROLE_ADMIN.to_string(),
         quota_bytes: None,
     };
-    repository::create_user(pool, &user)
+    let created = repository::create_user(pool, &user)
         .await
         .map_err(|error| error.to_string())?;
-    tracing::info!(username = %user.username, "bootstrap administrator created");
+    if created {
+        tracing::info!(username = %user.username, "bootstrap administrator created");
+    } else {
+        tracing::info!(username = %user.username, "bootstrap administrator already exists; skipping");
+    }
     Ok(())
 }
 
@@ -289,6 +293,9 @@ pub async fn login(
         &user.display_name,
         &req.device,
     );
+    // Строка сессии живёт дольше самого JWT: это "окно" для /auth/refresh.
+    // Через 30 дней без продления сессия удаляется, и нужен повторный логин.
+    let session_expires_at = now + jwt::SESSION_TTL_SECS;
     let session = Session {
         public_id: Uuid::new_v4().to_string(),
         token: token.clone(),
@@ -296,7 +303,7 @@ pub async fn login(
         device: req.device,
         created_at: now,
         last_seen: now,
-        expires_at,
+        expires_at: session_expires_at,
     };
     repository::create_session(&state.pool, &token_hash(&token), &session)
         .await
@@ -312,15 +319,14 @@ pub async fn login(
 }
 
 fn client_ip(state: &AppState, headers: &axum::http::HeaderMap, remote_addr: SocketAddr) -> IpAddr {
-    if state.config.trust_proxy_headers {
-        if let Some(ip) = headers
+    if state.config.trust_proxy_headers
+        && let Some(ip) = headers
             .get("x-forwarded-for")
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.split(',').next())
             .and_then(|value| value.trim().parse().ok())
-        {
-            return ip;
-        }
+    {
+        return ip;
     }
     remote_addr.ip()
 }
@@ -363,25 +369,40 @@ pub async fn refresh(
     if old_token.is_empty() {
         return Err(unauthorized("NO_TOKEN", "Missing session token"));
     }
-    let (claims, old_session) = touch_session(&state, old_token)
+    let now = now_secs();
+
+    // Здесь мы НЕ проверяем подпись/exp JWT намеренно: строка сессии в БД —
+    // это refresh-токен. Пока она жива (expires_at > now, до 30 дней),
+    // выдаём новый access-JWT, даже если старый уже просрочен. Иначе десктоп-
+    // клиент, открытый после перерыва > 24ч, не мог бы бесшовно продлить
+    // сессию и вынуждал бы логиниться заново. Чужие токены тут не помогают:
+    // хэш токена должен совпасть с существующей строкой в БД.
+    let old_session = repository::touch_session(&state.pool, &token_hash(old_token), now)
         .await
+        .map_err(database_error)?
         .ok_or_else(|| unauthorized("INVALID_TOKEN", "Invalid or expired session"))?;
+
+    let user = repository::find_user(&state.pool, &old_session.username)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| unauthorized("INVALID_TOKEN", "User no longer exists"))?;
+
     let (new_token, expires_at) = jwt::issue_token(
         &state.config.jwt_secret,
-        &claims.sub,
-        &claims.role,
-        &claims.display_name,
+        &user.username,
+        &user.role,
+        &user.display_name,
         &old_session.device,
     );
-    let now = now_secs();
+    // Окно сессии сдвигается вперёд: активный пользователь не должен логиниться.
     let new_session = Session {
         public_id: old_session.public_id,
         token: new_token.clone(),
-        username: old_session.username,
+        username: old_session.username.clone(),
         device: old_session.device,
         created_at: old_session.created_at,
         last_seen: now,
-        expires_at,
+        expires_at: now + jwt::SESSION_TTL_SECS,
     };
     repository::delete_session(&state.pool, &token_hash(old_token))
         .await
@@ -389,11 +410,12 @@ pub async fn refresh(
     repository::create_session(&state.pool, &token_hash(&new_token), &new_session)
         .await
         .map_err(database_error)?;
+    tracing::info!(username = %old_session.username, "session refreshed");
     Ok(Json(LoginResponse {
         token: new_token,
-        username: claims.sub,
-        display_name: claims.display_name,
-        role: claims.role,
+        username: user.username,
+        display_name: user.display_name,
+        role: user.role,
         expires_at,
     }))
 }

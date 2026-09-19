@@ -3,10 +3,12 @@
 # update.sh — Pull latest, rebuild, and restart the Loza backend containers.
 #
 # Usage:
-#   ./update.sh                 # Pull latest, rebuild, restart
-#   ./update.sh --no-rebuild    # Pull latest only, restart (reuse existing image)
-#   ./update.sh --no-pull       # Skip git pull / docker pull (local edits only)
-#   ./update.sh --force         # Force recreate containers (equivalent to up --force-recreate)
+#   ./update.sh                           # Pull latest (main), rebuild, restart
+#   ./update.sh --branch dev             # Pull from a specific branch
+#   ./update.sh --no-rebuild             # Pull latest only, restart (reuse existing image)
+#   ./update.sh --no-pull                # Skip git pull / docker pull (local edits only)
+#   ./update.sh --force                  # Force recreate containers (equivalent to up --force-recreate)
+#   ./update.sh --app-dir /path          # Use a custom app directory
 #
 set -Eeuo pipefail
 umask 077
@@ -72,6 +74,28 @@ wait_for_health() {
   return 1
 }
 
+# Проверяет, что собранный share-viewer-web реально раздаётся:
+#   - /share-app/ отдаёт SPA (отдаётся только если в образе собрался dist);
+#   - /share без токена отдаёт 404 (список ссылок не экспонируется).
+verify_share_viewer() {
+  local base="http://127.0.0.1:${PORT}"
+  local spa_code
+  spa_code="$(curl -s -o /dev/null -w '%{http_code}' "${base}/share-app/" || true)"
+  if [[ "$spa_code" == "200" ]]; then
+    log SUCCESS "Share viewer is served at ${base}/share-app/"
+  else
+    log WARNING "Share viewer not detected (HTTP ${spa_code}) — the running image may be stale; rebuild with update.sh (without --no-rebuild)"
+  fi
+
+  local list_code
+  list_code="$(curl -s -o /dev/null -w '%{http_code}' "${base}/share" || true)"
+  if [[ "$list_code" == "404" ]]; then
+    log SUCCESS "/share without a token returns 404 (no share index exposed)"
+  else
+    log WARNING "/share returned HTTP ${list_code} (expected 404)"
+  fi
+}
+
 # ─── Argument parsing ────────────────────────────────────────────────────────
 
 while [[ $# -gt 0 ]]; do
@@ -79,6 +103,8 @@ while [[ $# -gt 0 ]]; do
     --no-pull)     DO_PULL=0;    shift ;;
     --no-rebuild)  DO_REBUILD=0; shift ;;
     --force)       FORCE_RECREATE=1; shift ;;
+    --branch)
+      BRANCH="$2"; shift 2 ;;
     --app-dir)
       APP_DIR="$2"; shift 2 ;;
     --)
@@ -147,6 +173,8 @@ fi
 if ! wait_for_health; then
   fail "Backend did not become healthy after update"
 fi
+
+verify_share_viewer
 
 # ─── Summary ─────────────────────────────────────────────────────────────────
 

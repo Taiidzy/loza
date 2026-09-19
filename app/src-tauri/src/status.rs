@@ -88,6 +88,18 @@ pub async fn get_server_status(
         .await
         .map_err(|e| format!("SERVER_UNREACHABLE: {}", e))?;
 
+    if !resp.status().is_success() {
+        let status = resp.status();
+        // A 401/403 means the stored session was rejected — drop it locally so
+        // the UI doesn't keep presenting authenticated state with a dead token.
+        if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+            let _ = session_store::clear_session(&app);
+        }
+        let body = resp.text().await.unwrap_or_default();
+        let reason = status.canonical_reason().unwrap_or("Unknown");
+        return Err(format!("HTTP {} {} — body: {}", status.as_u16(), reason, body));
+    }
+
     resp.json::<ServerStatus>()
         .await
         .map_err(|e| format!("PARSE_ERROR: {}", e))

@@ -32,6 +32,7 @@ use crate::handlers::status::collect_server_status;
 use crate::models::{CalendarEvent, CalendarEventDraft};
 use crate::db::repository;
 use crate::db::AppState;
+use crate::models::FileInfo;
 
 const REQUEST_TIMEOUT_SECS: u64 = 10;
 const STATUS_PUSH_INTERVAL_SECS: u64 = 2;
@@ -112,6 +113,44 @@ impl WsPush {
             params: Some(serde_json::json!({ "id": id })),
         }
     }
+
+    pub fn file_created(file: FileInfo) -> Self {
+        WsPush {
+            kind: "push".to_string(),
+            method: "file.created".to_string(),
+            params: serde_json::to_value(file).ok(),
+        }
+    }
+
+    pub fn file_deleted(path: &str) -> Self {
+        WsPush {
+            kind: "push".to_string(),
+            method: "file.deleted".to_string(),
+            params: Some(serde_json::json!({ "path": path })),
+        }
+    }
+
+    pub fn file_renamed(from: &str, to: String, is_dir: bool, file: FileInfo) -> Self {
+        WsPush {
+            kind: "push".to_string(),
+            method: "file.renamed".to_string(),
+            params: Some(serde_json::json!({
+                "from": from,
+                "to": to,
+                "isDir": is_dir,
+                "file": file,
+            })),
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn file_updated(path: &str) -> Self {
+        WsPush {
+            kind: "push".to_string(),
+            method: "file.updated".to_string(),
+            params: Some(serde_json::json!({ "path": path })),
+        }
+    }
 }
 
 pub fn make_response(id: &str, result: serde_json::Value) -> Message {
@@ -152,7 +191,7 @@ async fn handle_request(
         "calendar.get" => {
             let events = repository::list_events(&state.pool, username)
                 .await
-                .map_err(|e| CalendarError::from(e))?;
+                .map_err(CalendarError::from)?;
             Ok(serde_json::to_value(events).unwrap_or_default())
         }
 

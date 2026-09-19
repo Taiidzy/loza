@@ -1,0 +1,449 @@
+import { useState, useEffect, useCallback } from "react";
+import { motion } from "framer-motion";
+import { FileInfo, ShareInfo } from "../../types/files";
+import { fileApi } from "../../api/filesService";
+import { logger } from "../../shared/utils/logger";
+import {
+  X, Copy, Link2, Trash2, Loader, AlertCircle, CheckCircle, Lock,
+  Folder, File as FileIcon, Eye, EyeOff,
+} from "lucide-react";
+
+interface Props {
+  file: FileInfo;
+  onClose: () => void;
+}
+
+export default function ShareModal({ file, onClose }: Props) {
+  const [shares, setShares] = useState<ShareInfo[]>([]);
+  const [urls, setUrls] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [copiedToken, setCopiedToken] = useState<string | null>(null);
+  const [protect, setProtect] = useState(false);
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const listed = await fileApi.listShares(file.path);
+      setShares(listed);
+      const urlEntries = await Promise.all(
+        listed.map(async (s) => [s.token, await fileApi.getShareUrl(s.token)] as const)
+      );
+      setUrls(Object.fromEntries(urlEntries));
+    } catch (e: any) {
+      setError(e?.message || "Не удалось загрузить ссылки");
+      logger.error("files", "listShares error", e);
+    } finally {
+      setLoading(false);
+    }
+  }, [file.path]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleCreate = async () => {
+    const trimmed = password.trim();
+    if (protect && !trimmed) {
+      setPasswordError("Введите пароль для защиты ссылки");
+      return;
+    }
+    setPasswordError(null);
+    setCreating(true);
+    setError(null);
+    try {
+      const created = await fileApi.createShare(file.path, trimmed || undefined);
+      // Копирование в буфер — вспомогательный шаг: если оно не сработает,
+      // ссылка всё равно создана и будет видна в списке ниже.
+      try {
+        await navigator.clipboard.writeText(created.url);
+        setCopiedToken(created.share.token);
+        setTimeout(() => setCopiedToken(null), 2000);
+      } catch (e) {
+        logger.warning("files", "clipboard write failed", e);
+      }
+      setPassword("");
+      setProtect(false);
+      setShowPassword(false);
+      await load();
+    } catch (e: any) {
+      setError(e?.message || "Не удалось создать ссылку");
+      logger.error("files", "createShare error", e);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleCopy = async (token: string) => {
+    try {
+      const url = await fileApi.getShareUrl(token);
+      await navigator.clipboard.writeText(url);
+      setCopiedToken(token);
+      setTimeout(() => setCopiedToken(null), 2000);
+    } catch (e) {
+      logger.error("files", "copy share url error", e);
+    }
+  };
+
+  const handleRevoke = async (token: string) => {
+    try {
+      await fileApi.revokeShare(token);
+      await load();
+    } catch (e: any) {
+      setError(e?.message || "Не удалось отозвать ссылку");
+      logger.error("files", "revokeShare error", e);
+    }
+  };
+
+  return (
+    <>
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          backgroundColor: "rgba(0,0,0,0.5)",
+          zIndex: 2000,
+        }}
+        onClick={onClose}
+      />
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.95 }}
+        transition={{ duration: 0.15, ease: "easeOut" }}
+        style={{
+          position: "fixed",
+          top: "50%",
+          left: "50%",
+          transform: "translate(-50%, -50%)",
+          background: "var(--color-glass-surface)",
+          border: "1px solid var(--color-glass-border)",
+          borderRadius: "var(--radius-md)",
+          padding: "18px 22px",
+          minWidth: 360,
+          maxWidth: 460,
+          maxHeight: "70vh",
+          boxShadow: "0 20px 50px rgba(0,0,0,0.5)",
+          zIndex: 2001,
+          display: "flex",
+          flexDirection: "column",
+          gap: 14,
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+          <h3 style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-primary)", margin: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            Ссылки · {file.name}
+          </h3>
+          <button
+            onClick={onClose}
+            style={{
+              width: 24,
+              height: 24,
+              borderRadius: "var(--radius-sm)",
+              background: "transparent",
+              border: "1px solid transparent",
+              color: "var(--color-text-muted)",
+              cursor: "pointer",
+              display: "grid",
+              placeItems: "center",
+              fontSize: 12,
+              flexShrink: 0,
+            }}
+          >
+            <X size={12} />
+          </button>
+        </div>
+
+        {/* Что именно расшаривается */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "8px 10px",
+            borderRadius: "var(--radius-sm)",
+            background: "rgba(255,255,255,0.04)",
+            border: "1px solid var(--color-glass-border)",
+            fontSize: 12,
+          }}
+        >
+          {file.isDir ? (
+            <Folder size={14} color="var(--color-accent)" style={{ flexShrink: 0 }} />
+          ) : (
+            <FileIcon size={14} color="var(--color-text-secondary)" style={{ flexShrink: 0 }} />
+          )}
+          <span style={{ fontWeight: 600, color: "var(--color-text-primary)", flexShrink: 0 }}>
+            {file.isDir ? "Папка" : "Файл"}
+          </span>
+          <span
+            style={{
+              color: "var(--color-text-muted)",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+            title={file.path}
+          >
+            {file.name}
+          </span>
+        </div>
+
+        {error && (
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 10px", borderRadius: "var(--radius-sm)", background: "rgba(255,60,60,0.1)", color: "var(--color-error)", fontSize: 12 }}>
+            <AlertCircle size={13} style={{ marginTop: 2, flexShrink: 0 }} />
+            <span style={{ wordBreak: "break-word" }}>{error}</span>
+          </div>
+        )}
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {/* Кнопка создания */}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={handleCreate}
+              disabled={creating}
+              style={{
+                flex: 1,
+                padding: "8px 12px",
+                borderRadius: "var(--radius-sm)",
+                background: creating ? "var(--color-accent)" : "var(--color-accent)",
+                border: "1px solid var(--color-accent-border)",
+                color: "#fff",
+                fontSize: 12,
+                fontWeight: 500,
+                cursor: creating ? "wait" : "pointer",
+                opacity: creating ? 0.7 : 1,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 6,
+              }}
+            >
+              {creating ? <Loader size={12} style={{ animation: "spin 1s linear infinite" }} /> : <Link2 size={12} />}
+              {creating ? "Создание…" : "Создать ссылку"}
+            </button>
+          </div>
+
+          {/* Защита паролем */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                cursor: "pointer",
+                fontSize: 12,
+                color: "var(--color-text-secondary)",
+                userSelect: "none",
+              }}
+            >
+              <button
+                type="button"
+                role="switch"
+                aria-checked={protect}
+                onClick={() => {
+                  setProtect(!protect);
+                  setPasswordError(null);
+                  if (protect) {
+                    setPassword("");
+                    setShowPassword(false);
+                  }
+                }}
+                style={{
+                  width: 32,
+                  height: 18,
+                  borderRadius: 9,
+                  border: "1px solid var(--color-glass-border)",
+                  background: protect ? "var(--color-accent)" : "rgba(255,255,255,0.08)",
+                  cursor: "pointer",
+                  padding: 0,
+                  position: "relative",
+                  transition: "all 0.15s",
+                  flexShrink: 0,
+                }}
+              >
+                <span
+                  style={{
+                    position: "absolute",
+                    top: 1,
+                    left: 1,
+                    width: 14,
+                    height: 14,
+                    borderRadius: 7,
+                    background: "#fff",
+                    transform: protect ? "translateX(14px)" : "translateX(0)",
+                    transition: "transform 0.15s",
+                  }}
+                />
+              </button>
+              <Lock size={12} color={protect ? "var(--color-accent)" : "var(--color-text-muted)"} style={{ flexShrink: 0 }} />
+              <span>Защитить паролем</span>
+            </label>
+
+            {protect && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => {
+                      setPassword(e.target.value);
+                      if (passwordError) setPasswordError(null);
+                    }}
+                    placeholder="Пароль для доступа к ссылке"
+                    style={{
+                      width: "100%",
+                      padding: "8px 32px 8px 10px",
+                      borderRadius: "var(--radius-sm)",
+                      background: "rgba(255,255,255,0.05)",
+                      border: `1px solid ${passwordError ? "var(--color-error)" : "var(--color-glass-border)"}`,
+                      color: "var(--color-text-primary)",
+                      fontSize: 12,
+                      outline: "none",
+                      boxSizing: "border-box",
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !creating) {
+                        handleCreate();
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword(!showPassword)}
+                    title={showPassword ? "Скрыть пароль" : "Показать пароль"}
+                    style={{
+                      position: "absolute",
+                      right: 4,
+                      width: 24,
+                      height: 24,
+                      borderRadius: "var(--radius-sm)",
+                      background: "transparent",
+                      border: "none",
+                      color: "var(--color-text-muted)",
+                      cursor: "pointer",
+                      display: "grid",
+                      placeItems: "center",
+                    }}
+                  >
+                    {showPassword ? <EyeOff size={12} /> : <Eye size={12} />}
+                  </button>
+                </div>
+                {passwordError ? (
+                  <div style={{ fontSize: 11, color: "var(--color-error)" }}>{passwordError}</div>
+                ) : (
+                  <div style={{ fontSize: 11, color: "var(--color-text-muted)" }}>
+                    Ссылкой смогут воспользоваться только те, кто знает пароль
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {loading ? (
+          <div style={{ display: "flex", justifyContent: "center", padding: 16 }}>
+            <Loader size={18} style={{ animation: "spin 1s linear infinite", color: "var(--color-text-muted)" }} />
+          </div>
+        ) : shares.length === 0 ? (
+          <div style={{ padding: "16px 10px", textAlign: "center", fontSize: 12, color: "var(--color-text-muted)" }}>
+            Активных ссылок нет
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, overflow: "auto", maxHeight: "40vh" }}>
+            {shares.map((s) => (
+              <div
+                key={s.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "8px 10px",
+                  borderRadius: "var(--radius-sm)",
+                  background: "rgba(255,255,255,0.04)",
+                  border: "1px solid var(--color-glass-border)",
+                  fontSize: 12,
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6, overflow: "hidden" }}>
+                  {s.hasPassword && (
+                    <Lock size={10} color="#ffb6d2" style={{ flexShrink: 0 }} />
+                  )}
+                  <span
+                    style={{
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                      color: s.isActive ? "var(--color-text-secondary)" : "var(--color-text-muted)",
+                    }}
+                  >
+                    {urls[s.token] ?? `/share/${s.token}`}
+                  </span>
+                </div>
+                <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                  <button
+                    onClick={() => handleCopy(s.token)}
+                    title="Скопировать ссылку"
+                    style={{
+                      width: 22,
+                      height: 22,
+                      borderRadius: "var(--radius-sm)",
+                      background: "transparent",
+                      border: "1px solid var(--color-glass-border)",
+                      color: copiedToken === s.token ? "var(--color-success)" : "var(--color-text-secondary)",
+                      cursor: "pointer",
+                      display: "grid",
+                      placeItems: "center",
+                    }}
+                  >
+                    {copiedToken === s.token ? <CheckCircle size={10} /> : <Copy size={10} />}
+                  </button>
+                  {s.isActive && (
+                    <button
+                      onClick={() => handleRevoke(s.token)}
+                      title="Отозвать ссылку"
+                      style={{
+                        width: 22,
+                        height: 22,
+                        borderRadius: "var(--radius-sm)",
+                        background: "transparent",
+                        border: "1px solid var(--color-glass-border)",
+                        color: "var(--color-error)",
+                        cursor: "pointer",
+                        display: "grid",
+                        placeItems: "center",
+                      }}
+                    >
+                      <Trash2 size={10} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", paddingTop: 4 }}>
+          <button
+            onClick={onClose}
+            style={{
+              padding: "6px 14px",
+              borderRadius: "var(--radius-sm)",
+              background: "var(--color-glass-surface)",
+              border: "1px solid var(--color-glass-border)",
+              color: "var(--color-text-secondary)",
+              fontSize: 12,
+              cursor: "pointer",
+              transition: "all 0.15s",
+            }}
+          >
+            Закрыть
+          </button>
+        </div>
+      </motion.div>
+    </>
+  );
+}

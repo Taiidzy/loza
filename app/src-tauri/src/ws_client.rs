@@ -28,12 +28,31 @@ use uuid::Uuid;
 
 use crate::{server_config, session_store};
 
-/// Tauri event name for live status updates (same as `status.rs`).
+/// Tauri event name for server status updates.
 pub const SERVER_STATUS_EVENT: &str = "server-status";
+
+/// Error returned when the WS channel is present but the connection is not
+/// up and the request may or may not have reached the server. Callers must
+/// NOT retry mutating operations over HTTP after this error — the server may
+/// already have applied the mutation.
+pub const ERR_WS_UNSAFE_RETRY: &str = "WS_UNSAFE_RETRY";
+
+/// Error returned when the WS client has no receiver at all — the request
+/// was definitively never queued, so an HTTP fallback is safe.
+pub const ERR_WS_NOT_INITIALIZED: &str = "WebSocket client is not initialized";
 
 /// Event emitted when a calendar event is created/updated/deleted by another
 /// connection of the same user. Payload is a stringified JSON WsPush.
 pub const CALENDAR_EVENT_PUSH_EVENT: &str = "calendar-event-pushed";
+
+/// Event emitted when files change on the server (created, deleted, renamed).
+/// Payload contains the path(s) affected and the operation type.
+pub const FILE_CHANGE_EVENT: &str = "file-change";
+
+/// Event emitted during file upload/download progress tracking.
+/// The event name suffix is the operation ID, and the payload contains
+/// the transferred bytes and total bytes.
+pub const FILE_PROGRESS_EVENT_PREFIX: &str = "file-progress-";
 
 // ─── Wire protocol types (mirror backend/src/handlers/ws.rs) ──────────────────
 
@@ -73,6 +92,7 @@ struct WsClientRequest {
 
 pub struct WsClient {
     sender: std::sync::Mutex<Option<mpsc::UnboundedSender<WsClientRequest>>>,
+    connected: std::sync::atomic::AtomicBool,
 }
 
 impl Default for WsClient {
@@ -85,15 +105,22 @@ impl WsClient {
     pub fn new() -> Self {
         WsClient {
             sender: std::sync::Mutex::new(None),
+            connected: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
     fn set_sender(&self, tx: mpsc::UnboundedSender<WsClientRequest>) {
         *self.sender.lock().expect("ws_sender mutex poisoned") = Some(tx);
+        self.connected.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn clear_sender(&self) {
+        *self.sender.lock().expect("ws_sender mutex poisoned") = None;
+        self.connected.store(false, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn is_connected(&self) -> bool {
-        self.sender.lock().expect("ws_sender mutex poisoned").is_some()
+        self.connected.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Sends a request over WS and waits for the response.
@@ -106,9 +133,9 @@ impl WsClient {
         let tx = match self.sender.lock() {
             Ok(guard) => match guard.as_ref() {
                 Some(tx) => tx.clone(),
-                None => return Err("WebSocket client is not initialized".to_string()),
+                None => return Err(ERR_WS_NOT_INITIALIZED.to_string()),
             },
-            Err(_) => return Err("WebSocket mutex poisoned".to_string()),
+            Err(_) => return Err(format!("{}: WebSocket mutex poisoned", ERR_WS_UNSAFE_RETRY)),
         };
 
         let id = Uuid::new_v4().to_string();
@@ -120,14 +147,14 @@ impl WsClient {
             respond_to: resp_tx,
         };
 
-        tx.send(req).map_err(|_| "WebSocket processor shut down".to_string())?;
+        tx.send(req).map_err(|_| format!("{}: WebSocket processor shut down", ERR_WS_UNSAFE_RETRY))?;
 
         let timeout = Duration::from_secs(10);
         match tokio::time::timeout(timeout, resp_rx).await {
             Ok(Ok(Ok(value))) => Ok(value),
-            Ok(Ok(Err(ws_err))) => Err(format!("{}: {}", ws_err.code, ws_err.message)),
-            Ok(Err(_)) => Err("WebSocket processor disconnected".to_string()),
-            Err(_) => Err("WebSocket request timed out after 10s".to_string()),
+            Ok(Ok(Err(ws_err))) => Err(format!("{}: {}: {}", ERR_WS_UNSAFE_RETRY, ws_err.code, ws_err.message)),
+            Ok(Err(_)) => Err(format!("{}: WebSocket processor disconnected", ERR_WS_UNSAFE_RETRY)),
+            Err(_) => Err(format!("{}: WebSocket request timed out after 10s", ERR_WS_UNSAFE_RETRY)),
         }
     }
 }
@@ -141,13 +168,14 @@ pub fn spawn_ws_loop(app: AppHandle, ws_client: std::sync::Arc<WsClient>) {
     ws_client.set_sender(tx);
 
     tauri::async_runtime::spawn(async move {
-        ws_loop(app, rx).await;
+        ws_loop(app, rx, ws_client.clone()).await;
     });
 }
 
 async fn ws_loop(
     app: AppHandle,
     mut rx: mpsc::UnboundedReceiver<WsClientRequest>,
+    ws_client: std::sync::Arc<WsClient>,
 ) {
     tracing::info!("[ws_client] starting unified WS loop");
 
@@ -164,7 +192,7 @@ async fn ws_loop(
             }
         };
 
-        match run_ws_session(&app, &server_url, &token, &mut rx).await {
+        match run_ws_session(&app, &server_url, &token, &mut rx, &ws_client).await {
             WsSessionResult::Reconnect => {
                 tracing::warn!(
                     "[ws_client] disconnected, reconnecting in {}s",
@@ -188,6 +216,20 @@ struct PendingRequest {
 const REQUEST_TIMEOUT_SECS: u64 = 10;
 
 async fn run_ws_session(
+    app: &AppHandle,
+    server_url: &str,
+    token: &str,
+    rx: &mut mpsc::UnboundedReceiver<WsClientRequest>,
+    ws_client: &WsClient,
+) -> WsSessionResult {
+    let result = run_ws_session_inner(app, server_url, token, rx).await;
+    if matches!(result, WsSessionResult::Reconnect) {
+        ws_client.clear_sender();
+    }
+    result
+}
+
+async fn run_ws_session_inner(
     app: &AppHandle,
     server_url: &str,
     token: &str,
@@ -217,10 +259,19 @@ async fn run_ws_session(
         return WsSessionResult::Reconnect;
     }
 
-    let (ws_stream, _) = match tokio_tungstenite::connect_async(request).await {
-        Ok(stream) => stream,
-        Err(e) => {
+    let (ws_stream, _) = match tokio::time::timeout(
+        Duration::from_secs(10),
+        tokio_tungstenite::connect_async(request),
+    )
+    .await
+    {
+        Ok(Ok(stream)) => stream,
+        Ok(Err(e)) => {
             tracing::warn!(error = %e, "WS connection failed");
+            return WsSessionResult::Reconnect;
+        }
+        Err(_) => {
+            tracing::warn!("WS connection attempt timed out after 10s");
             return WsSessionResult::Reconnect;
         }
     };
@@ -283,16 +334,14 @@ async fn run_ws_session(
                         // Then try as response
                         if let Ok(resp) = serde_json::from_str::<WsResponse>(&text) {
                             if let Some(pr) = pending.remove(&resp.id) {
-                                let _ = pr.respond_to.send(
-                                    resp.result.ok_or_else(|| WsError {
-                                        code: resp.error.as_ref()
-                                            .map(|e| e.code.clone())
-                                            .unwrap_or_else(|| "UNKNOWN_ERROR".to_string()),
-                                        message: resp.error.as_ref()
-                                            .map(|e| e.message.clone())
-                                            .unwrap_or_else(|| "Unknown error".to_string()),
-                                    })
-                                );
+                                // Check error field first: void operations
+                                // (e.g. calendar.delete) return result:null
+                                // with no error — that is a success.
+                                let result = match resp.error {
+                                    Some(ws_err) => Err(ws_err),
+                                    None => Ok(resp.result.unwrap_or(serde_json::Value::Null)),
+                                };
+                                let _ = pr.respond_to.send(result);
                             }
                         }
                     }
@@ -315,22 +364,30 @@ async fn run_ws_session(
                     }
                 }
             }
-        }
 
-        // Check for timed-out requests (after each select arm)
-        let now = Instant::now();
-        let timed_out: Vec<String> = pending
-            .iter()
-            .filter(|(_, pr)| now.duration_since(pr.sent_at).as_secs() >= REQUEST_TIMEOUT_SECS)
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in &timed_out {
-            if let Some(pr) = pending.remove(id) {
-                let _ = pr.respond_to.send(Err(WsError {
-                    code: "TIMEOUT".to_string(),
-                    message: format!("Request timed out after {}s", REQUEST_TIMEOUT_SECS),
-                }));
+            // Periodic sweep so pending requests are timed out even when the
+            // connection is otherwise idle (no inbound messages to wake on).
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                sweep_pending_timeouts(&mut pending);
             }
+        }
+    }
+}
+
+fn sweep_pending_timeouts(pending: &mut std::collections::HashMap<String, PendingRequest>) {
+    // Check for timed-out requests (after each select arm)
+    let now = Instant::now();
+    let timed_out: Vec<String> = pending
+        .iter()
+        .filter(|(_, pr)| now.duration_since(pr.sent_at).as_secs() >= REQUEST_TIMEOUT_SECS)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in &timed_out {
+        if let Some(pr) = pending.remove(id) {
+            let _ = pr.respond_to.send(Err(WsError {
+                code: "TIMEOUT".to_string(),
+                message: format!("Request timed out after {}s", REQUEST_TIMEOUT_SECS),
+            }));
         }
     }
 }
@@ -351,17 +408,25 @@ fn drain_pending_and_reconnect(
 fn handle_push(app: &AppHandle, push: &WsPush) {
     match push.method.as_str() {
         "status.update" => {
-            // Re-emit as the same Tauri event the old status listener used.
-            // The payload is the raw JSON value from params.
             let _ = app.emit(SERVER_STATUS_EVENT, push.params.clone());
             tracing::debug!("[ws_client] emitted status.update");
         }
         "calendar.event.created" | "calendar.event.updated" | "calendar.event.deleted" => {
-            // Emit as a stringified JSON so the React listener can parse it.
             if let Ok(json) = serde_json::to_string(&push) {
                 let _ = app.emit(CALENDAR_EVENT_PUSH_EVENT, json);
                 tracing::debug!("[ws_client] emitted {}", push.method);
             }
+        }
+        method @ ("file.created" | "file.deleted" | "file.renamed" | "file.updated") => {
+            // Forward file change events to the frontend as a structured payload.
+            // The frontend will listen on FILE_CHANGE_EVENT and decide whether
+            // to refresh the current directory listing.
+            let payload = serde_json::json!({
+                "method": method,
+                "params": push.params.clone(),
+            });
+            let _ = app.emit(FILE_CHANGE_EVENT, payload);
+            tracing::debug!("[ws_client] emitted {}", method);
         }
         _ => {
             tracing::debug!("[ws_client] received unknown push method: {}", push.method);
