@@ -365,3 +365,113 @@ button {
   object-fit: contain;
   border-radius: var(--radius-sm);
 }
+
+/* ── Лайтбокс предпросмотра (фото/PDF) ──────────────────────────────────── */
+
+.sv-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 28px;
+  background: rgba(6, 6, 12, 0.82);
+  backdrop-filter: blur(8px);
+  animation: sv-fade 0.18s ease;
+}
+
+.sv-lightbox {
+  display: flex;
+  flex-direction: column;
+  max-width: min(92vw, 1200px);
+  max-height: calc(100vh - 140px);
+  background: var(--color-glass-surface);
+  border: 1px solid var(--color-glass-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+}
+
+.sv-lightbox-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--color-surface-border);
+}
+
+.sv-lightbox-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  min-width: 0;
+}
+
+.sv-lightbox-title > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sv-lightbox-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.sv-lightbox-img {
+  max-width: 100%;
+  max-height: calc(100vh - 220px);
+  object-fit: contain;
+  display: block;
+}
+
+.sv-lightbox-frame {
+  width: min(88vw, 1100px);
+  height: calc(100vh - 220px);
+  min-height: 420px;
+  border: none;
+}
+
+.sv-nav-btn {
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  border: 1px solid var(--color-glass-border);
+  background: var(--color-glass-surface);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.sv-nav-btn:hover {
+  background: var(--color-glass-hover-strong);
+  color: var(--color-accent);
+}
+
+.sv-nav-btn--left {
+  margin-left: auto;
+}
+
+.sv-nav-btn--right {
+  margin-right: auto;
+}
+
+@keyframes sv-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

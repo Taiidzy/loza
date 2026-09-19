@@ -2,8 +2,10 @@ import { useCallback, useEffect, useState } from "react";
 import {
   AlertCircle,
   Archive,
+  ChevronLeft,
   ChevronRight,
   Download,
+  Eye,
   File,
   FileCode,
   FileText,
@@ -15,6 +17,7 @@ import {
   Lock,
   Music2,
   ShieldCheck,
+  X,
 } from "lucide-react";
 import { ShareEntry, ShareMeta, shareApi, tokenFromPath } from "./api";
 
@@ -35,6 +38,13 @@ function formatBytes(bytes: number): string {
   const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
   const value = bytes / Math.pow(1024, i);
   return `${value.toFixed(value >= 100 || i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+/** Файл, который можно смотреть прямо в браузере (фото/PDF). */
+function isPreviewable(entry: ShareEntry): boolean {
+  if (entry.isDir) return false;
+  const mime = entry.mimeType ?? "";
+  return mime.startsWith("image/") || mime === "application/pdf";
 }
 
 function iconFor(entry: Pick<ShareEntry, "isDir" | "mimeType" | "name">, size = 20): React.ReactNode {
@@ -204,6 +214,8 @@ function FolderScreen({ meta, access }: { meta: ShareMeta; access: string }): Re
   const [entries, setEntries] = useState<ShareEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Индекс в списке просматриваемых файлов (фото/PDF) — для lightbox.
+  const [previewIndex, setPreviewIndex] = useState<number | null>(null);
 
   useEffect(() => {
     const token = tokenFromPath();
@@ -229,6 +241,9 @@ function FolderScreen({ meta, access }: { meta: ShareMeta; access: string }): Re
       cancelled = true;
     };
   }, [access, path]);
+
+  const previewables = entries.filter(isPreviewable);
+  const previewEntry = previewIndex !== null ? previewables[previewIndex] ?? null : null;
 
   const crumbs = path ? path.split("/") : [];
   const goCrumb = (index: number) => setPath(crumbs.slice(0, index + 1).join("/"));
@@ -290,9 +305,25 @@ function FolderScreen({ meta, access }: { meta: ShareMeta; access: string }): Re
                 onOpen={() => {
                   if (entry.isDir) setPath(entry.path);
                 }}
+                onShow={() => {
+                  const index = previewables.findIndex((p) => p.id === entry.id);
+                  if (index >= 0) setPreviewIndex(index);
+                }}
               />
             ))}
           </div>
+        )}
+
+        {previewEntry && previewIndex !== null && (
+          <Lightbox
+            entry={previewEntry}
+            access={access}
+            index={previewIndex}
+            total={previewables.length}
+            onClose={() => setPreviewIndex(null)}
+            onPrev={() => setPreviewIndex((previewIndex - 1 + previewables.length) % previewables.length)}
+            onNext={() => setPreviewIndex((previewIndex + 1) % previewables.length)}
+          />
         )}
       </Card>
     </Shell>
@@ -303,17 +334,41 @@ function EntryRow({
   entry,
   access,
   onOpen,
+  onShow,
 }: {
   entry: ShareEntry;
   access: string;
   onOpen: () => void;
+  onShow: () => void;
 }): React.JSX.Element {
   const token = tokenFromPath();
+  const previewable = isPreviewable(entry);
+  const clickable = entry.isDir || previewable;
+  const handleClick = () => {
+    if (entry.isDir) onOpen();
+    else if (previewable) onShow();
+  };
   return (
-    <div className="sv-row" onClick={entry.isDir ? onOpen : undefined}>
+    <div
+      className="sv-row"
+      role={clickable ? "button" : undefined}
+      tabIndex={clickable ? 0 : undefined}
+      onClick={handleClick}
+      onKeyDown={(e) => {
+        if (clickable && (e.key === "Enter" || e.key === " ")) {
+          e.preventDefault();
+          handleClick();
+        }
+      }}
+    >
       {iconFor(entry, 18)}
       <span className="sv-row-name">{entry.name}</span>
       {!entry.isDir && <span className="sv-row-size">{formatBytes(entry.sizeBytes)}</span>}
+      {previewable && token && (
+        <button className="sv-icon-btn" title="Просмотреть" onClick={(e) => { e.stopPropagation(); onShow(); }}>
+          <Eye size={14} />
+        </button>
+      )}
       {!entry.isDir && token && (
         <a
           className="sv-icon-btn"
@@ -325,6 +380,94 @@ function EntryRow({
         </a>
       )}
       {entry.isDir && <ChevronRight size={13} color="var(--color-text-faint)" />}
+    </div>
+  );
+}
+
+// ─── Лайтбокс предпросмотра (фото/PDF внутри расшаренной папки) ─────────────
+
+function Lightbox({
+  entry,
+  access,
+  index,
+  total,
+  onClose,
+  onPrev,
+  onNext,
+}: {
+  entry: ShareEntry;
+  access: string;
+  index: number;
+  total: number;
+  onClose: () => void;
+  onPrev: () => void;
+  onNext: () => void;
+}): React.JSX.Element {
+  const token = tokenFromPath();
+  const preview = token ? shareApi.previewUrl(token, access, entry.path) : "";
+  const download = token ? shareApi.downloadUrl(token, access, entry.path) : "";
+  const isPdf = entry.mimeType === "application/pdf";
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowLeft") onPrev();
+      else if (e.key === "ArrowRight") onNext();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, onPrev, onNext]);
+
+  return (
+    <div className="sv-overlay" onClick={onClose}>
+      {total > 1 && (
+        <button
+          type="button"
+          className="sv-nav-btn sv-nav-btn--left"
+          title="Предыдущий (←)"
+          onClick={(e) => { e.stopPropagation(); onPrev(); }}
+        >
+          <ChevronLeft size={22} />
+        </button>
+      )}
+
+      <div className="sv-lightbox" onClick={(e) => e.stopPropagation()}>
+        <div className="sv-lightbox-head">
+          <span className="sv-lightbox-title">
+            {iconFor(entry, 16)}
+            <span>{entry.name}</span>
+          </span>
+          <div className="sv-lightbox-actions">
+            {total > 1 && (
+              <span className="sv-muted" style={{ fontSize: 12, flexShrink: 0 }}>
+                {index + 1} / {total}
+              </span>
+            )}
+            <button type="button" className="sv-icon-btn" title="Скачать" onClick={() => { window.location.href = download; }}>
+              <Download size={14} />
+            </button>
+            <button type="button" className="sv-icon-btn" title="Закрыть (Esc)" onClick={onClose}>
+              <X size={14} />
+            </button>
+          </div>
+        </div>
+        {isPdf ? (
+          <iframe src={preview} title={entry.name} className="sv-lightbox-frame" />
+        ) : (
+          <img src={preview} alt={entry.name} className="sv-lightbox-img" />
+        )}
+      </div>
+
+      {total > 1 && (
+        <button
+          type="button"
+          className="sv-nav-btn sv-nav-btn--right"
+          title="Следующий (→)"
+          onClick={(e) => { e.stopPropagation(); onNext(); }}
+        >
+          <ChevronRight size={22} />
+        </button>
+      )}
     </div>
   );
 }

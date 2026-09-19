@@ -28,13 +28,20 @@ pub struct FileInfo {
     pub sha256: Option<String>,
 }
 
-/// Информация о share-ссылке. Никогда не содержит путь к файлу/директории —
-/// это внутренняя деталь, которую нельзя раскрывать наружу.
+/// Информация о share-ссылке. Возвращается только владельцу ссылки
+/// (create/list endpoints авторизованы), поэтому содержит путь к файлу —
+/// для UI управления ссылками. Публичное `/share/api/*` использует
+/// отдельный ShareMeta без каких-либо путей.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ShareInfo {
     pub id: String,
     pub token: String,
+    /// Относительный путь расшаренного файла/директории.
+    pub path: String,
+    pub name: String,
+    #[serde(rename = "isDir")]
+    pub is_dir: bool,
     pub created_at: String,
     pub expires_at: Option<String>,
     pub is_active: bool,

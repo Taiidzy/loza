@@ -252,16 +252,16 @@ pub async fn create_share(
     let username = require_username(&state, &headers).await?;
     let path = sanitize_path(&req.path).map_err(from_file_error)?;
 
-    let file_id: Option<String> = sqlx::query_scalar(
-        "SELECT id::text FROM user_files WHERE username = $1 AND path = $2",
+    let (file_id, name, is_dir) = sqlx::query_as::<_, (String, String, bool)>(
+        "SELECT id::text, name, is_dir FROM user_files WHERE username = $1 AND path = $2",
     )
     .bind(&username)
     .bind(&path)
     .fetch_optional(&state.pool)
     .await
     .map_err(FileError::from)
-    .map_err(from_file_error)?;
-    let file_id = file_id.ok_or_else(|| from_file_error(FileError::not_found(&path)))?;
+    .map_err(from_file_error)?
+    .ok_or_else(|| from_file_error(FileError::not_found(&path)))?;
 
     let password_hash = match req.password {
         Some(ref password) if !password.trim().is_empty() => {
@@ -296,6 +296,9 @@ pub async fn create_share(
     Ok(Json(ShareInfo {
         id: share_id,
         token,
+        path,
+        name,
+        is_dir,
         created_at: fmt_ts(now),
         expires_at: None,
         is_active: true,
@@ -312,11 +315,13 @@ pub async fn list_shares(
 ) -> Result<Json<Vec<ShareInfo>>, ApiError> {
     let username = require_username(&state, &headers).await?;
 
-    let rows: Vec<(String, String, i64, Option<i64>, bool, Option<String>)> =
+    let rows: Vec<(String, String, i64, Option<i64>, bool, Option<String>, String, String, bool)> =
         if query.path.is_empty() {
-            sqlx::query_as::<_, (String, String, i64, Option<i64>, bool, Option<String>)>(
-                r#"SELECT s.id::text, s.token, s.created_at, s.expires_at, s.is_active, s.password_hash
+            sqlx::query_as::<_, (String, String, i64, Option<i64>, bool, Option<String>, String, String, bool)>(
+                r#"SELECT s.id::text, s.token, s.created_at, s.expires_at, s.is_active, s.password_hash,
+                          f.path, f.name, f.is_dir
                    FROM file_shares s
+                   JOIN user_files f ON f.id = s.file_id
                    WHERE s.username = $1
                    ORDER BY s.created_at DESC"#,
             )
@@ -327,8 +332,9 @@ pub async fn list_shares(
             .map_err(from_file_error)?
         } else {
             let path = sanitize_path(&query.path).map_err(from_file_error)?;
-            sqlx::query_as::<_, (String, String, i64, Option<i64>, bool, Option<String>)>(
-                r#"SELECT s.id::text, s.token, s.created_at, s.expires_at, s.is_active, s.password_hash
+            sqlx::query_as::<_, (String, String, i64, Option<i64>, bool, Option<String>, String, String, bool)>(
+                r#"SELECT s.id::text, s.token, s.created_at, s.expires_at, s.is_active, s.password_hash,
+                          f.path, f.name, f.is_dir
                    FROM file_shares s
                    JOIN user_files f ON f.id = s.file_id
                    WHERE s.username = $1 AND f.path = $2
@@ -344,14 +350,19 @@ pub async fn list_shares(
 
     Ok(Json(
         rows.into_iter()
-            .map(|(id, token, created_at, expires_at, is_active, password_hash)| ShareInfo {
-                id,
-                token,
-                created_at: fmt_ts(created_at),
-                expires_at: expires_at.map(fmt_ts),
-                is_active,
-                has_password: password_hash.is_some(),
-            })
+            .map(
+                |(id, token, created_at, expires_at, is_active, password_hash, path, name, is_dir)| ShareInfo {
+                    id,
+                    token,
+                    path,
+                    name,
+                    is_dir,
+                    created_at: fmt_ts(created_at),
+                    expires_at: expires_at.map(fmt_ts),
+                    is_active,
+                    has_password: password_hash.is_some(),
+                },
+            )
             .collect(),
     ))
 }

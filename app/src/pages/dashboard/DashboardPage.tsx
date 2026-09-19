@@ -3,12 +3,13 @@ import { motion, AnimatePresence } from "framer-motion";
 import { useNavigate } from "react-router-dom";
 import { authLogout, getCurrentUser, type UserInfo } from "../../api/auth";
 import { fetchServerStatus, subscribeServerStatus } from "../../api/serverStatus";
-import { ActivityIcon, GridIcon, LeafIcon, LogoutIcon, SettingsIcon } from "../../shared/icons/Icons";
+import { ActivityIcon, GridIcon, LeafIcon, LogoutIcon, SettingsIcon, ShareIcon } from "../../shared/icons/Icons";
 import { type DashboardSection } from "../../components/Dashboard/DashboardNav";
 import DashboardOverview from "./tabs/DashboardTab";
 import styles from "./DashboardPage.module.css";
 import Activity from "./tabs/ActivityTab";
 import SettingsPanel from "./tabs/SettingsPanel";
+import SharesTab from "./tabs/SharesTab";
 import { ServerStatus } from "../../types/serverStatus";
 import LozaTab from "./tabs/LozaTab";
 
@@ -16,6 +17,7 @@ const NAV_SECTIONS: { id: DashboardSection; label: string; icon: ReactNode }[] =
   { id: "dashboard", label: "Обзор", icon: <GridIcon /> },
   { id: "activity", label: "Активность", icon: <ActivityIcon /> },
   { id: "loza", label: "Loza", icon: <LeafIcon /> },
+  { id: "shares", label: "Общий доступ", icon: <ShareIcon /> },
   { id: "settings", label: "Настройки", icon: <SettingsIcon /> },
 ];
 
@@ -216,6 +218,7 @@ export default function DashboardPage() {
 
           {activeSection === "activity" && <Activity />}
           {activeSection === "loza" && <LozaTab />}
+          {activeSection === "shares" && <SharesTab />}
           {activeSection === "settings" && <SettingsPanel />}
         </div>
       </main>

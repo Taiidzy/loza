@@ -59,6 +59,13 @@ pub struct FileInfo {
 pub struct ShareInfo {
     pub id: String,
     pub token: String,
+    /// Относительный путь расшаренного файла/папки (для UI управления).
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub is_dir: bool,
     pub created_at: String,
     pub expires_at: Option<String>,
     pub is_active: bool,

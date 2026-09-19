@@ -14,6 +14,10 @@ export interface FileInfo {
 export interface ShareInfo {
   id: string;
   token: string;
+  /** Относительный путь расшаренного файла/папки (для UI управления ссылками). */
+  path?: string;
+  name?: string;
+  isDir?: boolean;
   createdAt: string;
   expiresAt: string | null;
   isActive: boolean;
